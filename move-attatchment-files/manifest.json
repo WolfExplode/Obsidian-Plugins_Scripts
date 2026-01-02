@@ -1,0 +1,10 @@
+{
+  "id": "move-embedded-files",
+  "name": "Move Embedded Files",
+  "version": "1.0.0",
+  "minAppVersion": "0.15.0",
+  "description": "moves all files referenced in the current note to new folder. This makes obsidian behave like a file manager",
+  "author": "WXP",
+  "authorUrl": "https://github.com/WolfExplode/Obsidian-Plugins_Scripts",
+  "isDesktopOnly": false
+}

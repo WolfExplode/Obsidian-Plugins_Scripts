@@ -1,0 +1,16 @@
+{
+  "name": "move-attatchment-files",
+  "version": "0.0.1",
+  "description": "moves all files referenced in the current note to new folder. This makes obsidian behave like a file manager",
+  "main": "lib/main.js",
+  "license": "MIT",
+  "scripts": {
+    "build": "obsidian-plugin build src/main.ts",
+    "dev": "obsidian-plugin dev src/main.ts"
+  },
+  "devDependencies": {
+    "typescript": "^4.1.5",
+    "obsidian-plugin-cli": "^0.4.3",
+    "obsidian": "obsidianmd/obsidian-api"
+  }
+}
