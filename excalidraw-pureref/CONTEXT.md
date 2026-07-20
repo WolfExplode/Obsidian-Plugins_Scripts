@@ -22,6 +22,10 @@ _Avoid_: Window (too generic — use Popout whenever referring to this specific 
 
 A Popout hides both layers of chrome: Obsidian's outer chrome (ribbon, tabs, sidebars, status bar) and Excalidraw's own in-canvas UI (toolbar, style panel, zoom controls, library panel) — nothing but the bare drawn canvas is visible. All interaction is hotkey/mouse-driven (paste, drag-drop, scroll-zoom, click-drag pan, right-click context menu); no on-canvas UI is ever shown for this feature's own configuration.
 
+Chrome hiding is enforced via inline `!important` styles set from JS (`chrome-hider.ts`), not a plain CSS class — real-world testing showed other installed plugins/snippets can define same-specificity `!important` rules (e.g. Style Settings-style `show-ribbon`/`show-view-header` toggle classes) that win the cascade tie on source order, silently defeating a class-based approach.
+
+Holding the right mouse button and dragging moves the Popout window itself (matching real PureRef), instead of opening Excalidraw's context menu. This is exclusive to Popouts — a plain right-click with no drag still opens Excalidraw's context menu as normal, and the behavior is never active in the main (non-Popout) Excalidraw view.
+
 The host plugin tracks each Board's Popout open/closed state and last window geometry regardless of how the Popout was closed (F11 or the native OS close control) — every close path updates the same tracked state and persists the same geometry, so F11 in the originating view always knows correctly whether to open a fresh Popout or focus/close an existing one.
 
 **Plugin settings tab**:

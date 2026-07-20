@@ -1,0 +1,49 @@
+const HIDE_SELECTORS = [
+	".workspace-ribbon",
+	".workspace-tab-header-container",
+	".view-header",
+	".status-bar",
+	".mod-left-split",
+	".mod-right-split",
+	".layer-ui__wrapper",
+];
+
+const FILL_SELECTORS = [".workspace-tabs", ".workspace-leaf", ".workspace-leaf-content", ".view-content"];
+
+/**
+ * Hides Obsidian's outer chrome and Excalidraw's own in-canvas UI inside a
+ * Popout (CONTEXT.md: "Popout" hides both layers). We tried a plain CSS
+ * class (see CHROME_HIDDEN_CLASS in popout-manager.ts / styles.css) first,
+ * but other installed plugins/snippets (Style Settings-style boolean toggle
+ * classes such as `show-ribbon`/`show-view-header`, seen in real testing)
+ * can carry the same specificity and `!important`, and win the cascade tie
+ * on source order alone. Inline `!important` styles set from JS always beat
+ * an external stylesheet's `!important`, so we force it here instead of
+ * trusting the cascade.
+ *
+ * A MutationObserver reapplies hiding whenever Excalidraw/Obsidian
+ * re-renders and recreates one of these elements (e.g. Excalidraw's own
+ * toolbar remounting), since a freshly created element won't carry the
+ * inline style we set on the node it replaced.
+ */
+export function applyChromeHiding(doc: Document): () => void {
+	const hideAll = () => {
+		for (const selector of HIDE_SELECTORS) {
+			doc.querySelectorAll<HTMLElement>(selector).forEach((el) => {
+				el.style.setProperty("display", "none", "important");
+			});
+		}
+		for (const selector of FILL_SELECTORS) {
+			doc.querySelectorAll<HTMLElement>(selector).forEach((el) => {
+				el.style.setProperty("inset", "0", "important");
+			});
+		}
+	};
+
+	hideAll();
+
+	const observer = new MutationObserver(() => hideAll());
+	observer.observe(doc.body, { childList: true, subtree: true });
+
+	return () => observer.disconnect();
+}
