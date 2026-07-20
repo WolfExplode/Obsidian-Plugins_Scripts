@@ -53,23 +53,19 @@ function resolveRemoteModule(moduleExport: unknown): ElectronRemoteModule | null
 	return null;
 }
 
-let loggedResolution = false;
+let loggedResolutionFailure = false;
 
 function getElectronRemoteModule(): ElectronRemoteModule | null {
 	const globalWindow = window as Window & { electron?: { remote?: ElectronRemoteModule } };
 	if (globalWindow.electron?.remote) {
-		if (!loggedResolution) {
-			console.log("[Excalidraw PureRef] electron remote module resolved via window.electron.remote");
-			loggedResolution = true;
-		}
 		return globalWindow.electron.remote;
 	}
 
 	const electronRequire = getElectronRequire();
 	if (!electronRequire) {
-		if (!loggedResolution) {
+		if (!loggedResolutionFailure) {
 			console.error("[Excalidraw PureRef] window.require is not available — cannot reach Electron at all.");
-			loggedResolution = true;
+			loggedResolutionFailure = true;
 		}
 		return null;
 	}
@@ -77,21 +73,15 @@ function getElectronRemoteModule(): ElectronRemoteModule | null {
 	for (const moduleId of MODULE_IDS) {
 		try {
 			const resolved = resolveRemoteModule(electronRequire(moduleId));
-			if (resolved) {
-				if (!loggedResolution) {
-					console.log(`[Excalidraw PureRef] electron remote module resolved via require("${moduleId}")`);
-					loggedResolution = true;
-				}
-				return resolved;
-			}
+			if (resolved) return resolved;
 		} catch (error) {
 			console.warn(`[Excalidraw PureRef] require("${moduleId}") threw:`, error);
 		}
 	}
 
-	if (!loggedResolution) {
+	if (!loggedResolutionFailure) {
 		console.error("[Excalidraw PureRef] could not resolve an Electron remote module from any candidate.");
-		loggedResolution = true;
+		loggedResolutionFailure = true;
 	}
 	return null;
 }

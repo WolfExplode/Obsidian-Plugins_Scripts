@@ -83,7 +83,13 @@ export function attachWindowDrag(doc: Document, windowId: number): () => void {
 		if (state.dragging) {
 			suppressNextContextMenu = true;
 		}
-		if (state.rafId != null) popoutWindow.cancelAnimationFrame(state.rafId);
+		// Flush the final frame before tearing down: cancelling a pending rAF
+		// without applying it would drop the last few pixels of movement, so
+		// the window lands slightly behind where the button was released.
+		if (state.rafId != null) {
+			popoutWindow.cancelAnimationFrame(state.rafId);
+			applyPendingDelta();
+		}
 		state = null;
 	};
 

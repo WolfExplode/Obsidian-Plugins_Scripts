@@ -2,10 +2,10 @@
   "geometry": {
     "boards": {
       "WIP/Test.md": {
-        "x": 212,
-        "y": 176,
-        "width": 1200,
-        "height": 792
+        "x": 160,
+        "y": 84,
+        "width": 1320,
+        "height": 896
       }
     }
   }

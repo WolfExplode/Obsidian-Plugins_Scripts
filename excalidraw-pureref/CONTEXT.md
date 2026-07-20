@@ -26,6 +26,8 @@ Chrome hiding is enforced via inline `!important` styles set from JS (`chrome-hi
 
 Holding the right mouse button and dragging moves the Popout window itself (matching real PureRef), instead of opening Excalidraw's context menu. This is exclusive to Popouts — a plain right-click with no drag still opens Excalidraw's context menu as normal, and the behavior is never active in the main (non-Popout) Excalidraw view.
 
+While any Popout is open, the host plugin temporarily forces the Excalidraw plugin's **"Zoom to fit on view resize"** setting off, restoring the user's original value once the last Popout closes (`excalidraw-settings.ts`). This is because moving the Popout via RMB-drag calls Electron's `setBounds`, which carries a size component and so emits a stream of `resize` events on Windows; with "zoom to fit on view resize" on, Excalidraw refits the board to its content on each one, making the canvas visibly snap/rescale while you drag the window. That Excalidraw setting is a single **global** toggle, not per-view, so suppressing it also affects the originating main-window view for as long as a Popout is open — an accepted trade-off. Users who never open Popouts, or who want to be sure, can also just disable "Zoom to fit on view resize" in Excalidraw's own settings.
+
 The host plugin tracks each Board's Popout open/closed state and last window geometry regardless of how the Popout was closed (F11 or the native OS close control) — every close path updates the same tracked state and persists the same geometry, so F11 in the originating view always knows correctly whether to open a fresh Popout or focus/close an existing one.
 
 **Plugin settings tab**:
