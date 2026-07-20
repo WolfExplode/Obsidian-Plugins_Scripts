@@ -26,8 +26,16 @@ interface ElectronBrowserWindow {
 	setBounds(bounds: ElectronBounds): void;
 }
 
+interface ElectronScreen {
+	/** DIP rect (as returned by getBounds) -> absolute physical screen rect. */
+	dipToScreenRect(win: ElectronBrowserWindow | null, rect: ElectronBounds): ElectronBounds;
+	/** Absolute physical screen rect -> DIP rect for the display it falls on. */
+	screenToDipRect(win: ElectronBrowserWindow | null, rect: ElectronBounds): ElectronBounds;
+}
+
 interface ElectronRemoteModule {
 	getCurrentWindow?(): ElectronBrowserWindow | null;
+	screen?: ElectronScreen;
 	BrowserWindow?: {
 		getFocusedWindow(): ElectronBrowserWindow | null;
 		getAllWindows(): ElectronBrowserWindow[];
@@ -84,6 +92,10 @@ function getElectronRemoteModule(): ElectronRemoteModule | null {
 		loggedResolutionFailure = true;
 	}
 	return null;
+}
+
+function getElectronScreen(): ElectronScreen | null {
+	return getElectronRemoteModule()?.screen ?? null;
 }
 
 export function getAllBrowserWindows(): ElectronBrowserWindow[] {
@@ -151,6 +163,60 @@ export function setWindowBoundsById(id: number, bounds: ElectronBounds): boolean
 	if (!win) return false;
 	try {
 		win.setBounds(bounds);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Reads a window's bounds as absolute *physical* screen pixels (scale-
+ * independent), for persistence. getBounds() alone returns DIP relative to the
+ * display the window is currently on, so its numbers change meaning when a
+ * later window lands on a different-DPI monitor — the root cause of the F11
+ * "popout shrinks each toggle" bug on mixed-DPI Windows setups (a 125% main +
+ * 100% secondary compounds a x0.8 error every cycle). Physical pixels are the
+ * one representation that stays stable across monitors, verified live via CDP.
+ *
+ * Falls back to raw DIP getBounds() if the screen module is unavailable, so
+ * single-DPI setups keep working even on Electron builds without it.
+ */
+export function getWindowPhysicalBoundsById(id: number): ElectronBounds | null {
+	const win = getBrowserWindowById(id);
+	if (!win) return null;
+	try {
+		const dip = win.getBounds();
+		return getElectronScreen()?.dipToScreenRect(win, dip) ?? dip;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Restores physical-pixel bounds (as saved by getWindowPhysicalBoundsById)
+ * onto a window. setBounds() consumes DIP and converts using the window's
+ * *current* display scale, so a freshly-created popout born on the 125% main
+ * monitor would mis-scale bounds meant for the 100% secondary. We therefore
+ * apply twice: the first setBounds migrates the window onto the destination
+ * display (position is enough to move it), the second places it exactly now
+ * that Electron's DIP<->physical conversion uses the destination display's
+ * scale. This makes the save/restore round-trip idempotent — no drift.
+ */
+export function setWindowPhysicalBoundsById(id: number, physical: ElectronBounds): boolean {
+	const win = getBrowserWindowById(id);
+	if (!win) return false;
+	try {
+		const screen = getElectronScreen();
+		if (!screen) {
+			win.setBounds(physical);
+			return true;
+		}
+		// Pass null so the DIP conversion is anchored to the display the physical
+		// rect falls on, not the window's current (possibly wrong) display.
+		win.setBounds(screen.screenToDipRect(null, physical));
+		// Window has now migrated to the destination display; recompute DIP with
+		// it so the placement is exact.
+		win.setBounds(screen.screenToDipRect(win, physical));
 		return true;
 	} catch {
 		return false;

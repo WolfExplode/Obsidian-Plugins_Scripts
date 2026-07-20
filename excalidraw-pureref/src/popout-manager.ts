@@ -5,8 +5,8 @@ import {
 	findNewBrowserWindowId,
 	setWindowAlwaysOnTopById,
 	focusWindowById,
-	getWindowBoundsById,
-	setWindowBoundsById,
+	getWindowPhysicalBoundsById,
+	setWindowPhysicalBoundsById,
 } from "./electron";
 import { markPopupDocument, getPopupFilePath, clearPopupDocumentMarker } from "./document-marker";
 import { attachWindowDrag } from "./window-drag";
@@ -229,7 +229,7 @@ export class PopoutManager {
 		this.refitSuspender.resume();
 
 		if (entry?.windowId != null) {
-			const bounds = getWindowBoundsById(entry.windowId);
+			const bounds = getWindowPhysicalBoundsById(entry.windowId);
 			if (bounds) {
 				await this.plugin.geometry.set(filePath, bounds);
 			}
@@ -302,7 +302,7 @@ export class PopoutManager {
 
 		const savedBounds = this.plugin.geometry.get(filePath);
 		if (savedBounds) {
-			setWindowBoundsById(newWindowId, savedBounds);
+			setWindowPhysicalBoundsById(newWindowId, savedBounds);
 		}
 	}
 }

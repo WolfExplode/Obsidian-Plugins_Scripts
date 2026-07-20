@@ -5,6 +5,12 @@ import type { ElectronBounds } from "./electron";
  * Persists each Board's last Popout window bounds, keyed by vault-relative
  * file path (per CONTEXT.md's "Popout" geometry-persistence contract).
  * Saved through Obsidian's own plugin data store (data.json), not a separate file.
+ *
+ * Bounds are stored in absolute *physical* screen pixels (see
+ * getWindowPhysicalBoundsById in electron.ts), not DIP, so geometry survives
+ * being restored onto a monitor whose DPI scale differs from the one it was
+ * captured on. Any geometry saved by an older DIP-based build is read as
+ * physical once and self-corrects on the next save.
  */
 
 interface GeometryData {
