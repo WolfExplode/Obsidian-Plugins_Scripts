@@ -1,0 +1,34 @@
+/*
+ * Chrome hiding for the PureRef Popout window (CONTEXT.md: "Popout").
+ * Applied via the `epr-popout-mode` class added to the popout window's
+ * <body> in src/popout-manager.ts. Hides both layers of chrome per the
+ * Question 8 decision: Obsidian's outer chrome AND Excalidraw's own
+ * in-canvas UI, leaving nothing but the bare drawn canvas.
+ *
+ * The native OS title bar is intentionally NOT touched here — see ADR 0003
+ * (frameless is deferred past v1).
+ */
+
+/* --- Obsidian's own chrome --- */
+body.epr-popout-mode .workspace-ribbon,
+body.epr-popout-mode .workspace-tab-header-container,
+body.epr-popout-mode .view-header,
+body.epr-popout-mode .status-bar,
+body.epr-popout-mode .mod-left-split,
+body.epr-popout-mode .mod-right-split {
+	display: none !important;
+}
+
+/* --- Excalidraw's own toolbar / style panel / zoom controls / library --- */
+body.epr-popout-mode .layer-ui__wrapper {
+	display: none !important;
+}
+
+/* Let the bare canvas fill the entire popout window now that surrounding
+   chrome is gone. */
+body.epr-popout-mode .workspace-tabs,
+body.epr-popout-mode .workspace-leaf,
+body.epr-popout-mode .workspace-leaf-content,
+body.epr-popout-mode .view-content {
+	inset: 0 !important;
+}
