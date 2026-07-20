@@ -12,6 +12,14 @@ import { markPopupDocument, getPopupFilePath, clearPopupDocumentMarker } from ".
 import { attachWindowDrag } from "./window-drag";
 import { applyChromeHiding } from "./chrome-hider";
 import { ExcalidrawRefitSuspender } from "./excalidraw-settings";
+import {
+	EXCALIDRAW_VIEW_TYPE,
+	readViewport,
+	applyViewport,
+	readMainWindowViewportForFile,
+	readContainerSize,
+	mirrorViewport,
+} from "./excalidraw-view";
 
 /** Applied to a Popout window's <body>; see styles.css for what it hides. */
 export const CHROME_HIDDEN_CLASS = "epr-popout-mode";
@@ -20,6 +28,14 @@ const FINALIZE_MAX_ATTEMPTS = 10;
 const FINALIZE_RETRY_DELAY_MS = 75;
 /** Hard cap for waitForPopoutFocus; normal resolution is a frame or two. */
 const FOCUS_WAIT_MAX_MS = 1000;
+/**
+ * Hard cap for waiting on Excalidraw's canvas API to come alive after
+ * setViewState (mount + scene/image load — typically a few hundred ms). Past
+ * this we finalize anyway rather than hang.
+ */
+const CANVAS_READY_MAX_MS = 3000;
+/** Poll interval for the canvas-ready wait, on the main-window timer. */
+const CANVAS_READY_POLL_MS = 16;
 
 interface OpenBoardPopout {
 	leaf: WorkspaceLeaf;
@@ -78,6 +94,13 @@ export class PopoutManager {
 			return;
 		}
 
+		// Snapshot the originating (main-window) view's camera NOW, before opening
+		// the Popout steals focus/active state, so a first-ever launch can mirror
+		// it (per the "mirror on first launch, then persist" decision). Ignored
+		// once this Board has a saved Popout viewport. null if the Board isn't
+		// currently open in the main window.
+		const sourceViewState = readMainWindowViewportForFile(this.plugin.app, file.path);
+
 		const existingWindowIds = new Set(getBrowserWindowIds());
 		this.pending = { filePath: file.path, existingWindowIds, timeoutId: null };
 
@@ -112,7 +135,17 @@ export class PopoutManager {
 		await this.waitForPopoutFocus(entry.doc, FOCUS_WAIT_MAX_MS);
 
 		try {
-			await leaf.openFile(file, { active: true });
+			// Force the Excalidraw view type explicitly instead of leaf.openFile(),
+			// which lets Obsidian/Excalidraw choose the view. A Board file carrying
+			// `excalidraw-open-md: true` frontmatter would otherwise open as plain
+			// markdown, defeating the Popout. Excalidraw's own leaf patch only ever
+			// upgrades markdown -> excalidraw, never the reverse, so pinning the
+			// type here wins regardless of that frontmatter.
+			await leaf.setViewState({
+				type: EXCALIDRAW_VIEW_TYPE,
+				state: { file: file.path },
+				active: true,
+			});
 
 			// Focus is grabbed here — after Excalidraw's view has mounted —
 			// rather than during the pre-mount window-open handling. See the
@@ -121,25 +154,15 @@ export class PopoutManager {
 				focusWindowById(entry.windowId);
 			}
 
-			// finalizePendingOpen() (window-open handling: chrome hiding, bounds
-			// restore, always-on-top) runs BEFORE this openFile() call even
-			// starts, since 'window-open' fires synchronously inside
-			// openPopoutLeaf(). Excalidraw's canvas then mounts into a window
-			// whose size may still be settling (especially right after we
-			// restore saved geometry), and Excalidraw only measures its
-			// container once at mount to compute initial canvas size/zoom — it
-			// doesn't re-measure later on its own. A synthetic resize event
-			// after mount nudges it to recompute against the window's final
-			// size, matching what naturally happens on a fresh window open
-			// (which is why closing and reopening "fixes" it).
-			const popoutWindow = entry.doc?.defaultView;
-			if (popoutWindow) {
-				popoutWindow.requestAnimationFrame(() => {
-					popoutWindow.requestAnimationFrame(() => {
-						popoutWindow.dispatchEvent(new Event("resize"));
-					});
-				});
-			}
+			// Nudge the canvas to its final size and set the startup camera — but
+			// only once Excalidraw's API is actually live. setViewState resolves
+			// well before that (mount + scene/image load runs on for a few hundred
+			// ms more), so poking Excalidraw here directly would fire a resize and
+			// updateScene INTO a half-loaded scene — a suspected cause of the
+			// occasional "stuck on loading scene". finalizeCanvasWhenReady defers
+			// both until the API responds. Fire-and-forget; it self-cancels if the
+			// Popout is closed while still loading.
+			void this.finalizeCanvasWhenReady(entry, file.path, sourceViewState);
 		} catch (error) {
 			console.error("Excalidraw PureRef: failed to open board in popout.", error);
 			new Notice("Failed to open PureRef popout.");
@@ -221,6 +244,11 @@ export class PopoutManager {
 		if (!filePath) return;
 
 		const entry = this.openBoards.get(filePath);
+		// Capture the Popout's final camera while its view is still mounted — this
+		// 'window-close' handler fires early enough that excalidrawAPI is still
+		// live (verified). Reopening restores this exact framing.
+		const viewport = readViewport(entry?.leaf ?? null);
+
 		this.openBoards.delete(filePath);
 		clearPopupDocumentMarker(win.doc);
 		entry?.detachWindowDrag?.();
@@ -228,12 +256,86 @@ export class PopoutManager {
 		// Restore Excalidraw's zoom-to-fit-on-resize once the last Popout closes.
 		this.refitSuspender.resume();
 
+		if (viewport) {
+			await this.plugin.geometry.setViewport(filePath, viewport);
+		}
+
 		if (entry?.windowId != null) {
 			const bounds = getWindowPhysicalBoundsById(entry.windowId);
 			if (bounds) {
 				await this.plugin.geometry.set(filePath, bounds);
 			}
 		}
+	}
+
+	/**
+	 * Waits (on the reliable main-window timer, not the popout's rAF) for
+	 * Excalidraw's canvas API to come alive, then does the two things that must
+	 * happen against a live canvas: dispatch a synthetic resize so Excalidraw
+	 * re-measures its container to the window's final size (it only measures once
+	 * at mount and never re-measures on its own), and apply the startup camera.
+	 * Doing this before the API is ready is both useless (our calls no-op) and
+	 * harmful (poking a mid-load scene), so we gate on readiness. Bails out if the
+	 * Popout is closed before the canvas ever comes up.
+	 */
+	private async finalizeCanvasWhenReady(
+		entry: OpenBoardPopout,
+		filePath: string,
+		sourceViewState: ReturnType<typeof readMainWindowViewportForFile>,
+	): Promise<void> {
+		const win = entry.doc?.defaultView;
+		if (!win) return;
+
+		const start = performance.now();
+		while (this.openBoards.get(filePath) === entry) {
+			// readContainerSize returns non-null only once excalidrawAPI is live.
+			if (readContainerSize(entry.leaf) !== null) break;
+			if (performance.now() - start > CANVAS_READY_MAX_MS) break;
+			await new Promise((r) => window.setTimeout(r, CANVAS_READY_POLL_MS));
+		}
+
+		// The Popout may have been closed while we were waiting.
+		if (this.openBoards.get(filePath) !== entry) return;
+
+		win.dispatchEvent(new Event("resize"));
+		// One frame so the resize has settled the canvas size before we set the
+		// camera — otherwise Excalidraw's post-resize fit would clobber it.
+		win.requestAnimationFrame(() => {
+			if (this.openBoards.get(filePath) !== entry) return;
+			this.applyStartupViewport(entry.leaf, filePath, sourceViewState);
+		});
+	}
+
+	/**
+	 * Sets the Popout's initial camera once its canvas has mounted and settled.
+	 * Priority: a previously-saved viewport for this Board (exact restore, since
+	 * the window bounds were already restored to match) wins; otherwise, on a
+	 * first-ever launch, mirror the main view's framing re-centered for the
+	 * Popout's own size; otherwise leave Excalidraw's default fit alone.
+	 */
+	private applyStartupViewport(
+		leaf: WorkspaceLeaf,
+		filePath: string,
+		sourceViewState: ReturnType<typeof readMainWindowViewportForFile>,
+	): void {
+		const saved = this.plugin.geometry.getViewport(filePath);
+		if (saved) {
+			applyViewport(leaf, saved);
+			return;
+		}
+		if (!sourceViewState) return;
+		const size = readContainerSize(leaf);
+		if (!size) {
+			// Couldn't measure the Popout; fall back to copying the source camera
+			// verbatim (top-left aligned rather than centered).
+			applyViewport(leaf, {
+				scrollX: sourceViewState.scrollX,
+				scrollY: sourceViewState.scrollY,
+				zoom: sourceViewState.zoom,
+			});
+			return;
+		}
+		applyViewport(leaf, mirrorViewport(sourceViewState, size.width, size.height));
 	}
 
 	dispose(): void {

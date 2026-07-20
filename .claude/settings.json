@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "statusMessage": "Rebuilding excalidraw-pureref...",
+            "timeout": 180,
+            "command": "f=$(jq -r '.tool_input.file_path // .tool_response.filePath // empty'); echo \"$f\" | grep -qE 'excalidraw-pureref[\\\\/]src[\\\\/].*\\.ts$' || exit 0; cd excalidraw-pureref 2>/dev/null || exit 0; npm run build > \"${TMPDIR:-/tmp}/epr-build.log\" 2>&1 && echo \"epr: build OK\" || { echo \"epr: BUILD FAILED\"; tail -20 \"${TMPDIR:-/tmp}/epr-build.log\"; exit 2; }"
+          }
+        ]
+      }
+    ]
+  }
+}
