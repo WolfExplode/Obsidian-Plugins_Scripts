@@ -1,0 +1,7 @@
+# Standalone host plugin depends on the Excalidraw plugin, rather than forking it
+
+We want PureRef-style board behavior (floating windows, always-on-top, chrome-free view) inside Obsidian, using Excalidraw's canvas as the image surface. We considered forking/extending the Excalidraw community plugin directly, but chose to build a separate, standalone Obsidian plugin that drives Excalidraw's files and DOM from the outside instead.
+
+This keeps us on Excalidraw's upstream releases (no merge/rebase burden against a large third-party codebase) and matches the pattern already proven by reference plugins in this workspace (obsidian-synaptic-hatch for window control, obsidian-ui-tweaker for chrome hiding), both of which operate on Obsidian/Excalidraw from the outside rather than forking them. The trade-off is that anything Excalidraw doesn't expose through its own UI/API/file format may be harder or impossible to reach.
+
+The same "no fork" stance extends to synaptic-hatch and ui-tweaker themselves: the host plugin has no runtime dependency on either. Their code lives under `reference/` purely as a source to read and adapt from when reimplementing always-on-top window control and chrome-hiding in-house, scoped to exactly what a board needs. This avoids pulling in two general-purpose settings surfaces (dozens of unrelated toggles) and avoids any risk of the host plugin's view-state management conflicting with a separately-installed copy of those plugins.

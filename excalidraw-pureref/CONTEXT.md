@@ -1,0 +1,35 @@
+# Excalidraw-PureRef
+
+An Obsidian plugin that recreates PureRef's reference-board workflow (floating, always-on-top image boards for visual reference) by orchestrating existing Obsidian and Excalidraw building blocks rather than forking either.
+
+## Language
+
+**Host plugin**:
+The Obsidian plugin we are building. It is a standalone Obsidian plugin — not a fork or extension of the Excalidraw community plugin's own codebase.
+_Avoid_: "the Excalidraw plugin" (that refers to the third-party dependency, not our code)
+
+**Board**:
+A single Excalidraw canvas (`.excalidraw` file) used as a PureRef-style reference board — the surface holding freely transformed, overlapping images.
+_Avoid_: Scene (PureRef's term, kept out of our glossary to avoid confusion with Excalidraw's own "scene" data structure), Canvas (ambiguous with Obsidian's native Canvas core feature, which this project does not use)
+
+**Excalidraw canvas**:
+The third-party Excalidraw community plugin's rendering surface and element model (images, groups, frames), which the host plugin drives and manipulates but does not own or fork.
+_Avoid_: Excalidraw plugin (when referring to the surface itself rather than the dependency)
+
+**Popout**:
+A chrome-free, always-on-top OS window hosting exactly one Board, spawned from a normal Excalidraw view via F11. The originating Excalidraw view stays open and usable in the main window; the Popout is a synced second view onto the same Board, not a replacement for the first. Multiple Popouts may be open at once (one per Board), each independently positioned. F11 is a true toggle: pressed in the originating Excalidraw view it opens/closes that Board's Popout; pressed inside the Popout itself it always closes it.
+_Avoid_: Window (too generic — use Popout whenever referring to this specific chrome-free always-on-top window), tab (there is no tab-switching model here), "PureRef mode" (an earlier, rejected idea where the main window itself was converted in place rather than spawning a second window)
+
+A Popout hides both layers of chrome: Obsidian's outer chrome (ribbon, tabs, sidebars, status bar) and Excalidraw's own in-canvas UI (toolbar, style panel, zoom controls, library panel) — nothing but the bare drawn canvas is visible. All interaction is hotkey/mouse-driven (paste, drag-drop, scroll-zoom, click-drag pan, right-click context menu); no on-canvas UI is ever shown for this feature's own configuration.
+
+The host plugin tracks each Board's Popout open/closed state and last window geometry regardless of how the Popout was closed (F11 or the native OS close control) — every close path updates the same tracked state and persists the same geometry, so F11 in the originating view always knows correctly whether to open a fresh Popout or focus/close an existing one.
+
+**Plugin settings tab**:
+The host plugin's entry in Obsidian's own Settings panel — the sole configuration surface for this feature's appearance and behavior. There is deliberately no in-canvas settings UI; anything configurable is set here, not on the Board itself.
+_Avoid_: Options panel, preferences (when referring to something other than this specific settings tab)
+
+**PureRef interchange**:
+Two-way conversion between a Board's native `.excalidraw` file and PureRef's `.pur` format (both import and export), built on the reverse-engineered `purformat` reference code. `.excalidraw` remains the source of truth for editing; `.pur` is always a converted artifact at the moment of import or export, never edited directly by the host plugin.
+_Avoid_: Save format, native format (when meaning `.pur` — `.excalidraw` is the native format), one-way (both directions are supported)
+
+Triggered only via command palette actions ("Import `.pur` file...", "Export Board as `.pur`...") against the OS filesystem through file pickers/save dialogs — `.pur` files are never placed in or read from the vault directly, and are not integrated into Obsidian's file explorer.
