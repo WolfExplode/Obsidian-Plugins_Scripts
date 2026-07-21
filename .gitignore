@@ -1,5 +1,27 @@
 __pycache__/
 *.py[cod]
-reference
-node_modules
-obsidian-devtools-mcp
+
+# Dependencies and vendored/reference material
+node_modules/
+reference/
+
+# Local tooling
+.claude/
+obsidian-devtools-mcp/
+
+# Build outputs
+dist/
+build/
+*.map
+main.js
+
+# Obsidian/plugin runtime state
+data.json
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+
+
+

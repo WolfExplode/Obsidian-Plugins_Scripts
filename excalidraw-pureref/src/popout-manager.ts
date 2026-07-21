@@ -7,6 +7,7 @@ import {
 	focusWindowById,
 	getWindowPhysicalBoundsById,
 	setWindowPhysicalBoundsById,
+	onWindowCloseById,
 } from "./electron";
 import { markPopupDocument, getPopupFilePath, clearPopupDocumentMarker } from "./document-marker";
 import { attachWindowDrag } from "./window-drag";
@@ -16,6 +17,7 @@ import {
 	EXCALIDRAW_VIEW_TYPE,
 	readViewport,
 	applyViewport,
+	enableZenMode,
 	readMainWindowViewportForFile,
 	readContainerSize,
 	mirrorViewport,
@@ -43,6 +45,7 @@ interface OpenBoardPopout {
 	doc: Document | null;
 	detachWindowDrag: (() => void) | null;
 	detachChromeHiding: (() => void) | null;
+	detachBoundsSaving: (() => void) | null;
 }
 
 interface PendingOpen {
@@ -115,6 +118,7 @@ export class PopoutManager {
 			doc: null,
 			detachWindowDrag: null,
 			detachChromeHiding: null,
+			detachBoundsSaving: null,
 		};
 		this.openBoards.set(file.path, entry);
 
@@ -177,9 +181,12 @@ export class PopoutManager {
 	private close(filePath: string): void {
 		const entry = this.openBoards.get(filePath);
 		if (!entry) return;
+		// `leaf.detach()` tears down the Electron window before Obsidian delivers
+		// `window-close` in current builds, so snapshot bounds while the window is
+		// still addressable. Native close still uses the handler below as a fallback.
+		this.persistWindowBounds(filePath, entry);
 		// Detaching the leaf closes the popout window (it's the only leaf in
-		// it). Actual state cleanup + geometry persistence happens in
-		// handleWindowClosed, not here — see the class doc comment.
+		// it). State cleanup remains in handleWindowClosed().
 		entry.leaf.detach();
 	}
 
@@ -253,6 +260,7 @@ export class PopoutManager {
 		clearPopupDocumentMarker(win.doc);
 		entry?.detachWindowDrag?.();
 		entry?.detachChromeHiding?.();
+		entry?.detachBoundsSaving?.();
 		// Restore Excalidraw's zoom-to-fit-on-resize once the last Popout closes.
 		this.refitSuspender.resume();
 
@@ -260,12 +268,13 @@ export class PopoutManager {
 			await this.plugin.geometry.setViewport(filePath, viewport);
 		}
 
-		if (entry?.windowId != null) {
-			const bounds = getWindowPhysicalBoundsById(entry.windowId);
-			if (bounds) {
-				await this.plugin.geometry.set(filePath, bounds);
-			}
-		}
+		this.persistWindowBounds(filePath, entry);
+	}
+
+	private persistWindowBounds(filePath: string, entry: OpenBoardPopout | undefined): void {
+		if (entry?.windowId == null) return;
+		const bounds = getWindowPhysicalBoundsById(entry.windowId);
+		if (bounds) void this.plugin.geometry.set(filePath, bounds);
 	}
 
 	/**
@@ -302,6 +311,7 @@ export class PopoutManager {
 		// camera — otherwise Excalidraw's post-resize fit would clobber it.
 		win.requestAnimationFrame(() => {
 			if (this.openBoards.get(filePath) !== entry) return;
+			enableZenMode(entry.leaf);
 			this.applyStartupViewport(entry.leaf, filePath, sourceViewState);
 		});
 	}
@@ -391,6 +401,9 @@ export class PopoutManager {
 		if (entry) {
 			entry.detachWindowDrag = attachWindowDrag(doc, newWindowId);
 			entry.detachChromeHiding = applyChromeHiding(doc);
+			entry.detachBoundsSaving = onWindowCloseById(newWindowId, () =>
+				this.persistWindowBounds(filePath, entry),
+			);
 		}
 
 		setWindowAlwaysOnTopById(newWindowId, true);

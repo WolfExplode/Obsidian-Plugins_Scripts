@@ -24,6 +24,8 @@ interface ElectronBrowserWindow {
 	isFocused(): boolean;
 	getBounds(): ElectronBounds;
 	setBounds(bounds: ElectronBounds): void;
+	on?(event: string, listener: () => void): void;
+	removeListener?(event: string, listener: () => void): void;
 }
 
 interface ElectronScreen {
@@ -220,6 +222,18 @@ export function setWindowPhysicalBoundsById(id: number, physical: ElectronBounds
 		return true;
 	} catch {
 		return false;
+	}
+}
+
+/** Registers work that must run while the native window can still report bounds. */
+export function onWindowCloseById(id: number, listener: () => void): (() => void) | null {
+	const win = getBrowserWindowById(id);
+	if (!win?.on) return null;
+	try {
+		win.on("close", listener);
+		return () => win.removeListener?.("close", listener);
+	} catch {
+		return null;
 	}
 }
 

@@ -48,14 +48,35 @@ interface ExcalidrawApi {
 		zoom: { value: number };
 		width: number;
 		height: number;
+		zenModeEnabled?: boolean;
 	};
-	updateScene(scene: { appState: Record<string, unknown> }): void;
+}
+
+interface ExcalidrawViewLike {
+	containerEl?: HTMLElement;
+	excalidrawAPI?: ExcalidrawApi;
+	updateScene?(scene: { appState: Record<string, unknown> }): void;
+}
+
+function getExcalidrawView(leaf: WorkspaceLeaf | null): ExcalidrawViewLike | null {
+	if (!isExcalidrawLeaf(leaf)) return null;
+	return leaf!.view as unknown as ExcalidrawViewLike;
 }
 
 function getExcalidrawApi(leaf: WorkspaceLeaf | null): ExcalidrawApi | null {
-	if (!isExcalidrawLeaf(leaf)) return null;
-	const api = (leaf!.view as unknown as { excalidrawAPI?: ExcalidrawApi }).excalidrawAPI;
-	return api ?? null;
+	const view = getExcalidrawView(leaf);
+	return view?.excalidrawAPI ?? null;
+}
+
+function updateExcalidrawScene(leaf: WorkspaceLeaf | null, appState: Record<string, unknown>): boolean {
+	const view = getExcalidrawView(leaf);
+	if (!view?.excalidrawAPI || !view.updateScene) return false;
+	try {
+		view.updateScene({ appState });
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 function readViewState(leaf: WorkspaceLeaf | null): ExcalidrawViewState | null {
@@ -87,15 +108,24 @@ export function applyViewport(leaf: WorkspaceLeaf | null, vp: ExcalidrawViewport
 	const api = getExcalidrawApi(leaf);
 	if (!api) return false;
 	try {
-		api.updateScene({
-			appState: {
-				...api.getAppState(),
-				scrollX: vp.scrollX,
-				scrollY: vp.scrollY,
-				zoom: { value: vp.zoom },
-			},
+		return updateExcalidrawScene(leaf, {
+			...api.getAppState(),
+			scrollX: vp.scrollX,
+			scrollY: vp.scrollY,
+			zoom: { value: vp.zoom },
 		});
-		return true;
+	} catch {
+		return false;
+	}
+}
+
+/** Enables Excalidraw's own Zen Mode for a Popout view once its API is live. */
+export function enableZenMode(leaf: WorkspaceLeaf | null): boolean {
+	const api = getExcalidrawApi(leaf);
+	if (!api) return false;
+	try {
+		if (api.getAppState().zenModeEnabled === true) return true;
+		return updateExcalidrawScene(leaf, { zenModeEnabled: true });
 	} catch {
 		return false;
 	}
