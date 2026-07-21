@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # Standalone host plugin depends on the Excalidraw plugin, rather than forking it
 
 We want PureRef-style board behavior (floating windows, always-on-top, chrome-free view) inside Obsidian, using Excalidraw's canvas as the image surface. We considered forking/extending the Excalidraw community plugin directly, but chose to build a separate, standalone Obsidian plugin that drives Excalidraw's files and DOM from the outside instead.
