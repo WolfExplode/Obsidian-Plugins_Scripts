@@ -2,7 +2,7 @@
 
 ## Status
 
-**Paused and unresolved as of 2026-07-21.** The checked-in host plugin contains the v10 F10-only diagnostic path. It is a reproducible research checkpoint, not a validated transparent Popout implementation. No tested native route has produced a surface that is simultaneously transparent, fully initialized by Obsidian, and editable.
+**Paused and unresolved as of 2026-07-21.** The checked-in host plugin contains the v10 F10-only diagnostic path. It is a reproducible research checkpoint, not a validated transparent Popout implementation. No tested native route has produced a surface that is simultaneously transparent, fully initialized by Obsidian, and editable. The v11 live-CDP investigation (same day) closed off the previously open "independently constructed BrowserWindow" question with an architectural finding, not a code experiment — see below. The only untried route now is an Obsidian `asar` patch at the original construction point.
 
 The goal is a genuinely see-through Windows desktop surface: Board content remains visible while the space around it reveals other applications. Blur, Mica, Acrylic, uniform window opacity, and a merely transparent DOM are not equivalent.
 
@@ -32,6 +32,26 @@ The goal is a genuinely see-through Windows desktop surface: Board content remai
 15. The v9/v10 compatibility bridge made `BrowserWindow.fromWebContents(adoptedChild)` return the BaseWindow and exposed the adopted child as its compatibility `webContents`. Obsidian then completed Popout initialization; the Board remained editable and supported zoom, resize, and RMB window movement.
 16. In v10 the experimental BaseWindow's background setter was wrapped successfully, but no background-color request was intercepted. Native transparency was explicitly applied at host creation and reapplied after Excalidraw mounted; the child `WebContentsView` background was also reapplied as transparent. The fully initialized Board still appeared over an opaque dark rectangle in two observed runs.
 17. The v10 close lifecycle completed `close` → `closed` → child destruction without the v9 main-process error dialog.
+18. Live inspection (via CDP, 2026-07-21) of the real `WorkspaceWindow` constructor (`Workspace.prototype.openPopout`'s `O0` class) shows it unconditionally creates its window with `r.win = window.open("about:blank", "_blank", features)`, then builds the Popout's entire DOM and wiring by direct synchronous property access on the returned object: `u.document.body.createDiv(...)`, `u.history.forward = ...`, `u.addEventListener('focus'/'beforeunload'/'resize', ...)`, and reading `u.electron`/`u.electronWindow`/`u.app`. There is no code path that accepts an already-existing window in place of one `window.open` returns.
+19. In the live main Obsidian window, `window.electron` (an object with `nativeImage`, `shell`, `clipboard`, `contextBridge`, `crashReporter`, `ipcRenderer`, `webFrame`, `webUtils`, `remote`) and `window.electronWindow` (an `@electron/remote`-style BrowserWindow proxy, keys including `setBounds`, `_browserViews`, `devToolsWebContents`) are present globally, not only on `window.open`-created children — these come from Obsidian's own preload, not from anything special about the `window.open` relationship.
+20. A live popout's `window.open`-returned object (`win.win`) is a genuinely different JS realm from the opener (`win.win.Array !== window.Array`, `win.win.Object !== window.Object`, and its `document.body`'s prototype differs from the opener's), yet `win.doc.body.createDiv` — one of Obsidian's own DOM-prototype monkeypatches — is present and callable. Obsidian re-applies its patches into every new realm it creates (this is what one of the unlabeled helper calls in the constructor, `bm(u.document)`, does); the createDiv-style API is not evidence of a shared realm.
+
+## Experiment boundary matrix
+
+The phrase **directly constructed BrowserWindow** is easy to overread. In this document it means only that plugin code called `new BrowserWindow(...)`; it does not imply that a live Obsidian WorkspaceWindow was independently bootstrapped inside that window.
+
+| Native host and content source | Bypasses `window.open` guest creation? | Live editable Obsidian Board? | Observed result |
+| --- | --- | --- | --- |
+| Direct `BrowserWindow` + simple test HTML | Yes | No | Transparent |
+| Direct `BrowserWindow` + PNG snapshot of the Board | Yes | No; static image only | Transparent |
+| Direct `BrowserWindow` inside `createWindow` + Electron-supplied guest WebContents | No; the guest was pre-created for `window.open` | Yes | Opaque |
+| Direct `BrowserWindow` + adopted supplied guest in `WebContentsView` | No | Yes | Opaque |
+| Direct `BaseWindow` + adopted supplied guest before Obsidian initialization | No | No; stopped at loading/owner failure | Transparent |
+| Direct `BaseWindow` + compatibility bridge + fully initialized supplied guest | No | Yes | Opaque |
+| Independently created `BrowserWindow` + independently bootstrapped live Obsidian WorkspaceWindow/leaf | **Yes** | Intended | **Not tried; no bootstrap method has been established** |
+| Patch Obsidian so its own native-window/guest creation requests transparency at the original construction point | Intended | Intended | **Not tried** |
+
+The final two rows are materially different from every live-board experiment completed so far. All completed live-board experiments still consumed the guest WebContents originating from Obsidian's `window.open("about:blank", ...)` path. Therefore the current evidence does **not** answer whether bypassing that guest creation entirely—or patching Obsidian at its original construction point—would fix compositing.
 
 ## Failed experiments
 
@@ -47,9 +67,27 @@ A `createWindow` experiment preserved Electron's supplied `options.webContents` 
 
 These results did not determine whether the failure came from the guest-window handshake, the chosen host type, option mutation, or another Obsidian/Electron interaction.
 
+### Independently constructed BrowserWindow bypass — ruled out by live inspection (v11)
+
+The plan going into this session was to construct a `BrowserWindow` with `transparent: true` set at construction (the one configuration verified working, observation #1) ourselves — bypassing `openPopoutLeaf()`/`window.open` entirely — and then bootstrap a real `WorkspaceWindow`/Excalidraw leaf into it by replicating what Obsidian's own constructor does. AGENTS.md had flagged this as the one route never tried.
+
+Live inspection of the actual `WorkspaceWindow` constructor (observation #18) shows this is not viable as scoped. The constructor's entire DOM-building sequence — `u.document.body.createDiv(...)`, reassigning `u.history.forward`, `addEventListener` on `u` itself, etc. — is synchronous, direct property access on the object `window.open` returns to the *caller*. This is standard same-origin cross-window scripting, not an Electron-specific quirk, and it is only available for windows opened via `window.open` (or equivalent opener-relationship APIs) from the calling renderer. A `BrowserWindow` constructed independently in the main process has no such relationship to any renderer's `window` global; there is no supported way for renderer JS to obtain a live, synchronously-writable `Window`/`Document` reference to it. `@electron/remote` (used throughout v1–v10) only remotes specific main-process module surfaces (window bounds, focus, etc.), not arbitrary live DOM access to another renderer's document.
+
+The `window.electron`/`window.electronWindow` globals the constructor reads (observation #19) are not the blocker — they come from Obsidian's own preload and could in principle be replicated on an independently created window. The blocker is structural: the *only* way to get the kind of live window reference `WorkspaceWindow`'s bootstrap requires is `window.open`, and that route was already tested in "Main-process window-open override" above — `transparent: true` requested via `setWindowOpenHandler` at the exact creation of that same window still composited opaque. There is no independent-construction variant left to try that avoids re-entering that already-failed path.
+
+This closes the "independent bootstrap" question with an architectural finding rather than a build/run experiment — no plugin code was changed for this entry.
+
 ### Independent snapshot window
 
 An F10 prototype created a directly constructed transparent window containing a PNG capture of the Excalidraw canvas. It demonstrated a possible reference surface, but it was a static snapshot rather than a live editable Board and did not make mode switching imperceptible. This was an architecture experiment, not an accepted product design.
+
+### Independently bootstrap live Obsidian content — not tried
+
+A proposed diagnostic is to call `new BrowserWindow({ transparent: true, ... })` independently, never invoke Obsidian's `window.open` Popout path, and initialize the same live WorkspaceWindow/Excalidraw Board inside it. This would directly test whether the decisive difference is who performs the original native window and guest-WebContents construction.
+
+This is distinct from the transparent HTML controls, the PNG snapshot window, and every `createWindow`/adoption experiment. It has not been completed. The missing mechanism is how to bootstrap Obsidian's live WorkspaceWindow, application context, preload/remote setup, workspace events, and leaf lifecycle in an independently created WebContents. There is no established “same content” URL in the project that can simply be passed to `loadURL`. Treat this as a valuable untried diagnostic whose cost is currently uncertain, not as a cheap test already performed.
+
+If this independent bootstrap works and is transparent, it would strengthen the case that the defect is confined to Obsidian's original `window.open` guest/window construction and that an Obsidian `asar` patch may be useful. If it remains opaque, an `asar` patch limited to native constructor flags would be less promising. Neither result has been observed.
 
 ## Interpretations that remain unproven
 
@@ -102,5 +140,16 @@ A directly created transparent window is known to composite correctly. It could 
 - Capture the visual/compositor transition between the transparent v6 loading surface and the opaque fully initialized v10 Board, ideally with a same-session transparent control.
 - Reassess whether a separately constructed live reference surface can meet the user's requirement that switching to editing be visually imperceptible. This remains a fallback, not an accepted design.
 - Re-test against future Obsidian/Electron versions before concluding the limitation is permanent.
+
+The only remaining untried route (per v11's finding above) is an Obsidian `asar` patch at `WorkspaceWindow`'s actual construction point — i.e. editing Obsidian's own bundled code so the `window.open(...)` call it makes requests `transparent`/`frame: false` options that are honored *before* any content loads, rather than intercepting the request externally the way `setWindowOpenHandler` does. This is a different intervention point than anything tested so far: every prior attempt (including the failed `setWindowOpenHandler` override) worked from outside Obsidian's own construction call, at or after the point Electron had already committed to whatever compositor surface it was going to create. Whether patching from inside actually changes that outcome is still unknown and unproven.
+
+### Reassessment of the `asar` patch route (2026-07-21, no code run)
+
+This route is downgraded from "one untried candidate" to "probably not worth pursuing," for two reasons found on discussion, neither requiring a new experiment to state:
+
+1. **The intervention point is likely identical to the already-failed one, not a different one.** Electron's `setWindowOpenHandler` exists precisely so a caller outside the `window.open` call site can inject `overrideBrowserWindowOptions` — including `transparent`/`frame` — at the same point in Electron's native window-creation pipeline that the callee's own constructor options would have taken effect. The "Main-process window-open override" experiment above already delivered `transparent: true` at that point and still composited opaque. Patching Obsidian's bundled source to pass the same flag one call-site earlier is not obviously a different point in Electron's pipeline — it is more likely to reproduce the same opaque result than to bypass it. The framing in this document (and in ADR 0007) that this is "a different intervention point than anything tested so far" has not been substantiated and should not be treated as a reason for optimism.
+2. **Even if it did work, it is not durably deployable.** Obsidian auto-updates by default, and its bundle is minified/renamed per build (observation #18's `O0` class naming). A patch keyed to that code would need re-derivation or re-verification every release, plus a mechanism to reapply the patch to `app.asar` after each auto-update — there is no clean hook for this short of wrapping the installer or disabling auto-update, which is an ongoing cost larger than the fragility concern alone would suggest.
+
+Net: treat the `asar` patch as a low-expected-value experiment, not the natural next step. The independent live reference/snapshot surface (see "Independent live reference surface" above) is the more realistic path forward if transparency remains a goal.
 
 Do not describe transparency as solved until the user visibly confirms that another application is present through the Popout's unused regions.
