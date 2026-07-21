@@ -23,6 +23,7 @@ import { renderBoardSvg, getSceneMin } from "./board-render";
 import { markPopupDocument, getPopupFilePath, clearPopupDocumentMarker } from "./document-marker";
 import { attachWindowDrag } from "./window-drag";
 import { applyChromeHiding } from "./chrome-hider";
+import { attachPopoutDropBridge } from "./popout-drop-bridge";
 import { ExcalidrawRefitSuspender } from "./excalidraw-settings";
 import {
 	EXCALIDRAW_VIEW_TYPE,
@@ -60,6 +61,7 @@ interface OpenBoardPopout {
 	doc: Document | null;
 	detachWindowDrag: (() => void) | null;
 	detachChromeHiding: (() => void) | null;
+	detachDropBridge: (() => void) | null;
 	detachBoundsSaving: (() => void) | null;
 }
 
@@ -259,6 +261,7 @@ export class PopoutManager {
 			doc: null,
 			detachWindowDrag: null,
 			detachChromeHiding: null,
+			detachDropBridge: null,
 			detachBoundsSaving: null,
 		};
 		this.openBoards.set(file.path, entry);
@@ -401,6 +404,7 @@ export class PopoutManager {
 		clearPopupDocumentMarker(win.doc);
 		entry?.detachWindowDrag?.();
 		entry?.detachChromeHiding?.();
+		entry?.detachDropBridge?.();
 		entry?.detachBoundsSaving?.();
 		// Restore Excalidraw's zoom-to-fit-on-resize once the last Popout closes.
 		this.refitSuspender.resume();
@@ -552,6 +556,7 @@ export class PopoutManager {
 		if (entry) {
 			entry.detachWindowDrag = attachWindowDrag(doc, newWindowId);
 			entry.detachChromeHiding = applyChromeHiding(doc);
+			entry.detachDropBridge = attachPopoutDropBridge(doc);
 			entry.detachBoundsSaving = onWindowCloseById(newWindowId, () =>
 				this.persistWindowBounds(filePath, entry),
 			);
