@@ -38,6 +38,11 @@ interface ElectronScreen {
 interface ElectronRemoteModule {
 	getCurrentWindow?(): ElectronBrowserWindow | null;
 	screen?: ElectronScreen;
+	BaseWindow?: {
+		getFocusedWindow(): ElectronBrowserWindow | null;
+		getAllWindows(): ElectronBrowserWindow[];
+		fromId?(id: number): ElectronBrowserWindow | null;
+	};
 	BrowserWindow?: {
 		getFocusedWindow(): ElectronBrowserWindow | null;
 		getAllWindows(): ElectronBrowserWindow[];
@@ -102,12 +107,18 @@ function getElectronScreen(): ElectronScreen | null {
 
 export function getAllBrowserWindows(): ElectronBrowserWindow[] {
 	const remoteModule = getElectronRemoteModule();
-	if (!remoteModule?.BrowserWindow?.getAllWindows) return [];
-	try {
-		return remoteModule.BrowserWindow.getAllWindows();
-	} catch {
-		return [];
+	if (!remoteModule) return [];
+
+	const windows = new Map<number, ElectronBrowserWindow>();
+	for (const windowType of [remoteModule.BaseWindow, remoteModule.BrowserWindow]) {
+		if (!windowType?.getAllWindows) continue;
+		try {
+			for (const win of windowType.getAllWindows()) windows.set(win.id, win);
+		} catch {
+			// A missing/unsupported registry must not hide windows from the other one.
+		}
 	}
+	return Array.from(windows.values());
 }
 
 export function getBrowserWindowIds(): number[] {
@@ -116,12 +127,17 @@ export function getBrowserWindowIds(): number[] {
 
 export function getBrowserWindowById(id: number): ElectronBrowserWindow | null {
 	const remoteModule = getElectronRemoteModule();
-	if (!remoteModule?.BrowserWindow?.fromId) return null;
-	try {
-		return remoteModule.BrowserWindow.fromId(id) ?? null;
-	} catch {
-		return null;
+	if (!remoteModule) return null;
+	for (const windowType of [remoteModule.BaseWindow, remoteModule.BrowserWindow]) {
+		if (!windowType?.fromId) continue;
+		try {
+			const win = windowType.fromId(id);
+			if (win) return win;
+		} catch {
+			// Try the other registry before reporting the window as absent.
+		}
 	}
+	return null;
 }
 
 export function setWindowAlwaysOnTopById(

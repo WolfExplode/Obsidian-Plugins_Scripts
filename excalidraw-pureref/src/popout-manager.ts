@@ -12,6 +12,7 @@ import {
 import { markPopupDocument, getPopupFilePath, clearPopupDocumentMarker } from "./document-marker";
 import { attachWindowDrag } from "./window-drag";
 import { applyChromeHiding } from "./chrome-hider";
+import { openWithTransparentHost, logTransparentHostSnapshot } from "./transparent-host";
 import { ExcalidrawRefitSuspender } from "./excalidraw-settings";
 import {
 	EXCALIDRAW_VIEW_TYPE,
@@ -21,6 +22,9 @@ import {
 	readMainWindowViewportForFile,
 	readContainerSize,
 	mirrorViewport,
+	readPresentationState,
+	applyPresentationState,
+	type ExcalidrawPresentationState,
 } from "./excalidraw-view";
 
 /** Applied to a Popout window's <body>; see styles.css for what it hides. */
@@ -39,6 +43,64 @@ const CANVAS_READY_MAX_MS = 3000;
 /** Poll interval for the canvas-ready wait, on the main-window timer. */
 const CANVAS_READY_POLL_MS = 16;
 
+let diagnosticSequence = 0;
+function trace(stage: string, data: unknown = {}): void {
+	console.log(`[EPR popout ${++diagnosticSequence}] ${stage} ${JSON.stringify(data)}`);
+}
+
+function inspectRenderedLayers(doc: Document): Record<string, unknown> {
+	const view = doc.defaultView;
+	const selectors = [
+		"html", "body", ".app-container", ".horizontal-main-container", ".workspace",
+		".workspace-tabs", ".workspace-leaf", ".workspace-leaf-content", ".view-content",
+		".excalidraw-wrapper", ".excalidraw",
+	];
+	const layers = selectors.map((selector) => {
+		const element = doc.querySelector<HTMLElement>(selector);
+		if (!element || !view) return { selector, present: false };
+		const computed = view.getComputedStyle(element);
+		return {
+			selector,
+			present: true,
+			computedBackground: computed.backgroundColor,
+			display: computed.display,
+			opacity: computed.opacity,
+		};
+	});
+	const canvases = Array.from(doc.querySelectorAll<HTMLCanvasElement>("canvas")).map((canvas) => {
+		let cornerPixel: number[] | string = "unread";
+		try {
+			const context = canvas.getContext("2d", { willReadFrequently: true });
+			cornerPixel = context ? Array.from(context.getImageData(0, 0, 1, 1).data) : "no-2d-context";
+		} catch (error) {
+			cornerPixel = `error: ${String(error)}`;
+		}
+		return {
+			className: canvas.className,
+			width: canvas.width,
+			height: canvas.height,
+			cssWidth: canvas.getBoundingClientRect().width,
+			cssHeight: canvas.getBoundingClientRect().height,
+			computedBackground: view?.getComputedStyle(canvas).backgroundColor,
+			cornerPixel,
+		};
+	});
+	const isTransparent = (color: unknown): boolean => {
+		if (typeof color !== "string") return false;
+		const normalized = color.replace(/\s/g, "").toLowerCase();
+		return normalized === "transparent" || normalized === "rgba(0,0,0,0)";
+	};
+	return {
+		readyState: doc.readyState,
+		hasFocus: doc.hasFocus(),
+		presentLayerCount: layers.filter((layer) => layer.present).length,
+		missingLayers: layers.filter((layer) => !layer.present).map((layer) => layer.selector),
+		nonTransparentLayers: layers.filter((layer) =>
+			layer.present && !isTransparent(layer.computedBackground)),
+		canvases,
+	};
+}
+
 interface OpenBoardPopout {
 	leaf: WorkspaceLeaf;
 	windowId: number | null;
@@ -46,6 +108,8 @@ interface OpenBoardPopout {
 	detachWindowDrag: (() => void) | null;
 	detachChromeHiding: (() => void) | null;
 	detachBoundsSaving: (() => void) | null;
+	transparentHostProbe: boolean;
+	previousPresentation: ExcalidrawPresentationState | null;
 }
 
 interface PendingOpen {
@@ -91,7 +155,29 @@ export class PopoutManager {
 		await this.open(file);
 	}
 
-	private async open(file: TFile): Promise<void> {
+	async toggleTransparentHostProbe(file: TFile): Promise<void> {
+		trace("toggleTransparentHostProbe.enter", { filePath: file.path, alreadyOpen: this.openBoards.has(file.path) });
+		const existing = this.openBoards.get(file.path);
+		if (existing?.transparentHostProbe) {
+			this.close(file.path);
+			return;
+		}
+		if (existing) {
+			this.close(file.path);
+			const deadline = performance.now() + 2000;
+			while (this.openBoards.has(file.path) && performance.now() < deadline) {
+				await new Promise((resolve) => window.setTimeout(resolve, 25));
+			}
+			if (this.openBoards.has(file.path)) {
+				new Notice("The existing Popout did not finish closing; try F10 again.");
+				return;
+			}
+		}
+		await this.open(file, true);
+	}
+
+	private async open(file: TFile, transparentHostProbe = false): Promise<void> {
+		trace("open.enter", { filePath: file.path, transparentHostProbe });
 		if (this.pending) {
 			new Notice("A PureRef popout is still opening — try again in a moment.");
 			return;
@@ -105,6 +191,7 @@ export class PopoutManager {
 		const sourceViewState = readMainWindowViewportForFile(this.plugin.app, file.path);
 
 		const existingWindowIds = new Set(getBrowserWindowIds());
+		trace("open.browser-windows.before", { ids: Array.from(existingWindowIds) });
 		this.pending = { filePath: file.path, existingWindowIds, timeoutId: null };
 
 		// Placeholder entry stored BEFORE calling openPopoutLeaf(): Obsidian's
@@ -119,6 +206,8 @@ export class PopoutManager {
 			detachWindowDrag: null,
 			detachChromeHiding: null,
 			detachBoundsSaving: null,
+			transparentHostProbe,
+			previousPresentation: null,
 		};
 		this.openBoards.set(file.path, entry);
 
@@ -129,16 +218,36 @@ export class PopoutManager {
 		// open fails before the window is ever marked. See excalidraw-settings.ts.
 		this.refitSuspender.suspend();
 
-		const leaf = this.plugin.app.workspace.openPopoutLeaf();
+		let leaf: WorkspaceLeaf;
+		try {
+			trace("openPopoutLeaf.call", { transparentHostProbe });
+			leaf = transparentHostProbe
+				? openWithTransparentHost(this.plugin, () => this.plugin.app.workspace.openPopoutLeaf())
+				: this.plugin.app.workspace.openPopoutLeaf();
+		} catch (error) {
+			console.error("[Excalidraw PureRef] transparent WebContentsView host failed:", error);
+			new Notice("Transparent WebContentsView host failed; see the developer console.");
+			this.openBoards.delete(file.path);
+			this.pending = null;
+			this.refitSuspender.resume();
+			return;
+		}
 		entry.leaf = leaf;
+		trace("openPopoutLeaf.result", {
+			viewType: leaf.view.getViewType(),
+			documentCaptured: Boolean(entry.doc),
+			windowId: entry.windowId,
+		});
 
 		// Wait for the popout to actually become the focused window before
 		// mounting Excalidraw into it via openFile() — see waitForPopoutFocus
 		// for why. 'window-open' fires synchronously inside openPopoutLeaf()
 		// above, so entry.doc is already populated by the time we get here.
 		await this.waitForPopoutFocus(entry.doc, FOCUS_WAIT_MAX_MS);
+		trace("open.focus-wait.finished", { hasFocus: entry.doc?.hasFocus(), windowId: entry.windowId });
 
 		try {
+			trace("setViewState.begin", { filePath: file.path });
 			// Force the Excalidraw view type explicitly instead of leaf.openFile(),
 			// which lets Obsidian/Excalidraw choose the view. A Board file carrying
 			// `excalidraw-open-md: true` frontmatter would otherwise open as plain
@@ -150,6 +259,7 @@ export class PopoutManager {
 				state: { file: file.path },
 				active: true,
 			});
+			trace("setViewState.resolved", { viewType: leaf.view.getViewType(), windowId: entry.windowId });
 
 			// Focus is grabbed here — after Excalidraw's view has mounted —
 			// rather than during the pre-mount window-open handling. See the
@@ -192,6 +302,10 @@ export class PopoutManager {
 
 	/** Wired to app.workspace.on('window-open', ...) in main.ts. */
 	handleWindowOpened(win: WorkspaceWindow): void {
+		trace("workspace.window-open", {
+			pending: this.pending?.filePath ?? null,
+			readyState: win.doc.readyState,
+		});
 		if (!this.pending) return;
 		// Stash the doc onto the entry immediately — before windowId detection
 		// (which may take retries) — so open()'s focus-wait can observe the
@@ -255,6 +369,9 @@ export class PopoutManager {
 		// 'window-close' handler fires early enough that excalidrawAPI is still
 		// live (verified). Reopening restores this exact framing.
 		const viewport = readViewport(entry?.leaf ?? null);
+		if (entry?.transparentHostProbe && entry.previousPresentation) {
+			applyPresentationState(entry.leaf, entry.previousPresentation);
+		}
 
 		this.openBoards.delete(filePath);
 		clearPopupDocumentMarker(win.doc);
@@ -296,6 +413,7 @@ export class PopoutManager {
 		if (!win) return;
 
 		const start = performance.now();
+		trace("canvas.wait.begin", { filePath, transparentHostProbe: entry.transparentHostProbe });
 		while (this.openBoards.get(filePath) === entry) {
 			// readContainerSize returns non-null only once excalidrawAPI is live.
 			if (readContainerSize(entry.leaf) !== null) break;
@@ -305,6 +423,11 @@ export class PopoutManager {
 
 		// The Popout may have been closed while we were waiting.
 		if (this.openBoards.get(filePath) !== entry) return;
+		trace("canvas.wait.finished", {
+			filePath,
+			elapsedMs: Math.round(performance.now() - start),
+			containerSize: readContainerSize(entry.leaf),
+		});
 
 		win.dispatchEvent(new Event("resize"));
 		// One frame so the resize has settled the canvas size before we set the
@@ -312,6 +435,26 @@ export class PopoutManager {
 		win.requestAnimationFrame(() => {
 			if (this.openBoards.get(filePath) !== entry) return;
 			enableZenMode(entry.leaf);
+			if (entry.transparentHostProbe) {
+				entry.previousPresentation = readPresentationState(entry.leaf);
+				trace("transparency.before", {
+					presentation: entry.previousPresentation,
+					document: entry.doc ? inspectRenderedLayers(entry.doc) : null,
+				});
+				const applied = applyPresentationState(entry.leaf, {
+					viewBackgroundColor: "transparent",
+					gridModeEnabled: false,
+					gridSize: 0,
+				});
+				trace("transparency.updateScene.returned", { applied });
+				win.requestAnimationFrame(() => win.requestAnimationFrame(() => {
+					trace("transparency.after-two-frames", {
+						presentation: readPresentationState(entry.leaf),
+						document: entry.doc ? inspectRenderedLayers(entry.doc) : null,
+					});
+					logTransparentHostSnapshot("after-transparency-two-frames");
+				}));
+			}
 			this.applyStartupViewport(entry.leaf, filePath, sourceViewState);
 		});
 	}
@@ -363,6 +506,12 @@ export class PopoutManager {
 		const { filePath, existingWindowIds } = this.pending;
 
 		const newWindowId = findNewBrowserWindowId(existingWindowIds);
+		trace("window-id.detect", {
+			attempt,
+			before: Array.from(existingWindowIds),
+			current: getBrowserWindowIds(),
+			found: newWindowId,
+		});
 		if (newWindowId == null) {
 			if (attempt >= FINALIZE_MAX_ATTEMPTS) {
 				console.error(
@@ -400,7 +549,11 @@ export class PopoutManager {
 
 		if (entry) {
 			entry.detachWindowDrag = attachWindowDrag(doc, newWindowId);
-			entry.detachChromeHiding = applyChromeHiding(doc);
+			entry.detachChromeHiding = applyChromeHiding(doc, entry.transparentHostProbe);
+			trace("chrome-hiding.applied", {
+				transparentHostProbe: entry.transparentHostProbe,
+				document: inspectRenderedLayers(doc),
+			});
 			entry.detachBoundsSaving = onWindowCloseById(newWindowId, () =>
 				this.persistWindowBounds(filePath, entry),
 			);

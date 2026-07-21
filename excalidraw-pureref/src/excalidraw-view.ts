@@ -49,6 +49,9 @@ interface ExcalidrawApi {
 		width: number;
 		height: number;
 		zenModeEnabled?: boolean;
+		viewBackgroundColor?: string;
+		gridModeEnabled?: boolean;
+		gridSize?: number;
 	};
 }
 
@@ -129,6 +132,34 @@ export function enableZenMode(leaf: WorkspaceLeaf | null): boolean {
 	} catch {
 		return false;
 	}
+}
+
+export interface ExcalidrawPresentationState {
+	viewBackgroundColor: string | null;
+	gridModeEnabled: boolean;
+	gridSize: number;
+}
+
+export function readPresentationState(leaf: WorkspaceLeaf | null): ExcalidrawPresentationState | null {
+	const api = getExcalidrawApi(leaf);
+	if (!api) return null;
+	try {
+		const state = api.getAppState();
+		return {
+			viewBackgroundColor: state.viewBackgroundColor ?? null,
+			gridModeEnabled: state.gridModeEnabled ?? false,
+			gridSize: state.gridSize ?? 0,
+		};
+	} catch {
+		return null;
+	}
+}
+
+export function applyPresentationState(
+	leaf: WorkspaceLeaf | null,
+	state: Partial<ExcalidrawPresentationState>,
+): boolean {
+	return updateExcalidrawScene(leaf, state as Record<string, unknown>);
 }
 
 /**

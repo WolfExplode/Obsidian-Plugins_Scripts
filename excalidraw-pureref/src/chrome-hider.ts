@@ -10,6 +10,18 @@ const HIDE_SELECTORS = [
 
 const FILL_SELECTORS = [".workspace-tabs", ".workspace-leaf", ".workspace-leaf-content", ".view-content"];
 
+const TRANSPARENT_SELECTORS = [
+	".app-container",
+	".horizontal-main-container",
+	".workspace",
+	".workspace-tabs",
+	".workspace-leaf",
+	".workspace-leaf-content",
+	".view-content",
+	".excalidraw-wrapper",
+	".excalidraw",
+];
+
 /**
  * Hides Obsidian's outer chrome and Excalidraw's own in-canvas UI inside a
  * Popout (CONTEXT.md: "Popout" hides both layers). We tried a plain CSS
@@ -26,7 +38,7 @@ const FILL_SELECTORS = [".workspace-tabs", ".workspace-leaf", ".workspace-leaf-c
  * toolbar remounting), since a freshly created element won't carry the
  * inline style we set on the node it replaced.
  */
-export function applyChromeHiding(doc: Document): () => void {
+export function applyChromeHiding(doc: Document, transparent = false): () => void {
 	const hideAll = () => {
 		for (const selector of HIDE_SELECTORS) {
 			doc.querySelectorAll<HTMLElement>(selector).forEach((el) => {
@@ -37,6 +49,18 @@ export function applyChromeHiding(doc: Document): () => void {
 			doc.querySelectorAll<HTMLElement>(selector).forEach((el) => {
 				el.style.setProperty("inset", "0", "important");
 			});
+		}
+		if (transparent) {
+			doc.documentElement.style.setProperty("background-color", "transparent", "important");
+			doc.body.style.setProperty("background-color", "transparent", "important");
+			doc.querySelectorAll<HTMLElement>(".titlebar").forEach((el) => {
+				el.style.setProperty("display", "none", "important");
+			});
+			for (const selector of TRANSPARENT_SELECTORS) {
+				doc.querySelectorAll<HTMLElement>(selector).forEach((el) => {
+					el.style.setProperty("background-color", "transparent", "important");
+				});
+			}
 		}
 	};
 

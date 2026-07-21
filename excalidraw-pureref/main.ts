@@ -30,6 +30,19 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 			},
 		});
 
+		this.addCommand({
+			id: "toggle-transparent-webcontents-view-probe",
+			name: "Toggle transparent WebContentsView probe",
+			hotkeys: [{ modifiers: [], key: "F10" }],
+			checkCallback: (checking) => {
+				const file = getActiveExcalidrawFile(this.app);
+				if (!file) return false;
+				if (checking) return true;
+				void this.popouts.toggleTransparentHostProbe(file);
+				return true;
+			},
+		});
+
 		registerPurInterchangeCommands(this);
 
 		this.registerEvent(
