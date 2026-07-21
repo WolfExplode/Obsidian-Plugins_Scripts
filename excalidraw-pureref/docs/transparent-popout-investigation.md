@@ -1,5 +1,20 @@
 # Transparent Popout investigation
 
+## Resolution — read-only transparent mode (2026-07-21)
+
+The original goal below (making Obsidian's *editable* popout itself transparent) stayed blocked. It was resolved by a **pivot**: instead of one transparent editable window, F10 swaps the editable PureRef popout for a **separate, genuinely transparent, read-only window** that mirrors the board — and swaps back. This works and is confirmed on the desktop.
+
+How it works:
+
+- The read-only window is our own `new BrowserWindow({ transparent:true, frame:false, backgroundColor:"#00000000", resizable:false })` built in Electron's main process (`transparent-proto.cjs`) — the one proven-transparent path (creation-time transparency). It is not an adopted Obsidian window.
+- It is a dumb viewer (`transparent-proto.html`): wheel-zoom, MMB-pan, RMB-window-move, and it displays an SVG.
+- The board SVG is rendered in Obsidian's context by the Excalidraw community plugin's public API — `app.plugins.plugins["obsidian-excalidraw-plugin"].ea.getAPI().createSVG(filePath, true, getExportSettings(false,true), …)` — with `withBackground:false` so it stays see-through. Full fidelity (cropping, freedraw, shapes, images). No Excalidraw bundled, no fork.
+- **Camera sync** uses a size-independent `SceneView {cx,cy,zoom}` (the scene point at the view's center). Edit→read hands the popout's SceneView to the window; read→edit hands it back. The scene coordinate at the SVG's local (0,0) is the elements' bounding-box top-left from `ea.getBoundingBox(elements).topX/topY` — the SVG normalizes content to a `0 0 W H` viewBox and records no absolute position, so this must come from the elements, not the SVG.
+
+### Known alignment residual
+
+The editable popout has a native title bar and the read window is frameless, so the same scene point can land a few px off (mostly vertical) when switching modes; zoom matches exactly. This is cosmetic and currently accepted. To nudge it, edit `ALIGN_OFFSET_X` / `ALIGN_OFFSET_Y` (screen px) near the top of the script in `transparent-proto.html` — positive X shifts the board right, positive Y down. Both the forward and reverse conversions honor these constants, so round-tripping stays consistent. A full fix would open the read window offset to cover exactly the popout's canvas rect (below its title bar).
+
 ## Status
 
 **Paused and unresolved as of 2026-07-21.** The checked-in host plugin contains the v10 F10-only diagnostic path. It is a reproducible research checkpoint, not a validated transparent Popout implementation. No tested native route has produced a surface that is simultaneously transparent, fully initialized by Obsidian, and editable. The v11 live-CDP investigation (same day) closed off the previously open "independently constructed BrowserWindow" question with an architectural finding, not a code experiment — see below. The only untried route now is an Obsidian `asar` patch at the original construction point.
