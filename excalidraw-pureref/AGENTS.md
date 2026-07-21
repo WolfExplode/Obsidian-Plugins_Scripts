@@ -18,8 +18,8 @@ The `obsidian-devtools-mcp` project is in the repository root (gitignored). It c
 
 ## Transparent, frameless popout work
 
-Status: **partially unblocked; do not call it fully solved yet.** Read `excalidraw-pureref/docs/transparent-popout-investigation.md` before resuming. A direct `new remote.BrowserWindow({ transparent: true, frame: false })` renders transparently on this machine, and a focused probe proved that the `window.open` handler's `overrideBrowserWindowOptions` is honored (red 480×480 frameless result). Obsidian creates popouts through `window.open`.
+Status: **unresolved.** Read `excalidraw-pureref/docs/transparent-popout-investigation.md` before resuming. The checked-in host plugin contains no transparency implementation; experimental code exists only in the uncommitted-recovery copy.
 
-The main-process `setWindowOpenHandler` path fires for tagged opens and honors at least `transparent`, `backgroundColor`, `frame`, and size overrides in the current session. The live plugin popout is frameless; desktop pixel transparency still needs a clean screenshot confirmation. Compare it against a direct transparent-window reference before declaring success.
+Verified: a directly constructed transparent, frameless `BrowserWindow` can composite correctly on this machine. The tested main-process `setWindowOpenHandler` received tagged opens and honored frame, size, and a red background override, but the resulting Obsidian Popout still appeared opaque. Do not infer from the red probe that desktop alpha was honored.
 
-Transparency is creation-only. Transparent-window compositing can be disrupted by a screen-capture/overlay/GPU utility; GPU itself was not the problem. The code remains behind the off-by-default `transparentBackground` setting. ADR 0007 is proposed/blocked, not accepted.
+Unknown: why the Obsidian child remained opaque and whether a fully editable transparent Popout is possible through that creation path. Untested candidates include shaping the existing Popout with `setShape`, adopting the child WebContents into a transparent `BaseWindow` with `WebContentsView`, and an independent live reference surface. ADR 0007 is proposed/blocked, not accepted.

@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # PureRef interchange targets the 1.10/1.11.1 `.pur` format only, not 2.0
 
 PureRef interchange (ADR 0005, CONTEXT.md) is built on the reverse-engineered `purformat` reference code, which covers PureRef 1.10/1.11.1's binary format. PureRef 2.0 changed the format again for save/load performance, and no reference implementation exists for it — supporting it would mean reverse-engineering an undocumented binary format from scratch, a substantial open-ended research project on its own.

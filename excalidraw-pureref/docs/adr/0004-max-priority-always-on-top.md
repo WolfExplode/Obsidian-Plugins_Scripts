@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # Popout uses maximum-priority always-on-top
 
 The Popout must be able to float above fullscreen applications (games, other creative tools) — that's PureRef's core use case. We use Electron's highest always-on-top level (`'screen-saver'` or equivalent) rather than the standard level, which can still be covered by other apps' fullscreen mode.

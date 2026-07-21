@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # v1 scope is the window/chrome layer only — no new Excalidraw canvas features yet
 
 The original goal was to recreate "all features of PureRef." In practice, v1 is scoped to the Popout/always-on-top/chrome-hiding/F11-lifecycle layer around vanilla Excalidraw, using whatever image manipulation (move/resize/rotate/opacity/grouping) Excalidraw already provides as-is. PureRef-specific interaction niceties Excalidraw lacks (scroll-wheel opacity, outline toggle, quick grayscale, lightweight crop) are an intentional, acknowledged gap for v1.
