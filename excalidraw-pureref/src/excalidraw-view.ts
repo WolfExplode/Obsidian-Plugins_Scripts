@@ -50,6 +50,7 @@ interface ExcalidrawApi {
 		height: number;
 		zenModeEnabled?: boolean;
 	};
+	getSceneElements?(): readonly { isDeleted?: boolean }[];
 }
 
 interface ExcalidrawViewLike {
@@ -173,4 +174,55 @@ export function mirrorViewport(
 export function readContainerSize(leaf: WorkspaceLeaf | null): { width: number; height: number } | null {
 	const s = readViewState(leaf);
 	return s ? { width: s.width, height: s.height } : null;
+}
+
+/**
+ * A size-independent camera: the scene coordinate at the center of the view,
+ * plus zoom. This is the interchange used to keep the editable popout and the
+ * read-only transparent window framed identically across a mode switch — each
+ * side converts to/from it using its own view size, so the same scene point
+ * stays centered at the same zoom even though the two windows differ slightly.
+ *
+ * Excalidraw's transform is `viewportPx = (scene + scroll) * zoom`, so the
+ * scene point at container-center W/2 is `W/(2*zoom) - scroll`.
+ */
+export interface SceneView {
+	cx: number;
+	cy: number;
+	zoom: number;
+}
+
+/** The leaf's non-deleted scene elements, for bounding-box math. Null if unavailable. */
+export function readSceneElements(leaf: WorkspaceLeaf | null): readonly unknown[] | null {
+	const api = getExcalidrawApi(leaf);
+	if (!api?.getSceneElements) return null;
+	try {
+		return api.getSceneElements().filter((el) => !el.isDeleted);
+	} catch {
+		return null;
+	}
+}
+
+/** The popout leaf's current camera as a SceneView, or null if unavailable. */
+export function readSceneView(leaf: WorkspaceLeaf | null): SceneView | null {
+	const s = readViewState(leaf);
+	if (!s) return null;
+	const zoom = s.zoom || 1;
+	return {
+		cx: s.width / (2 * zoom) - s.scrollX,
+		cy: s.height / (2 * zoom) - s.scrollY,
+		zoom,
+	};
+}
+
+/** Applies a SceneView to the popout leaf, re-centered for its own container size. */
+export function applySceneView(leaf: WorkspaceLeaf | null, view: SceneView): boolean {
+	const size = readContainerSize(leaf);
+	if (!size) return false;
+	const zoom = view.zoom || 1;
+	return applyViewport(leaf, {
+		zoom,
+		scrollX: size.width / (2 * zoom) - view.cx,
+		scrollY: size.height / (2 * zoom) - view.cy,
+	});
 }

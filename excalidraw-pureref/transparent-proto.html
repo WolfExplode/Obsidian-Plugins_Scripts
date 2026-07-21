@@ -1,0 +1,219 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>PureRef read-only prototype</title>
+<style>
+	html, body {
+		margin: 0;
+		padding: 0;
+		width: 100%;
+		height: 100%;
+		/* Fully transparent so the desktop shows through everywhere the frame
+		   border and the board's SVG don't paint. */
+		background: transparent;
+		overflow: hidden;
+		user-select: none;
+		cursor: default;
+	}
+
+	/* The "element with a border": a visible outline around the see-through
+	   reference area. Interior stays transparent. */
+	#frame {
+		position: absolute;
+		inset: 6px;
+		box-sizing: border-box;
+		border: 2px solid rgba(0, 0, 0, 0.95);
+		border-radius: 8px;
+		background: transparent;
+		overflow: hidden;
+	}
+
+	/* The pannable/zoomable layer. Everything the "board" contains lives here so
+	   one transform handles zoom + pan together. */
+	#viewport {
+		position: absolute;
+		inset: 0;
+		transform-origin: 0 0;
+	}
+
+	/* The injected board SVG renders at its natural size; pan/zoom is handled
+	   by the #viewport transform. It must not carry any background of its own. */
+	#viewport > svg {
+		display: block;
+		background: transparent;
+	}
+
+</style>
+</head>
+<body>
+	<div id="frame">
+		<div id="viewport"></div>
+	</div>
+
+	<script>
+		const { ipcRenderer } = require("electron");
+		const MOVE_CHANNEL = "epr-proto-move";
+		const KEY_CHANNEL = "epr-proto-key";
+		const CONTENT_CHANNEL = "epr-proto-content";
+
+		// --- Edit <-> read alignment nudge -------------------------------------
+		// The editable popout has a native title bar and this window doesn't, so
+		// the same scene point can land a few px off when switching modes. Adjust
+		// these (in screen px) to taste: positive X shifts the board right,
+		// positive Y shifts it down. 0/0 = the raw center-matched alignment.
+		const ALIGN_OFFSET_X = -4;
+		const ALIGN_OFFSET_Y = -3;
+		// -----------------------------------------------------------------------
+
+		const frame = document.getElementById("frame");
+		const viewport = document.getElementById("viewport");
+		const surface = document.documentElement;
+
+		// --- Zoom + pan state (CSS transform on #viewport) ---
+		let scale = 1;
+		let tx = 0;
+		let ty = 0;
+		// Scene coordinate that maps to the SVG's local (0,0) — sent with the SVG.
+		// Lets us convert between SVG-local pixels and Excalidraw scene coords so
+		// the camera can be matched to / from the editable popout.
+		let minX = 0;
+		let minY = 0;
+
+		function applyTransform() {
+			viewport.style.transform = "translate(" + tx + "px, " + ty + "px) scale(" + scale + ")";
+		}
+
+		// The current view as a size-independent SceneView { cx, cy, zoom }: the
+		// scene point at the center of the frame, plus zoom. Mirrors the same math
+		// used on the Excalidraw side (excalidraw-view.ts).
+		function currentSceneView() {
+			const fr = frame.getBoundingClientRect();
+			// Inverse of applySceneView, including the alignment nudge, so an
+			// edit -> read -> edit round-trip reproduces the exact framing.
+			return {
+				cx: (fr.width / 2 - tx + ALIGN_OFFSET_X) / scale + minX,
+				cy: (fr.height / 2 - ty + ALIGN_OFFSET_Y) / scale + minY,
+				zoom: scale,
+			};
+		}
+
+		// Frame a given SceneView: place the scene point (cx,cy) at frame center.
+		function applySceneView(view) {
+			const fr = frame.getBoundingClientRect();
+			scale = view.zoom || 1;
+			// Place scene point (cx,cy) at frame center, plus the alignment nudge.
+			tx = fr.width / 2 - (view.cx - minX) * scale + ALIGN_OFFSET_X;
+			ty = fr.height / 2 - (view.cy - minY) * scale + ALIGN_OFFSET_Y;
+			applyTransform();
+		}
+
+		// Receive the board (SVG + scene offset + optional camera) and display it.
+		ipcRenderer.on(CONTENT_CHANNEL, (_e, content) => {
+			content = content || {};
+			viewport.innerHTML = content.svg || "";
+			minX = typeof content.minX === "number" ? content.minX : 0;
+			minY = typeof content.minY === "number" ? content.minY : 0;
+			const svgEl = viewport.querySelector("svg");
+			if (!svgEl) return;
+			if (content.view) {
+				// Match the popout's camera exactly (seamless switch).
+				applySceneView(content.view);
+				return;
+			}
+			// No camera supplied: measure at identity and center in the frame at 1:1.
+			viewport.style.transform = "none";
+			const fr = frame.getBoundingClientRect();
+			const box = svgEl.getBoundingClientRect();
+			scale = 1;
+			tx = (fr.width - box.width) / 2;
+			ty = (fr.height - box.height) / 2;
+			applyTransform();
+		});
+
+		// Wheel zoom, anchored so the point under the cursor stays put.
+		surface.addEventListener("wheel", (e) => {
+			e.preventDefault();
+			const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+			const next = Math.min(20, Math.max(0.1, scale * factor));
+			const rect = frame.getBoundingClientRect();
+			const cx = e.clientX - rect.left;
+			const cy = e.clientY - rect.top;
+			tx = cx - (cx - tx) * (next / scale);
+			ty = cy - (cy - ty) * (next / scale);
+			scale = next;
+			applyTransform();
+		}, { passive: false });
+
+		// --- Pointer interactions: MMB pan, RMB window-move ---
+		// Pointer events + setPointerCapture keep the drag alive even when the
+		// cursor leaves the (frameless) window mid-drag.
+		let panning = false;
+		let panX = 0;
+		let panY = 0;
+
+		let moving = false;
+
+		surface.addEventListener("pointerdown", (e) => {
+			if (e.button === 1) {
+				panning = true;
+				panX = e.clientX;
+				panY = e.clientY;
+				surface.setPointerCapture(e.pointerId);
+				e.preventDefault();
+			} else if (e.button === 2) {
+				moving = true;
+				surface.setPointerCapture(e.pointerId);
+				// Pin the drag reference in main (window pos + this cursor pos). We
+				// send absolute screen coords, never deltas, so main can compute the
+				// window position from the fixed origin and nothing accumulates.
+				ipcRenderer.send(MOVE_CHANNEL, { phase: "start", screenX: e.screenX, screenY: e.screenY });
+				e.preventDefault();
+			}
+		});
+
+		surface.addEventListener("pointermove", (e) => {
+			if (panning) {
+				tx += e.clientX - panX;
+				ty += e.clientY - panY;
+				panX = e.clientX;
+				panY = e.clientY;
+				applyTransform();
+			}
+			if (moving) {
+				ipcRenderer.send(MOVE_CHANNEL, { phase: "move", screenX: e.screenX, screenY: e.screenY });
+			}
+		});
+
+		function endDrag(e) {
+			if (e.button === 1) panning = false;
+			if (e.button === 2) moving = false;
+			if (surface.hasPointerCapture && surface.hasPointerCapture(e.pointerId)) {
+				surface.releasePointerCapture(e.pointerId);
+			}
+		}
+
+		surface.addEventListener("pointerup", endDrag);
+		surface.addEventListener("pointercancel", endDrag);
+
+		// Never let the OS/Chromium context menu appear on RMB.
+		window.addEventListener("contextmenu", (e) => e.preventDefault());
+
+		// F10/F11 are Obsidian command hotkeys, but this is a separate window so
+		// they never reach Obsidian on their own (F11 would just toggle Chromium
+		// fullscreen). Capture them here and relay to the plugin via main.
+		window.addEventListener("keydown", (e) => {
+			if (e.key === "F10") {
+				e.preventDefault();
+				// Hand the current camera back so edit mode resumes this framing.
+				ipcRenderer.send(KEY_CHANNEL, { key: "F10", view: currentSceneView() });
+			} else if (e.key === "F11") {
+				e.preventDefault();
+				ipcRenderer.send(KEY_CHANNEL, { key: "F11" });
+			}
+		});
+
+		applyTransform();
+	</script>
+</body>
+</html>

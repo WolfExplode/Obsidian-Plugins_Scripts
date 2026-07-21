@@ -5,10 +5,21 @@ import {
 	findNewBrowserWindowId,
 	setWindowAlwaysOnTopById,
 	focusWindowById,
+	getWindowBoundsById,
 	getWindowPhysicalBoundsById,
 	setWindowPhysicalBoundsById,
 	onWindowCloseById,
+	type ElectronBounds,
 } from "./electron";
+import {
+	isPrototypeOpen,
+	openPrototype,
+	closePrototype,
+	getPrototypeBounds,
+	setPrototypeContent,
+	type ReadOnlyKeyMessage,
+} from "./transparent-proto";
+import { renderBoardSvg, getSceneMin } from "./board-render";
 import { markPopupDocument, getPopupFilePath, clearPopupDocumentMarker } from "./document-marker";
 import { attachWindowDrag } from "./window-drag";
 import { applyChromeHiding } from "./chrome-hider";
@@ -21,6 +32,10 @@ import {
 	readMainWindowViewportForFile,
 	readContainerSize,
 	mirrorViewport,
+	readSceneView,
+	readSceneElements,
+	applySceneView,
+	type SceneView,
 } from "./excalidraw-view";
 
 /** Applied to a Popout window's <body>; see styles.css for what it hides. */
@@ -67,6 +82,18 @@ export class PopoutManager {
 	private readonly openBoards = new Map<string, OpenBoardPopout>();
 	private pending: PendingOpen | null = null;
 	private readonly refitSuspender: ExcalidrawRefitSuspender;
+	/**
+	 * Which Board the read-only transparent window is currently showing, so F10
+	 * (read-only -> edit) knows which popout to reopen. Non-null iff the
+	 * transparent prototype is up.
+	 */
+	private readOnlyFilePath: string | null = null;
+	/**
+	 * Camera captured from the transparent window when F10 switches back to edit
+	 * mode, applied to the reopened popout so the framing carries across. Consumed
+	 * once by applyStartupViewport.
+	 */
+	private pendingReadToEditView: SceneView | null = null;
 
 	constructor(private readonly plugin: ExcalidrawPureRefPlugin) {
 		this.refitSuspender = new ExcalidrawRefitSuspender(plugin.app);
@@ -83,12 +110,126 @@ export class PopoutManager {
 	 * open -> closed. There is no need to special-case which window the
 	 * keypress came from.
 	 */
-	async toggle(file: TFile): Promise<void> {
+	async toggle(file: TFile | null): Promise<void> {
+		// F11 while the read-only transparent window is up just closes it (per the
+		// requirement); it does not reopen the editable popout.
+		if (isPrototypeOpen()) {
+			closePrototype();
+			this.readOnlyFilePath = null;
+			return;
+		}
+		if (!file) return;
 		if (this.openBoards.has(file.path)) {
 			this.close(file.path);
 			return;
 		}
 		await this.open(file);
+	}
+
+	/** True while the read-only transparent prototype window is open. */
+	isReadOnlyOpen(): boolean {
+		return isPrototypeOpen();
+	}
+
+	/**
+	 * F10/F11 pressed *inside* the transparent window, relayed from that window
+	 * (it's not an Obsidian window, so the command hotkeys never fire there).
+	 * F10 -> back to edit mode; F11 -> close read-only.
+	 */
+	handleReadOnlyKey(msg: ReadOnlyKeyMessage): void {
+		if (!isPrototypeOpen()) return;
+		if (msg.key === "F10") {
+			// Carry the transparent window's current camera back into edit mode.
+			this.pendingReadToEditView = msg.view ?? null;
+			void this.toggleReadOnlyPrototype(null);
+		} else if (msg.key === "F11") {
+			void this.toggle(null);
+		}
+	}
+
+	/**
+	 * F10 does something only when there's a mode to switch between: a read-only
+	 * window is up (switch back to edit), or this Board has a live PureRef popout
+	 * (switch to read-only). With neither, F10 is a no-op (per the requirement
+	 * that F10 do nothing when the PureRef window isn't open/initialized).
+	 */
+	canToggleReadOnlyPrototype(file: TFile | null): boolean {
+		return isPrototypeOpen() || (file != null && this.isOpen(file.path));
+	}
+
+	/**
+	 * F10 — swap between the editable PureRef popout and the read-only transparent
+	 * window, in whichever direction applies:
+	 *
+	 * - read-only open  -> close it and reopen the editable popout for the same
+	 *   Board, at the spot the user left the transparent window ("switch back to
+	 *   edit mode").
+	 * - popout open      -> close it and open the transparent read-only window at
+	 *   the popout's geometry (the seamless swap).
+	 * - neither          -> nothing.
+	 */
+	async toggleReadOnlyPrototype(file: TFile | null): Promise<void> {
+		if (isPrototypeOpen()) {
+			const filePath = this.readOnlyFilePath;
+			// Physical bounds so the reopened popout lands where the transparent
+			// window is now, even if the user moved it (geometry store is physical).
+			const physical = getPrototypeBounds();
+			closePrototype();
+			this.readOnlyFilePath = null;
+			if (!filePath) return;
+			const target = this.plugin.app.vault.getAbstractFileByPath(filePath);
+			if (!(target instanceof TFile)) return;
+			if (physical) await this.plugin.geometry.set(filePath, physical);
+			await this.open(target);
+			return;
+		}
+
+		// Edit -> read-only. Only valid when this Board actually has a live popout.
+		if (!file || !this.isOpen(file.path)) return;
+		const entry = this.openBoards.get(file.path);
+		// getBounds() and the BrowserWindow constructor both speak DIP, so the
+		// transparent window opens at the same on-screen place as the popout.
+		const bounds = entry?.windowId != null ? getWindowBoundsById(entry.windowId) ?? undefined : undefined;
+
+		// Persist the popout's latest edits before rendering the file to SVG, so
+		// the read-only mirror shows exactly what the user was just editing.
+		await this.saveLeafBoard(entry?.leaf ?? null);
+
+		// While the popout is still live, capture its camera and the scene's
+		// bounding-box top-left. The SVG normalizes content to (0,0) and records
+		// no absolute position, so this min is what lets the window map SVG-local
+		// pixels back to scene coordinates and frame the board identically.
+		const sceneView = readSceneView(entry?.leaf ?? null);
+		const elements = readSceneElements(entry?.leaf ?? null);
+		const min = elements ? getSceneMin(this.plugin, elements) : null;
+
+		this.readOnlyFilePath = file.path;
+		this.close(file.path);
+		openPrototype(this.plugin, bounds);
+
+		// Render the board in Obsidian's context (via the Excalidraw plugin) and
+		// push it — with the scene offset and captured camera — into the
+		// transparent window; setContent waits for load.
+		const svg = await renderBoardSvg(this.plugin, file.path);
+		if (svg && isPrototypeOpen()) {
+			setPrototypeContent({
+				svg,
+				minX: min?.minX ?? 0,
+				minY: min?.minY ?? 0,
+				view: sceneView,
+			});
+		}
+	}
+
+	/** Best-effort save of an Excalidraw leaf's Board via its own view.save(). */
+	private async saveLeafBoard(leaf: WorkspaceLeaf | null): Promise<void> {
+		const view = leaf?.view as unknown as { save?: () => Promise<void> } | undefined;
+		if (!view?.save) return;
+		try {
+			await view.save();
+		} catch (error) {
+			console.error("[Excalidraw PureRef] board save before read-only failed.", error);
+		}
 	}
 
 	private async open(file: TFile): Promise<void> {
@@ -328,6 +469,13 @@ export class PopoutManager {
 		filePath: string,
 		sourceViewState: ReturnType<typeof readMainWindowViewportForFile>,
 	): void {
+		// Highest priority: a camera handed back from the read-only window on an
+		// F10 switch, so edit mode resumes exactly where read mode was framed.
+		if (this.pendingReadToEditView) {
+			const view = this.pendingReadToEditView;
+			this.pendingReadToEditView = null;
+			if (applySceneView(leaf, view)) return;
+		}
 		const saved = this.plugin.geometry.getViewport(filePath);
 		if (saved) {
 			applyViewport(leaf, saved);
@@ -354,6 +502,9 @@ export class PopoutManager {
 		}
 		this.pending = null;
 		this.openBoards.clear();
+		// Don't leave the transparent prototype window orphaned after unload.
+		closePrototype();
+		this.readOnlyFilePath = null;
 		// Don't leave the user's Excalidraw setting flipped off after unload.
 		this.refitSuspender.reset();
 	}
