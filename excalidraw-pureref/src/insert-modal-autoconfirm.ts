@@ -14,7 +14,11 @@
  * import its code). It keys on standard Obsidian structure — the plugin builds
  * the modal with `Modal` + `Setting.addButton`, so the action buttons are always
  * `.setting-item-control button` and the close button is not — and on the
- * modal's English title. If Obsidian's UI language isn't English the title won't
+ * modal's English title. The plugin renders all three action buttons up front
+ * (Embeddable / PDF / Image) in one Setting and hides the inapplicable ones with
+ * a `display: none` CSS class rather than omitting them, so we count only buttons
+ * whose *computed* display is visible to tell "one real choice" from "many".
+ * If Obsidian's UI language isn't English the title won't
  * match and we simply do nothing (the modal shows as normal): a safe no-op, never
  * a wrong click.
  */
@@ -30,7 +34,15 @@ function tryAutoConfirm(modal: HTMLElement): void {
 	if (!modal.classList.contains("excalidraw-modal")) return;
 	if (modal.querySelector(".modal-title")?.textContent?.trim() !== MODAL_TITLE) return;
 
-	const buttons = modal.querySelectorAll<HTMLButtonElement>(".setting-item-control button");
+	// The plugin renders every action button and hides the inapplicable ones by
+	// adding a `display: none !important` CSS class (not inline style), so we count
+	// what's actually rendered via computed display — not the raw DOM node count.
+	const buttons = Array.from(
+		modal.querySelectorAll<HTMLButtonElement>(".setting-item-control button"),
+	).filter((btn) => {
+		const view = btn.ownerDocument.defaultView ?? window;
+		return view.getComputedStyle(btn).display !== "none";
+	});
 	// 0 → content not rendered yet (caller retries); >1 → a genuine choice, leave it.
 	if (buttons.length !== 1) return;
 
