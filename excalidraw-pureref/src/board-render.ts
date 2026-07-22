@@ -218,8 +218,22 @@ export async function renderBoardSvg(
 			/* best-effort */
 		}
 		// withBackground: false -> no background rect -> stays see-through.
+		//
+		// Keep Excalidraw's theme conversion enabled: ordinary scene elements rely
+		// on it to render with the same light/dark appearance as the editable
+		// canvas. The theme must be explicit, however. If it is omitted,
+		// Excalidraw can default the standalone read-only export to light mode,
+		// which makes the exported scene and web embeds disagree.
+		const isDark = document.body.classList.contains("theme-dark");
 		const exportSettings = ea.getExportSettings?.(false, true);
-		const svg = await ea.createSVG(filePath, true, exportSettings, undefined, undefined, 0);
+		const svg = await ea.createSVG(filePath, true, exportSettings, undefined, isDark ? "dark" : "light", 0);
+		// Excalidraw adds its dark-mode inversion filter to foreignObject nodes.
+		// Those nodes contain live web embeds, whose pixels already come from the
+		// embedded page in its intended colors. Applying the SVG filter a second
+		// time is why videos/iframes invert while normal SVG elements remain correct.
+		svg.querySelectorAll("foreignObject").forEach((node) => {
+			node.removeAttribute("filter");
+		});
 		return svg?.outerHTML ?? null;
 	} catch (error) {
 		console.error("[Excalidraw PureRef] createSVG failed for", filePath, error);

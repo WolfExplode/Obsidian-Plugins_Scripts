@@ -21,7 +21,10 @@
 	   reference area. Interior stays transparent. */
 	#frame {
 		position: absolute;
-		inset: 6px;
+		/* Match the editable popout's full client area. The transparent window's
+		   native bounds already match the edit window; an inset here made the
+		   visible read-only frame appear smaller in both dimensions. */
+		inset: 0;
 		box-sizing: border-box;
 		border: 2px solid rgba(0, 0, 0, 0.95);
 		border-radius: 8px;
