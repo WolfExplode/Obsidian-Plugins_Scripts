@@ -34,6 +34,7 @@ import { markPopupDocument, getPopupFilePath, clearPopupDocumentMarker } from ".
 import { attachWindowDrag } from "./window-drag";
 import { applyChromeHiding } from "./chrome-hider";
 import { attachPopoutDropBridge } from "./popout-drop-bridge";
+import { attachVideoAspectCorrector } from "./video-aspect";
 import { attachPackKeydown } from "./pack-keys";
 import { ExcalidrawRefitSuspender } from "./excalidraw-settings";
 import {
@@ -78,6 +79,7 @@ interface OpenBoardPopout {
 	detachWindowDrag: (() => void) | null;
 	detachChromeHiding: (() => void) | null;
 	detachDropBridge: (() => void) | null;
+	detachVideoAspect: (() => void) | null;
 	detachBoundsSaving: (() => void) | null;
 	detachPackKeys: (() => void) | null;
 }
@@ -367,6 +369,7 @@ export class PopoutManager {
 			detachWindowDrag: null,
 			detachChromeHiding: null,
 			detachDropBridge: null,
+			detachVideoAspect: null,
 			detachBoundsSaving: null,
 			detachPackKeys: null,
 		};
@@ -562,11 +565,13 @@ export class PopoutManager {
 		entry.detachWindowDrag?.();
 		entry.detachChromeHiding?.();
 		entry.detachDropBridge?.();
+		entry.detachVideoAspect?.();
 		entry.detachBoundsSaving?.();
 		entry.detachPackKeys?.();
 		entry.detachWindowDrag = null;
 		entry.detachChromeHiding = null;
 		entry.detachDropBridge = null;
+		entry.detachVideoAspect = null;
 		entry.detachBoundsSaving = null;
 		entry.detachPackKeys = null;
 		this.refitSuspender.resume();
@@ -719,6 +724,7 @@ export class PopoutManager {
 			entry.detachWindowDrag?.();
 			entry.detachChromeHiding?.();
 			entry.detachDropBridge?.();
+			entry.detachVideoAspect?.();
 			entry.detachBoundsSaving?.();
 			entry.detachPackKeys?.();
 		}
@@ -787,6 +793,9 @@ export class PopoutManager {
 
 		entry.detachWindowDrag = attachWindowDrag(doc, newWindowId);
 		entry.detachChromeHiding = applyChromeHiding(doc);
+		// Before the bridge: capture-phase drop listener must register first so the
+		// bridge's stopImmediatePropagation doesn't preempt the aspect corrector.
+		entry.detachVideoAspect = attachVideoAspectCorrector(this.plugin, doc);
 		entry.detachDropBridge = attachPopoutDropBridge(doc);
 		if (doc.defaultView) entry.detachPackKeys = attachPackKeydown(doc.defaultView, this.plugin.app);
 		entry.detachBoundsSaving = onWindowCloseById(newWindowId, () =>

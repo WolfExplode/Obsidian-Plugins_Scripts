@@ -326,6 +326,62 @@ function applyPack(
 	}
 }
 
+/** A new axis-aligned box for one element, in scene coordinates. */
+export interface ElementResize {
+	id: string;
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+}
+
+/**
+ * Rewrites the position/size of specific scene elements in one undoable step,
+ * leaving every other element untouched. Used by the video aspect-ratio
+ * corrector. Mirrors applyPack's version-bump + captureUpdate handling so the
+ * change commits cleanly on any bundled Excalidraw. Returns false (no-op) if the
+ * API is unavailable or none of the ids are present.
+ */
+export function resizeSceneElements(leaf: WorkspaceLeaf | null, resizes: readonly ElementResize[]): boolean {
+	if (resizes.length === 0) return false;
+	const api = getExcalidrawApi(leaf);
+	const view = getExcalidrawView(leaf);
+	if (!api?.getSceneElements || !view?.updateScene) return false;
+
+	let all: readonly SceneElement[];
+	try {
+		all = api.getSceneElements();
+	} catch {
+		return false;
+	}
+
+	const byId = new Map(resizes.map((r) => [r.id, r]));
+	let changed = false;
+	const nextElements = all.map((el) => {
+		const r = byId.get(el.id);
+		if (!r) return el;
+		changed = true;
+		return {
+			...el,
+			x: r.x,
+			y: r.y,
+			width: r.width,
+			height: r.height,
+			version: (el.version ?? 1) + 1,
+			versionNonce: randomVersionNonce(),
+			updated: Date.now(),
+		};
+	});
+	if (!changed) return false;
+
+	try {
+		view.updateScene({ elements: nextElements, captureUpdate: "IMMEDIATELY", commitToHistory: true });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 /**
  * PureRef-style Ctrl+Arrow gravity pack: settle the selection toward `direction`.
  * See applyPack for the no-op contract (lets Excalidraw's arrow-nudge proceed).

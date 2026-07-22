@@ -6,6 +6,7 @@ import { DEFAULT_SETTINGS, ExcalidrawPureRefSettings } from "src/settings";
 import { getActiveExcalidrawFile } from "src/excalidraw-view";
 import { attachPackKeydown } from "src/pack-keys";
 import { attachPopoutDropBridge } from "src/popout-drop-bridge";
+import { attachVideoAspectCorrector } from "src/video-aspect";
 import { installKeyRelay, removeKeyRelay, cleanupOrphanPrototypes } from "src/transparent-proto";
 
 export default class ExcalidrawPureRefPlugin extends Plugin {
@@ -35,6 +36,9 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 		// (see PopoutManager); there the bridge also heals cross-realm drops, so it
 		// takes over every file drop. Here it only intervenes when a name needs
 		// fixing, leaving Excalidraw's native import path untouched otherwise.
+		// Registered BEFORE the drop bridge so its capture-phase drop listener runs
+		// first — the bridge's stopImmediatePropagation must not preempt it.
+		this.register(attachVideoAspectCorrector(this, window.document));
 		this.register(attachPopoutDropBridge(window.document, { alwaysBridge: false }));
 
 		this.addCommand({

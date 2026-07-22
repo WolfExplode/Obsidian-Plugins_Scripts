@@ -117,7 +117,7 @@ interface EmbeddableLike {
  * file link (e.g. an `https://` website embed, which the SVG's own iframe
  * already handles). Handles Obsidian's `[[wikilink|alias#heading]]` form.
  */
-function localLinkpath(link: string | null | undefined): string | null {
+export function localLinkpath(link: string | null | undefined): string | null {
 	if (!link) return null;
 	let s = link.trim();
 	if (/^[a-z]+:\/\//i.test(s)) return null; // http(s)/app/etc — not a vault file
