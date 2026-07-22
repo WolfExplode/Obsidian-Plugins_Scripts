@@ -209,6 +209,19 @@ function setContent(id, content) {
 	return true;
 }
 
+/** Adjust native opacity for the whole read-only window, clamped to 20–100%. */
+function adjustOpacity(id, delta) {
+	const win = BrowserWindow.fromId(id);
+	if (!win || win.isDestroyed()) return false;
+	try {
+		const opacity = Math.max(0.2, Math.min(1, Math.round((win.getOpacity() + delta) * 100) / 100));
+		win.setOpacity(opacity);
+		return true;
+	} catch (_e) {
+		return false;
+	}
+}
+
 /** Close a prototype window by id. Safe if it's already gone. */
 function closePrototype(id) {
 	const win = BrowserWindow.fromId(id);
@@ -284,5 +297,6 @@ module.exports = {
 	closeAllPrototypes,
 	getPrototypeBounds,
 	setContent,
+	adjustOpacity,
 	__evictFromCache,
 };

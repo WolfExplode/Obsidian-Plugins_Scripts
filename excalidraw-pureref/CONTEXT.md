@@ -20,6 +20,9 @@ _Avoid_: Excalidraw plugin (when referring only to its drawing surface)
 An always-on-top secondary OS window that presents exactly one Board. A Popout is distinct from the Board's view in the main Obsidian window.
 _Avoid_: Window (too generic), tab, PureRef mode
 
+**Popout opacity**:
+The overall visibility of a Popout as a single surface, including its Board and every visual element inside it. It is independent of an individual image or drawing element's opacity.
+
 **Plugin settings tab**:
 The host plugin's entry in Obsidian Settings.
 _Avoid_: Options panel, preferences

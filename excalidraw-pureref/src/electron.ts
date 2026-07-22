@@ -20,6 +20,8 @@ interface ElectronBrowserWindow {
 	id: number;
 	setAlwaysOnTop(flag: boolean, level?: string): void;
 	isAlwaysOnTop(): boolean;
+	setOpacity(opacity: number): void;
+	getOpacity(): number;
 	focus(): void;
 	isFocused(): boolean;
 	getBounds(): ElectronBounds;
@@ -119,6 +121,28 @@ export function getBrowserWindowById(id: number): ElectronBrowserWindow | null {
 	if (!remoteModule?.BrowserWindow?.fromId) return null;
 	try {
 		return remoteModule.BrowserWindow.fromId(id) ?? null;
+	} catch {
+		return null;
+	}
+}
+
+export function getFocusedBrowserWindowId(): number | null {
+	const remoteModule = getElectronRemoteModule();
+	if (!remoteModule?.BrowserWindow?.getFocusedWindow) return null;
+	try {
+		return remoteModule.BrowserWindow.getFocusedWindow()?.id ?? null;
+	} catch {
+		return null;
+	}
+}
+
+export function adjustWindowOpacityById(id: number, delta: number): number | null {
+	const win = getBrowserWindowById(id);
+	if (!win) return null;
+	try {
+		const opacity = Math.max(0.2, Math.min(1, Math.round((win.getOpacity() + delta) * 100) / 100));
+		win.setOpacity(opacity);
+		return opacity;
 	} catch {
 		return null;
 	}

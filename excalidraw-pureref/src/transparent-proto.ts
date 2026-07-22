@@ -62,6 +62,7 @@ interface ProtoHelper {
 	closeAllPrototypes(): number;
 	getPrototypeBounds(id: number): ElectronBounds | null;
 	setContent(id: number, content: BoardContent): boolean;
+	adjustOpacity(id: number, delta: number): boolean;
 }
 
 type RequireFn = (id: string) => unknown;
@@ -203,6 +204,16 @@ export function closePrototype(): void {
 		}
 	}
 	openWindowId = null;
+}
+
+/** Adjusts the read-only window's native opacity, including its transparent surface. */
+export function adjustPrototypeOpacity(delta: number): boolean {
+	if (!helper || openWindowId == null) return false;
+	try {
+		return helper.adjustOpacity(openWindowId, delta);
+	} catch {
+		return false;
+	}
 }
 
 /**

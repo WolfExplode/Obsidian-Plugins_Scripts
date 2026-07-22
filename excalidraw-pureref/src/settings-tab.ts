@@ -32,6 +32,10 @@ export class ExcalidrawPureRefSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
+			.setName("Popout opacity")
+			.setDesc("While a Popout is focused, use Ctrl+- to make the whole window 5% more transparent or Ctrl+plus to make it 5% more opaque. Opacity resets when the Popout is reopened.");
+
+		new Setting(containerEl)
 			.setName("Forget remembered popout positions")
 			.setDesc("Clears every Board's saved popout window position/size (per CONTEXT.md's geometry-persistence contract). Popouts will reopen at Obsidian's default position next time.")
 			.addButton((button) =>

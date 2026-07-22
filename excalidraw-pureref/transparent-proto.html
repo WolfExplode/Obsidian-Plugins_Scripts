@@ -281,7 +281,13 @@
 		// they never reach Obsidian on their own (F11 would just toggle Chromium
 		// fullscreen). Capture them here and relay to the plugin via main.
 		window.addEventListener("keydown", (e) => {
-			if (e.key === "F10") {
+			if (e.ctrlKey && e.key === "-") {
+				e.preventDefault();
+				ipcRenderer.send(KEY_CHANNEL, { key: "DECREASE_OPACITY" });
+			} else if (e.ctrlKey && (e.key === "=" || e.key === "+")) {
+				e.preventDefault();
+				ipcRenderer.send(KEY_CHANNEL, { key: "INCREASE_OPACITY" });
+			} else if (e.key === "F10") {
 				e.preventDefault();
 				// Hand the current camera back so edit mode resumes this framing.
 				ipcRenderer.send(KEY_CHANNEL, { key: "F10", view: currentSceneView() });

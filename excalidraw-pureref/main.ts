@@ -52,6 +52,31 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 			},
 		});
 
+		this.addCommand({
+			id: "decrease-pureref-popout-opacity",
+			name: "Decrease PureRef popout opacity",
+			hotkeys: [{ modifiers: ["Ctrl"], key: "-" }],
+			checkCallback: (checking) => {
+				if (checking) return this.popouts.canAdjustFocusedPopoutOpacity();
+				this.popouts.adjustFocusedPopoutOpacity(-1);
+				return true;
+			},
+		});
+
+		this.addCommand({
+			id: "increase-pureref-popout-opacity",
+			name: "Increase PureRef popout opacity",
+			hotkeys: [
+				{ modifiers: ["Ctrl"], key: "=" },
+				{ modifiers: ["Ctrl", "Shift"], key: "=" },
+			],
+			checkCallback: (checking) => {
+				if (checking) return this.popouts.canAdjustFocusedPopoutOpacity();
+				this.popouts.adjustFocusedPopoutOpacity(1);
+				return true;
+			},
+		});
+
 		registerPurInterchangeCommands(this);
 
 		this.registerEvent(

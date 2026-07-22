@@ -2,7 +2,9 @@ import { Notice, TFile, WorkspaceLeaf, WorkspaceWindow } from "obsidian";
 import type ExcalidrawPureRefPlugin from "../main";
 import {
 	getBrowserWindowIds,
+	getFocusedBrowserWindowId,
 	findNewBrowserWindowId,
+	adjustWindowOpacityById,
 	setWindowAlwaysOnTopById,
 	focusWindowById,
 	getWindowBoundsById,
@@ -15,6 +17,7 @@ import {
 	isPrototypeOpen,
 	openPrototype,
 	closePrototype,
+	adjustPrototypeOpacity,
 	getPrototypeBounds,
 	setPrototypeContent,
 	type ReadOnlyKeyMessage,
@@ -54,6 +57,7 @@ const FOCUS_WAIT_MAX_MS = 1000;
 const CANVAS_READY_MAX_MS = 3000;
 /** Poll interval for the canvas-ready wait, on the main-window timer. */
 const CANVAS_READY_POLL_MS = 16;
+const POPOUT_OPACITY_STEP = 0.05;
 
 interface OpenBoardPopout {
 	leaf: WorkspaceLeaf;
@@ -105,6 +109,20 @@ export class PopoutManager {
 		return this.openBoards.has(filePath);
 	}
 
+	/** True only when the focused native window is one of this plugin's Popouts. */
+	canAdjustFocusedPopoutOpacity(): boolean {
+		const focusedWindowId = getFocusedBrowserWindowId();
+		return focusedWindowId != null && Array.from(this.openBoards.values()).some((entry) => entry.windowId === focusedWindowId);
+	}
+
+	/** Changes opacity only for the focused native Popout, not the main window. */
+	adjustFocusedPopoutOpacity(direction: -1 | 1): boolean {
+		const focusedWindowId = getFocusedBrowserWindowId();
+		if (focusedWindowId == null) return false;
+		if (!Array.from(this.openBoards.values()).some((entry) => entry.windowId === focusedWindowId)) return false;
+		return adjustWindowOpacityById(focusedWindowId, direction * POPOUT_OPACITY_STEP) != null;
+	}
+
 	/**
 	 * The single entry point for the F11 command. Because a Popout is just a
 	 * second Excalidraw view of the same file, "F11 in the main view" and
@@ -140,7 +158,11 @@ export class PopoutManager {
 	 */
 	handleReadOnlyKey(msg: ReadOnlyKeyMessage): void {
 		if (!isPrototypeOpen()) return;
-		if (msg.key === "F10") {
+		if (msg.key === "DECREASE_OPACITY") {
+			adjustPrototypeOpacity(-POPOUT_OPACITY_STEP);
+		} else if (msg.key === "INCREASE_OPACITY") {
+			adjustPrototypeOpacity(POPOUT_OPACITY_STEP);
+		} else if (msg.key === "F10") {
 			// Carry the transparent window's current camera back into edit mode.
 			this.pendingReadToEditView = msg.view ?? null;
 			void this.toggleReadOnlyPrototype(null);
