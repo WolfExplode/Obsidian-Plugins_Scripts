@@ -2,10 +2,12 @@
 status: accepted
 ---
 
-# Standalone host plugin depends on the Excalidraw plugin, rather than forking it
+# Use upstream Excalidraw first; retain a narrow patch or fork as an escape hatch
 
-We want PureRef-style board behavior (floating windows, always-on-top, chrome-free view) inside Obsidian, using Excalidraw's canvas as the image surface. We considered forking/extending the Excalidraw community plugin directly, but chose to build a separate, standalone Obsidian plugin that drives Excalidraw's files and DOM from the outside instead.
+We want a controllable PureRef replacement while avoiding the cost and risk of rebuilding a mature drawing surface. The current implementation therefore uses Obsidian and the upstream Excalidraw community plugin for leverage, with a separate host plugin that drives Boards and Popouts from the outside.
 
-This keeps us on Excalidraw's upstream releases (no merge/rebase burden against a large third-party codebase) and matches the pattern already proven by reference plugins in this workspace (obsidian-synaptic-hatch for window control, obsidian-ui-tweaker for chrome hiding), both of which operate on Obsidian/Excalidraw from the outside rather than forking them. The trade-off is that anything Excalidraw doesn't expose through its own UI/API/file format may be harder or impossible to reach.
+Upstream Excalidraw is the default because it avoids a large maintenance burden and already supplies most of the required Board behavior. External integration is a strategy for reusing that work, not a permanent product constraint. If a defining product requirement is conclusively blocked by the public runtime interface, DOM integration, or file format, a narrow maintained patch or fork remains acceptable. Such a change should be justified by a concrete blocker and kept as small as practical; speculative divergence is still rejected.
 
-The same "no fork" stance extends to synaptic-hatch and ui-tweaker themselves: the host plugin has no runtime dependency on either. Their code lives under `reference/` purely as a source to read and adapt from when reimplementing always-on-top window control and chrome-hiding in-house, scoped to exactly what a board needs. This avoids pulling in two general-purpose settings surfaces (dozens of unrelated toggles) and avoids any risk of the host plugin's view-state management conflicting with a separately-installed copy of those plugins.
+Obsidian is the required host for the current product. The implementation intentionally relies on its vault, workspace, plugin, and Popout behavior; no portability seam or standalone host is being built speculatively. If Obsidian later becomes a proven blocker, replacing it would be evaluated as a substantial product migration with its own costs and decisions, not treated as an implementation detail hidden behind premature abstractions.
+
+The host plugin has no runtime dependency on synaptic-hatch or ui-tweaker. Their patterns may be adapted narrowly for always-on-top window control and chrome hiding rather than importing unrelated settings and behavior. The same upstream-first principle applies: reuse mature behavior where it fits, and own only the implementation needed to deliver the product.

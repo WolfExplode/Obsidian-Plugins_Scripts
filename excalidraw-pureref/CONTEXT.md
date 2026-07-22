@@ -1,6 +1,6 @@
 # Excalidraw-PureRef
 
-An Obsidian plugin that recreates PureRef's reference-board workflow by combining Obsidian windows with Excalidraw boards rather than forking either dependency.
+An Obsidian plugin that recreates and extends PureRef's reference-board workflow by combining Obsidian windows with Excalidraw Boards.
 
 ## Language
 

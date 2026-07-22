@@ -1,11 +1,11 @@
 ---
-status: accepted
+status: superseded
 ---
 
-# v1 scope is the window/chrome layer only — no new Excalidraw canvas features yet
+# Historical v1 scope: stabilize the window and chrome layer first
 
-The original goal was to recreate "all features of PureRef." In practice, v1 is scoped to the Popout/always-on-top/chrome-hiding/F11-lifecycle layer around vanilla Excalidraw, using whatever image manipulation (move/resize/rotate/opacity/grouping) Excalidraw already provides as-is. PureRef-specific interaction niceties Excalidraw lacks (scroll-wheel opacity, outline toggle, quick grayscale, lightweight crop) are an intentional, acknowledged gap for v1.
+The original stabilization phase scoped work to the Popout, always-on-top, chrome-hiding, and F11 lifecycle around vanilla Excalidraw. PureRef-specific interactions such as scroll-wheel opacity, outline toggles, quick grayscale, and lightweight crop were deliberately postponed while that lifecycle was still experimental.
 
-This boundary is deliberate: reaching into Excalidraw's own element/interaction model to add new canvas features would reopen ADR 0001's "fork vs. depend on" trade-off in a much harder form, since window-chrome tricks operate from outside Excalidraw while new canvas behavior requires touching its rendering internals. New Excalidraw canvas features are an explicit, intended future phase — not rejected, just sequenced after the window/chrome layer is solid.
+That sequencing decision has served its purpose: the product is now functional and shippable. It no longer constrains the roadmap. New Board features may extend Excalidraw behavior when their product value justifies the maintenance cost, following ADR 0001's upstream-first strategy and its narrow patch or fork escape hatch for proven blockers.
 
-PureRef interchange (import/export of `.pur` files, per the CONTEXT.md glossary entry) is explicitly **in** v1 scope despite being orthogonal to the window/chrome layer — it doesn't touch Excalidraw's rendering internals (it's a file-format conversion built on the reverse-engineered `purformat` reference code), so it doesn't carry the same risk as new canvas features and was kept in v1 by deliberate choice.
+PureRef interchange was included during the stabilization phase because it did not depend on Excalidraw's interaction internals. Its supported format remains governed separately by ADR 0006.
