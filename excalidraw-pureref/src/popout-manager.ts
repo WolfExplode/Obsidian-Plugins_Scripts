@@ -5,6 +5,10 @@ import {
 	getFocusedBrowserWindowId,
 	findNewBrowserWindowId,
 	adjustWindowOpacityById,
+	getWindowOpacityById,
+	setWindowOpacityById,
+	hideWindowById,
+	showWindowById,
 	setWindowAlwaysOnTopById,
 	focusWindowById,
 	getWindowBoundsById,
@@ -18,6 +22,8 @@ import {
 	openPrototype,
 	closePrototype,
 	adjustPrototypeOpacity,
+	focusPrototypeWindow,
+	getPrototypeOpacity,
 	getPrototypeBounds,
 	setPrototypeContent,
 	type ReadOnlyKeyMessage,
@@ -72,6 +78,7 @@ interface OpenBoardPopout {
 interface PendingOpen {
 	filePath: string;
 	existingWindowIds: Set<number>;
+	initialOpacity?: number;
 	timeoutId: number | null;
 }
 
@@ -134,8 +141,10 @@ export class PopoutManager {
 		// F11 while the read-only transparent window is up just closes it (per the
 		// requirement); it does not reopen the editable popout.
 		if (isPrototypeOpen()) {
+			const hiddenFilePath = this.readOnlyFilePath;
 			closePrototype();
 			this.readOnlyFilePath = null;
+			if (hiddenFilePath) this.close(hiddenFilePath);
 			return;
 		}
 		if (!file) return;
@@ -198,13 +207,26 @@ export class PopoutManager {
 			// Physical bounds so the reopened popout lands where the transparent
 			// window is now, even if the user moved it (geometry store is physical).
 			const physical = getPrototypeBounds();
+			const opacity = getPrototypeOpacity();
 			closePrototype();
 			this.readOnlyFilePath = null;
 			if (!filePath) return;
 			const target = this.plugin.app.vault.getAbstractFileByPath(filePath);
 			if (!(target instanceof TFile)) return;
 			if (physical) await this.plugin.geometry.set(filePath, physical);
-			await this.open(target);
+			const entry = this.openBoards.get(filePath);
+			if (entry?.windowId != null) {
+				if (physical) setWindowPhysicalBoundsById(entry.windowId, physical);
+				showWindowById(entry.windowId);
+				focusWindowById(entry.windowId);
+				if (opacity != null) setWindowOpacityById(entry.windowId, opacity);
+				if (this.pendingReadToEditView) {
+					applySceneView(entry.leaf, this.pendingReadToEditView);
+					this.pendingReadToEditView = null;
+				}
+				return;
+			}
+			await this.open(target, opacity ?? undefined);
 			return;
 		}
 
@@ -214,6 +236,7 @@ export class PopoutManager {
 		// getBounds() and the BrowserWindow constructor both speak DIP, so the
 		// transparent window opens at the same on-screen place as the popout.
 		const bounds = entry?.windowId != null ? getWindowBoundsById(entry.windowId) ?? undefined : undefined;
+		const opacity = entry?.windowId != null ? getWindowOpacityById(entry.windowId) : null;
 
 		// Persist the popout's latest edits before rendering the file to SVG, so
 		// the read-only mirror shows exactly what the user was just editing.
@@ -231,8 +254,16 @@ export class PopoutManager {
 		const media = elements ? collectMediaOverlays(this.plugin, elements, file.path) : [];
 
 		this.readOnlyFilePath = file.path;
-		this.close(file.path);
-		openPrototype(this.plugin, bounds);
+		// Create and focus the replacement first. Closing the focused editable
+		// Popout before this point makes Windows activate Obsidian in the gap,
+		// which can bring the main window onto another monitor. Once the read-only
+		// window owns focus, the old Popout can close without exposing Obsidian.
+		const opened = openPrototype(this.plugin, bounds, opacity ?? undefined);
+		if (!opened) {
+			this.readOnlyFilePath = null;
+			return;
+		}
+		if (entry?.windowId != null) hideWindowById(entry.windowId);
 
 		// Render the board in Obsidian's context (via the Excalidraw plugin) and
 		// push it — with the scene offset and captured camera — into the
@@ -247,6 +278,15 @@ export class PopoutManager {
 				media,
 			});
 		}
+		this.refocusReadOnlyWindowAfterClose();
+	}
+
+	private refocusReadOnlyWindowAfterClose(): void {
+		if (!isPrototypeOpen()) return;
+		focusPrototypeWindow();
+		window.setTimeout(() => {
+			if (isPrototypeOpen()) focusPrototypeWindow();
+		}, 100);
 	}
 
 	/** Best-effort save of an Excalidraw leaf's Board via its own view.save(). */
@@ -260,7 +300,7 @@ export class PopoutManager {
 		}
 	}
 
-	private async open(file: TFile): Promise<void> {
+	private async open(file: TFile, initialOpacity?: number): Promise<void> {
 		if (this.pending) {
 			new Notice("A PureRef popout is still opening — try again in a moment.");
 			return;
@@ -274,7 +314,7 @@ export class PopoutManager {
 		const sourceViewState = readMainWindowViewportForFile(this.plugin.app, file.path);
 
 		const existingWindowIds = new Set(getBrowserWindowIds());
-		this.pending = { filePath: file.path, existingWindowIds, timeoutId: null };
+		this.pending = { filePath: file.path, existingWindowIds, initialOpacity, timeoutId: null };
 
 		// Placeholder entry stored BEFORE calling openPopoutLeaf(): Obsidian's
 		// 'window-open' event fires synchronously from inside that call, before
@@ -326,6 +366,7 @@ export class PopoutManager {
 			// comment in finalizePendingOpen() for why.
 			if (entry.windowId != null) {
 				focusWindowById(entry.windowId);
+				if (initialOpacity != null) setWindowOpacityById(entry.windowId, initialOpacity);
 			}
 
 			// Nudge the canvas to its final size and set the startup camera — but
@@ -439,6 +480,10 @@ export class PopoutManager {
 			await this.plugin.geometry.setViewport(filePath, viewport);
 		}
 
+		if (this.readOnlyFilePath === filePath && isPrototypeOpen()) {
+			this.refocusReadOnlyWindowAfterClose();
+		}
+
 		this.persistWindowBounds(filePath, entry);
 	}
 
@@ -484,6 +529,10 @@ export class PopoutManager {
 			if (this.openBoards.get(filePath) !== entry) return;
 			enableZenMode(entry.leaf);
 			this.applyStartupViewport(entry.leaf, filePath, sourceViewState);
+			// The mode switch can briefly leave the newly created Popout unfocused
+			// while Obsidian mounts Excalidraw. Restore native focus after mounting
+			// and applying the camera so the user can keep working immediately.
+			if (entry.windowId != null) focusWindowById(entry.windowId);
 		});
 	}
 
@@ -531,6 +580,13 @@ export class PopoutManager {
 			window.clearTimeout(this.pending.timeoutId);
 		}
 		this.pending = null;
+		for (const entry of this.openBoards.values()) {
+			try {
+				entry.leaf.detach();
+			} catch {
+				// The workspace may already be tearing down.
+			}
+		}
 		this.openBoards.clear();
 		// Don't leave the transparent prototype window orphaned after unload.
 		closePrototype();
@@ -541,7 +597,7 @@ export class PopoutManager {
 
 	private finalizePendingOpen(doc: Document, attempt = 0): void {
 		if (!this.pending) return;
-		const { filePath, existingWindowIds } = this.pending;
+		const { filePath, existingWindowIds, initialOpacity } = this.pending;
 
 		const newWindowId = findNewBrowserWindowId(existingWindowIds);
 		if (newWindowId == null) {
@@ -589,6 +645,7 @@ export class PopoutManager {
 		}
 
 		setWindowAlwaysOnTopById(newWindowId, true);
+		if (initialOpacity != null) setWindowOpacityById(newWindowId, initialOpacity);
 		// focusWindowById is deliberately NOT called here: this runs during the
 		// synchronous 'window-open' handling, before leaf.openFile() has even
 		// been called (Excalidraw hasn't mounted yet). Forcing OS focus this

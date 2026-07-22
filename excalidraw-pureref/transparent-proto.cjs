@@ -117,6 +117,7 @@ function createPrototype(options) {
 		frame: false,
 		transparent: true,
 		backgroundColor: "#00000000",
+		opacity: options && typeof options.opacity === "number" ? Math.max(0.2, Math.min(1, options.opacity)) : 1,
 		hasShadow: false,
 		// Never resized (only moved), so lock the size — also removes any chance
 		// of DPI size drift.
@@ -222,6 +223,27 @@ function adjustOpacity(id, delta) {
 	}
 }
 
+function getOpacity(id) {
+	const win = BrowserWindow.fromId(id);
+	if (!win || win.isDestroyed()) return null;
+	try {
+		return win.getOpacity();
+	} catch (_e) {
+		return null;
+	}
+}
+
+function focusPrototype(id) {
+	const win = BrowserWindow.fromId(id);
+	if (!win || win.isDestroyed()) return false;
+	try {
+		win.focus();
+		return true;
+	} catch (_e) {
+		return false;
+	}
+}
+
 /** Close a prototype window by id. Safe if it's already gone. */
 function closePrototype(id) {
 	const win = BrowserWindow.fromId(id);
@@ -298,5 +320,7 @@ module.exports = {
 	getPrototypeBounds,
 	setContent,
 	adjustOpacity,
+	getOpacity,
+	focusPrototype,
 	__evictFromCache,
 };

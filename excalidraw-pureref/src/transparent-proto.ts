@@ -57,12 +57,14 @@ export interface ReadOnlyKeyMessage {
 }
 
 interface ProtoHelper {
-	createPrototype(options: { bounds?: ElectronBounds; htmlPath: string; parentId?: number }): number;
+	createPrototype(options: { bounds?: ElectronBounds; htmlPath: string; parentId?: number; opacity?: number }): number;
 	closePrototype(id: number): boolean;
 	closeAllPrototypes(): number;
 	getPrototypeBounds(id: number): ElectronBounds | null;
 	setContent(id: number, content: BoardContent): boolean;
 	adjustOpacity(id: number, delta: number): boolean;
+	getOpacity(id: number): number | null;
+	focusPrototype(id: number): boolean;
 }
 
 type RequireFn = (id: string) => unknown;
@@ -160,12 +162,13 @@ export function isPrototypeOpen(): boolean {
 }
 
 /** Open the transparent prototype at `bounds` (DIP). No-op if one is already open. */
-export function openPrototype(plugin: ExcalidrawPureRefPlugin, bounds?: ElectronBounds): boolean {
+export function openPrototype(plugin: ExcalidrawPureRefPlugin, bounds?: ElectronBounds, opacity?: number): boolean {
 	if (openWindowId != null) return true;
 	const h = loadHelper(plugin);
 	if (!h || !htmlPath) return false;
 	try {
-		openWindowId = h.createPrototype({ bounds, htmlPath, parentId: getCurrentWindowId() });
+		openWindowId = h.createPrototype({ bounds, htmlPath, parentId: getCurrentWindowId(), opacity });
+		if (openWindowId != null) h.focusPrototype(openWindowId);
 		return openWindowId != null;
 	} catch (error) {
 		console.error("[Excalidraw PureRef] transparent prototype: createPrototype failed.", error);
@@ -181,6 +184,16 @@ export function setPrototypeContent(content: BoardContent): void {
 		helper.setContent(openWindowId, content);
 	} catch (error) {
 		console.error("[Excalidraw PureRef] transparent prototype: setContent failed.", error);
+	}
+}
+
+/** Restore native focus to the read-only window after its outgoing Popout closes. */
+export function focusPrototypeWindow(): boolean {
+	if (!helper || openWindowId == null) return false;
+	try {
+		return helper.focusPrototype(openWindowId);
+	} catch {
+		return false;
 	}
 }
 
@@ -213,6 +226,15 @@ export function adjustPrototypeOpacity(delta: number): boolean {
 		return helper.adjustOpacity(openWindowId, delta);
 	} catch {
 		return false;
+	}
+}
+
+export function getPrototypeOpacity(): number | null {
+	if (!helper || openWindowId == null) return null;
+	try {
+		return helper.getOpacity(openWindowId);
+	} catch {
+		return null;
 	}
 }
 

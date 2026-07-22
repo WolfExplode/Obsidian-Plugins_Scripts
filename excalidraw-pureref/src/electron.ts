@@ -26,6 +26,8 @@ interface ElectronBrowserWindow {
 	isFocused(): boolean;
 	getBounds(): ElectronBounds;
 	setBounds(bounds: ElectronBounds): void;
+	hide(): void;
+	show(): void;
 	on?(event: string, listener: () => void): void;
 	removeListener?(event: string, listener: () => void): void;
 }
@@ -145,6 +147,49 @@ export function adjustWindowOpacityById(id: number, delta: number): number | nul
 		return opacity;
 	} catch {
 		return null;
+	}
+}
+
+export function getWindowOpacityById(id: number): number | null {
+	const win = getBrowserWindowById(id);
+	if (!win) return null;
+	try {
+		return win.getOpacity();
+	} catch {
+		return null;
+	}
+}
+
+export function setWindowOpacityById(id: number, opacity: number): boolean {
+	const win = getBrowserWindowById(id);
+	if (!win) return false;
+	try {
+		win.setOpacity(Math.max(0.2, Math.min(1, opacity)));
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export function hideWindowById(id: number): boolean {
+	const win = getBrowserWindowById(id);
+	if (!win) return false;
+	try {
+		win.hide();
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export function showWindowById(id: number): boolean {
+	const win = getBrowserWindowById(id);
+	if (!win) return false;
+	try {
+		win.show();
+		return true;
+	} catch {
+		return false;
 	}
 }
 
