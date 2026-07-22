@@ -33,7 +33,35 @@
 /** Marks the synthetic drag sequence we dispatch, as a second guard beyond isTrusted. */
 const SYNTHETIC_FLAG = "__eprBridged";
 
-export function attachPopoutDropBridge(doc: Document): () => void {
+/**
+ * Obsidian's wikilink metacharacters can't appear in a vault attachment
+ * filename: `![[…]]` embeds that reference them never resolve, so the file
+ * imports but renders as a broken tile (Excalidraw even warns on drop). The
+ * name has to be made legal *before* Excalidraw writes the file, because
+ * Excalidraw records it into the scene as a raw path — not an Obsidian link —
+ * so no later rename can heal the reference. We map each offender to its
+ * full-width Unicode look-alike, which is link-legal, visually near-identical,
+ * and verified to round-trip cross-platform sync. `#温柔甜美.mp4` → `＃温柔甜美.mp4`.
+ */
+const WIKILINK_UNSAFE: Record<string, string> = {
+	"#": "＃", // ＃ FULLWIDTH NUMBER SIGN
+	"^": "＾", // ＾ FULLWIDTH CIRCUMFLEX ACCENT
+	"[": "［", // ［ FULLWIDTH LEFT SQUARE BRACKET
+	"]": "］", // ］ FULLWIDTH RIGHT SQUARE BRACKET
+	"|": "｜", // ｜ FULLWIDTH VERTICAL LINE
+};
+
+const sanitizeAttachmentName = (name: string): string =>
+	name.replace(/[#^[\]|]/g, (ch) => WIKILINK_UNSAFE[ch] ?? ch);
+
+/**
+ * @param alwaysBridge When true (a Popout), every trusted file drop is bridged —
+ *   the cross-realm clone is mandatory there. When false (the main window, where
+ *   Excalidraw's native import already works), we only take over a drop that
+ *   carries a filename needing sanitization, and otherwise leave Excalidraw's
+ *   path untouched.
+ */
+export function attachPopoutDropBridge(doc: Document, { alwaysBridge = true }: { alwaysBridge?: boolean } = {}): () => void {
 	const win = doc.defaultView ?? window;
 	// The main window whose realm owns the constructors Excalidraw checks against.
 	const mainWindow = window;
@@ -78,6 +106,14 @@ export function attachPopoutDropBridge(doc: Document): () => void {
 		if (!isBridgeable(event)) return;
 		const dt = event.dataTransfer;
 		if (!dt) return;
+
+		// In the main window Excalidraw's native import already works, so only
+		// intervene when a dropped filename actually carries a wikilink-unsafe
+		// character; otherwise fall through to Excalidraw untouched. (Popouts
+		// always bridge — the cross-realm clone is required regardless of name.)
+		if (!alwaysBridge && !Array.from(dt.files).some((file) => sanitizeAttachmentName(file.name) !== file.name)) {
+			return;
+		}
 
 		// Take over from Excalidraw's (about-to-fail) native handler.
 		event.preventDefault();
@@ -137,7 +173,10 @@ export function attachPopoutDropBridge(doc: Document): () => void {
 				const bytes = new Uint8Array(await file.arrayBuffer());
 				const copy = new mainWindow.Uint8Array(bytes.length);
 				copy.set(bytes);
-				const clone = new mainWindow.File([copy], file.name, { type: file.type, lastModified: file.lastModified });
+				const clone = new mainWindow.File([copy], sanitizeAttachmentName(file.name), {
+					type: file.type,
+					lastModified: file.lastModified,
+				});
 				if (path) {
 					Object.defineProperty(clone, "path", { value: path, configurable: true, enumerable: true });
 				}

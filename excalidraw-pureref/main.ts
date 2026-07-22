@@ -5,6 +5,7 @@ import { ExcalidrawPureRefSettingTab } from "src/settings-tab";
 import { DEFAULT_SETTINGS, ExcalidrawPureRefSettings } from "src/settings";
 import { getActiveExcalidrawFile } from "src/excalidraw-view";
 import { attachPackKeydown } from "src/pack-keys";
+import { attachPopoutDropBridge } from "src/popout-drop-bridge";
 import { installKeyRelay, removeKeyRelay, cleanupOrphanPrototypes } from "src/transparent-proto";
 
 export default class ExcalidrawPureRefPlugin extends Plugin {
@@ -28,6 +29,13 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 		// their own binding when they open (see PopoutManager). Capture-phase, so
 		// it preempts Excalidraw's own arrow handling — see attachPackKeydown.
 		this.register(attachPackKeydown(window, this.app));
+
+		// Sanitize wikilink-unsafe characters out of dropped attachment filenames
+		// in the main window. Popout windows get their own bridge when they open
+		// (see PopoutManager); there the bridge also heals cross-realm drops, so it
+		// takes over every file drop. Here it only intervenes when a name needs
+		// fixing, leaving Excalidraw's native import path untouched otherwise.
+		this.register(attachPopoutDropBridge(window.document, { alwaysBridge: false }));
 
 		this.addCommand({
 			id: "toggle-pureref-popout",
