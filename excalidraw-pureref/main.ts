@@ -4,6 +4,7 @@ import { PopoutManager } from "src/popout-manager";
 import { ExcalidrawPureRefSettingTab } from "src/settings-tab";
 import { DEFAULT_SETTINGS, ExcalidrawPureRefSettings } from "src/settings";
 import { getActiveExcalidrawFile } from "src/excalidraw-view";
+import { attachPackKeydown } from "src/pack-keys";
 import { installKeyRelay, removeKeyRelay, cleanupOrphanPrototypes } from "src/transparent-proto";
 
 export default class ExcalidrawPureRefPlugin extends Plugin {
@@ -22,6 +23,11 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 		// pressed inside the transparent window back to the popout manager.
 		cleanupOrphanPrototypes(this);
 		installKeyRelay((msg) => this.popouts.handleReadOnlyKey(msg));
+
+		// PureRef-style Ctrl+Arrow pack in the main window. Popout windows get
+		// their own binding when they open (see PopoutManager). Capture-phase, so
+		// it preempts Excalidraw's own arrow handling — see attachPackKeydown.
+		this.register(attachPackKeydown(window, this.app));
 
 		this.addCommand({
 			id: "toggle-pureref-popout",

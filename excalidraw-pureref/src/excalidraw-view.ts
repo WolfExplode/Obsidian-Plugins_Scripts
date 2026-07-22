@@ -1,4 +1,5 @@
 import type { App, TFile, WorkspaceLeaf } from "obsidian";
+import { isPackable, planPack, type PackDirection, type PackElement } from "./pack-elements";
 
 /**
  * The Excalidraw community plugin registers its view under this type id.
@@ -41,6 +42,11 @@ interface ExcalidrawViewState extends ExcalidrawViewport {
  * public runtime object (the same one the Excalidraw React host exposes), never
  * on the plugin's source. Shapes are the minimal slice we read/write.
  */
+/** The Excalidraw element fields we read for bounding-box math and packing. */
+interface SceneElement extends PackElement {
+	version?: number;
+}
+
 interface ExcalidrawApi {
 	getAppState(): {
 		scrollX: number;
@@ -49,14 +55,21 @@ interface ExcalidrawApi {
 		width: number;
 		height: number;
 		zenModeEnabled?: boolean;
+		boxSelectionMode?: "contain" | "overlap";
+		selectedElementIds?: Record<string, boolean>;
 	};
-	getSceneElements?(): readonly { isDeleted?: boolean }[];
+	getSceneElements?(): readonly SceneElement[];
 }
 
 interface ExcalidrawViewLike {
 	containerEl?: HTMLElement;
 	excalidrawAPI?: ExcalidrawApi;
-	updateScene?(scene: { appState: Record<string, unknown> }): void;
+	updateScene?(scene: {
+		elements?: readonly unknown[];
+		appState?: Record<string, unknown>;
+		captureUpdate?: string;
+		commitToHistory?: boolean;
+	}): void;
 }
 
 interface AppWithPlugins {
@@ -142,6 +155,26 @@ export function enableZenMode(leaf: WorkspaceLeaf | null): boolean {
 }
 
 /**
+ * Switches the Popout's box-selection to "overlap" (select anything the drag
+ * rectangle touches) instead of Excalidraw's default "contain" (must fully
+ * enclose) — the PureRef-style behavior. `boxSelectionMode` is a live appState
+ * field in current Excalidraw (packages/element/src/selection.ts reads it, the
+ * "Select on: Wrap/Overlap" menu flips it); on an older bundled Excalidraw that
+ * lacks it, updateScene simply ignores the unknown key, so this degrades to a
+ * no-op rather than breaking. Idempotent, mirrors enableZenMode.
+ */
+export function enableOverlapSelection(leaf: WorkspaceLeaf | null): boolean {
+	const api = getExcalidrawApi(leaf);
+	if (!api) return false;
+	try {
+		if (api.getAppState().boxSelectionMode === "overlap") return true;
+		return updateExcalidrawScene(leaf, { boxSelectionMode: "overlap" });
+	} catch {
+		return false;
+	}
+}
+
+/**
  * The main-window Excalidraw view's camera for a file, used to seed the Popout on
  * its first launch (per the "mirror on first launch, then persist" decision).
  * Only the main window is considered — Popouts (a different `ownerDocument`) are
@@ -216,6 +249,95 @@ export function readSceneElements(leaf: WorkspaceLeaf | null): readonly unknown[
 	} catch {
 		return null;
 	}
+}
+
+/**
+ * Small gap left between packed elements, in scene units. Kept modest so packed
+ * references sit close (PureRef-tight) without touching. Tunable; could become a
+ * setting later.
+ */
+const PACK_GAP = 8;
+
+/** A pseudo-random 31-bit integer for an element's versionNonce (mirrors Excalidraw). */
+function randomVersionNonce(): number {
+	return Math.floor(Math.random() * 0x7fffffff);
+}
+
+/**
+ * PureRef-style Ctrl+Arrow pack for the current selection in a leaf. Reads the
+ * selected, packable elements (images/embeds/text — never drawings, shapes,
+ * arrows, or bound text), computes a gravity settle toward `direction`, and
+ * writes the moved elements back with an undoable history entry. Positions only:
+ * nothing is resized or rotated. Returns false (a no-op) when fewer than two
+ * packable elements are selected or nothing needed to move, so the caller can
+ * let Excalidraw's own arrow-nudge proceed instead.
+ */
+export function packSelectedElements(leaf: WorkspaceLeaf | null, direction: PackDirection): boolean {
+	const api = getExcalidrawApi(leaf);
+	const view = getExcalidrawView(leaf);
+	if (!api?.getSceneElements || !view?.updateScene) return false;
+
+	let all: readonly SceneElement[];
+	let selectedIds: Record<string, boolean>;
+	try {
+		all = api.getSceneElements();
+		selectedIds = api.getAppState().selectedElementIds ?? {};
+	} catch {
+		return false;
+	}
+
+	const selected = all.filter((el) => selectedIds[el.id] && isPackable(el));
+	if (selected.length < 2) return false;
+
+	const moves = planPack(selected as PackElement[], direction, PACK_GAP);
+	if (moves.length === 0) return false;
+
+	const moveById = new Map(moves.map((m) => [m.id, m]));
+	const nextElements = all.map((el) => {
+		const move = moveById.get(el.id);
+		if (!move) return el;
+		return {
+			...el,
+			x: el.x + move.dx,
+			y: el.y + move.dy,
+			version: (el.version ?? 1) + 1,
+			versionNonce: randomVersionNonce(),
+			updated: Date.now(),
+		};
+	});
+
+	try {
+		// captureUpdate is the current key (CaptureUpdateAction.IMMEDIATELY);
+		// commitToHistory is the older equivalent — harmless on newer builds — so
+		// the move is a single Ctrl+Z step regardless of the bundled Excalidraw.
+		view.updateScene({ elements: nextElements, captureUpdate: "IMMEDIATELY", commitToHistory: true });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Finds the Excalidraw leaf a keyboard event belongs to. Prefers the leaf whose
+ * container actually contains the event target (correct when several Excalidraw
+ * views share the main window); falls back to the only Excalidraw view in the
+ * event's document (the usual Popout case, where focus sits on the window body).
+ */
+export function findExcalidrawLeafForNode(app: App, node: Node | null): WorkspaceLeaf | null {
+	const doc = node?.ownerDocument ?? null;
+	let containing: WorkspaceLeaf | null = null;
+	let sameDoc: WorkspaceLeaf | null = null;
+	app.workspace.iterateAllLeaves((leaf) => {
+		if (containing || !isExcalidrawLeaf(leaf)) return;
+		const container = (leaf.view as unknown as { containerEl?: HTMLElement }).containerEl;
+		if (!container) return;
+		if (node && container.contains(node)) {
+			containing = leaf;
+		} else if (doc && !sameDoc && container.ownerDocument === doc) {
+			sameDoc = leaf;
+		}
+	});
+	return containing ?? sameDoc;
 }
 
 /** The popout leaf's current camera as a SceneView, or null if unavailable. */

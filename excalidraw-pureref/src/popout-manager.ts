@@ -34,6 +34,7 @@ import { markPopupDocument, getPopupFilePath, clearPopupDocumentMarker } from ".
 import { attachWindowDrag } from "./window-drag";
 import { applyChromeHiding } from "./chrome-hider";
 import { attachPopoutDropBridge } from "./popout-drop-bridge";
+import { attachPackKeydown } from "./pack-keys";
 import { ExcalidrawRefitSuspender } from "./excalidraw-settings";
 import {
 	EXCALIDRAW_VIEW_TYPE,
@@ -44,6 +45,7 @@ import {
 	readContainerSize,
 	isCanvasReady,
 	isExcalidrawPluginAvailable,
+	enableOverlapSelection,
 	mirrorViewport,
 	readSceneView,
 	readSceneElements,
@@ -77,6 +79,7 @@ interface OpenBoardPopout {
 	detachChromeHiding: (() => void) | null;
 	detachDropBridge: (() => void) | null;
 	detachBoundsSaving: (() => void) | null;
+	detachPackKeys: (() => void) | null;
 }
 
 interface PendingOpen {
@@ -365,6 +368,7 @@ export class PopoutManager {
 			detachChromeHiding: null,
 			detachDropBridge: null,
 			detachBoundsSaving: null,
+			detachPackKeys: null,
 		};
 		this.pending = {
 			filePath: file.path,
@@ -559,10 +563,12 @@ export class PopoutManager {
 		entry.detachChromeHiding?.();
 		entry.detachDropBridge?.();
 		entry.detachBoundsSaving?.();
+		entry.detachPackKeys?.();
 		entry.detachWindowDrag = null;
 		entry.detachChromeHiding = null;
 		entry.detachDropBridge = null;
 		entry.detachBoundsSaving = null;
+		entry.detachPackKeys = null;
 		this.refitSuspender.resume();
 	}
 
@@ -637,6 +643,9 @@ export class PopoutManager {
 				window.clearTimeout(hardCap);
 				if (this.isCurrent(filePath, entry)) {
 					enableZenMode(entry.leaf);
+					// PureRef-style marquee: select anything the drag rectangle
+					// touches rather than requiring it to fully enclose the element.
+					enableOverlapSelection(entry.leaf);
 					this.applyStartupViewport(entry.leaf, filePath, sourceViewState);
 					entry.phase = "ready";
 					// Restore native focus after mounting and applying the camera so the
@@ -711,6 +720,7 @@ export class PopoutManager {
 			entry.detachChromeHiding?.();
 			entry.detachDropBridge?.();
 			entry.detachBoundsSaving?.();
+			entry.detachPackKeys?.();
 		}
 		this.openBoards.clear();
 		// If unload lands during setViewState/Excalidraw mount, detaching in the
@@ -778,6 +788,7 @@ export class PopoutManager {
 		entry.detachWindowDrag = attachWindowDrag(doc, newWindowId);
 		entry.detachChromeHiding = applyChromeHiding(doc);
 		entry.detachDropBridge = attachPopoutDropBridge(doc);
+		if (doc.defaultView) entry.detachPackKeys = attachPackKeydown(doc.defaultView, this.plugin.app);
 		entry.detachBoundsSaving = onWindowCloseById(newWindowId, () =>
 			this.persistWindowBounds(filePath, entry),
 		);
