@@ -13,7 +13,6 @@ obsidian-devtools-mcp/
 dist/
 build/
 *.map
-main.js
 
 # Obsidian/plugin runtime state
 data.json
