@@ -8,6 +8,7 @@ import { attachPackKeydown } from "src/pack-keys";
 import { attachPopoutDropBridge } from "src/popout-drop-bridge";
 import { attachInsertModalAutoConfirm } from "src/insert-modal-autoconfirm";
 import { attachVideoAspectCorrector } from "src/video-aspect";
+import { attachCropDrag, installCropDebugHook } from "src/crop-drag";
 import { installKeyRelay, removeKeyRelay, cleanupOrphanPrototypes } from "src/transparent-proto";
 
 export default class ExcalidrawPureRefPlugin extends Plugin {
@@ -42,6 +43,13 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 		// each view's scene changes, so it needs no drop listener.
 		this.register(attachVideoAspectCorrector(this));
 		this.register(attachPopoutDropBridge(window.document, { alwaysBridge: false }));
+
+		// PureRef-style hold-C + drag to crop the selected images, in the main window.
+		// Popouts get their own binding when they open (see PopoutManager), so the
+		// edit window inherits the feature. The console hook (window.__eprCropDebug)
+		// stays available to drive the same crop primitive without a pointer gesture.
+		this.register(attachCropDrag(window, this.app));
+		this.register(installCropDebugHook(this.app));
 
 		// Skip the Excalidraw "Insert File From Vault" popup when it offers only one
 		// option (e.g. a dropped video → "as Embeddable"). Popouts get their own

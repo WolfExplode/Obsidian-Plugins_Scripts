@@ -36,6 +36,7 @@ import { applyChromeHiding } from "./chrome-hider";
 import { attachPopoutDropBridge } from "./popout-drop-bridge";
 import { attachInsertModalAutoConfirm } from "./insert-modal-autoconfirm";
 import { attachPackKeydown } from "./pack-keys";
+import { attachCropDrag } from "./crop-drag";
 import { ExcalidrawRefitSuspender } from "./excalidraw-settings";
 import {
 	EXCALIDRAW_VIEW_TYPE,
@@ -82,6 +83,7 @@ interface OpenBoardPopout {
 	detachInsertModal: (() => void) | null;
 	detachBoundsSaving: (() => void) | null;
 	detachPackKeys: (() => void) | null;
+	detachCropDrag: (() => void) | null;
 }
 
 interface PendingOpen {
@@ -372,6 +374,7 @@ export class PopoutManager {
 			detachInsertModal: null,
 			detachBoundsSaving: null,
 			detachPackKeys: null,
+			detachCropDrag: null,
 		};
 		this.pending = {
 			filePath: file.path,
@@ -568,12 +571,14 @@ export class PopoutManager {
 		entry.detachInsertModal?.();
 		entry.detachBoundsSaving?.();
 		entry.detachPackKeys?.();
+		entry.detachCropDrag?.();
 		entry.detachWindowDrag = null;
 		entry.detachChromeHiding = null;
 		entry.detachDropBridge = null;
 		entry.detachInsertModal = null;
 		entry.detachBoundsSaving = null;
 		entry.detachPackKeys = null;
+		entry.detachCropDrag = null;
 		this.refitSuspender.resume();
 	}
 
@@ -727,6 +732,7 @@ export class PopoutManager {
 			entry.detachInsertModal?.();
 			entry.detachBoundsSaving?.();
 			entry.detachPackKeys?.();
+			entry.detachCropDrag?.();
 		}
 		this.openBoards.clear();
 		// If unload lands during setViewState/Excalidraw mount, detaching in the
@@ -796,6 +802,7 @@ export class PopoutManager {
 		entry.detachDropBridge = attachPopoutDropBridge(doc);
 		entry.detachInsertModal = attachInsertModalAutoConfirm(doc);
 		if (doc.defaultView) entry.detachPackKeys = attachPackKeydown(doc.defaultView, this.plugin.app);
+		if (doc.defaultView) entry.detachCropDrag = attachCropDrag(doc.defaultView, this.plugin.app);
 		entry.detachBoundsSaving = onWindowCloseById(newWindowId, () =>
 			this.persistWindowBounds(filePath, entry),
 		);

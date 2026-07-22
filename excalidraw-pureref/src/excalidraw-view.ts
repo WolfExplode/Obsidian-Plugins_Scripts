@@ -61,11 +61,16 @@ interface ExcalidrawApi {
 		zoom: { value: number };
 		width: number;
 		height: number;
+		/** The canvas's top-left offset from the page, used for pointer→scene math. */
+		offsetLeft?: number;
+		offsetTop?: number;
 		zenModeEnabled?: boolean;
 		boxSelectionMode?: "contain" | "overlap";
 		selectedElementIds?: Record<string, boolean>;
 	};
 	getSceneElements?(): readonly SceneElement[];
+	/** The scene's binary files, keyed by an image element's `fileId`. */
+	getFiles?(): Record<string, { dataURL?: string } | undefined>;
 }
 
 interface ExcalidrawViewLike {
@@ -380,6 +385,384 @@ export function resizeSceneElements(leaf: WorkspaceLeaf | null, resizes: readonl
 	} catch {
 		return false;
 	}
+}
+
+/**
+ * Excalidraw's native image crop, stored in the *source image's* natural-pixel
+ * space (pre-rotation, pre-flip). The renderer draws the sub-rect
+ * `[x, y, width, height]` of the decoded bitmap — whose true size is
+ * `naturalWidth × naturalHeight` — onto the element's on-canvas box, so these
+ * values MUST be real decoded pixels (renderElement.ts drawImage). The element
+ * keeps the full file; double-clicking re-exposes the whole thing.
+ */
+export interface ImageCrop {
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+	naturalWidth: number;
+	naturalHeight: number;
+}
+
+/** The image-element fields the crop primitive reads. */
+interface ImageSceneElement extends SceneElement {
+	angle?: number;
+	scale?: readonly [number, number];
+	crop?: ImageCrop | null;
+	fileId?: string;
+}
+
+/** An axis-aligned rectangle in scene coordinates. */
+export interface SceneRect {
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+}
+
+/** A crop small enough to be treated as no crop (element back to full image). */
+const CROP_RESET_EPSILON = 1;
+/** Ignore a visible sliver thinner than this (scene units) — nothing to show. */
+const MIN_CROP_SCENE = 1;
+
+/** Whether an element is a live (non-deleted) Excalidraw image. */
+function isImageElement(el: SceneElement): el is ImageSceneElement {
+	return el.type === "image" && !el.isDeleted;
+}
+
+/**
+ * Decodes an image's natural pixel size from its dataURL, memoized per fileId so
+ * a multi-image crop decodes each source at most once. Resolves null on failure.
+ */
+function makeNaturalSizeResolver(win: Window, files: Record<string, { dataURL?: string } | undefined>) {
+	const cache = new Map<string, Promise<{ w: number; h: number } | null>>();
+	return (fileId: string): Promise<{ w: number; h: number } | null> => {
+		const hit = cache.get(fileId);
+		if (hit) return hit;
+		const dataURL = files[fileId]?.dataURL;
+		const promise: Promise<{ w: number; h: number } | null> = !dataURL
+			? Promise.resolve(null)
+			: new Promise((resolve) => {
+					const img = win.document.createElement("img");
+					img.onload = () =>
+						resolve(img.naturalWidth > 0 && img.naturalHeight > 0 ? { w: img.naturalWidth, h: img.naturalHeight } : null);
+					img.onerror = () => resolve(null);
+					img.src = dataURL;
+				});
+		cache.set(fileId, promise);
+		return promise;
+	};
+}
+
+/**
+ * Computes the new geometry + `crop` for one upright image so its visible region
+ * becomes the intersection of its *current visible* rect with `rect` (both in
+ * scene coords). Composes with any existing crop and with horizontal/vertical
+ * flips (`scale === -1`), which store the crop origin from the opposite edge.
+ *
+ * Crop only ever *removes*: the result is clamped to what's currently shown, so a
+ * rect reaching past the current crop never re-adds already-hidden pixels
+ * (Excalidraw's own double-click remains the way to re-expose the full original).
+ *
+ * Returns null when the element is rotated (`angle` set — deferred; see the crop
+ * design notes), when the rect misses the current visible region, or when the
+ * sliver is degenerate. When an *uncropped* image is fully covered the result
+ * stays uncropped (crop null) rather than gaining a redundant full crop.
+ */
+function planImageCrop(
+	el: ImageSceneElement,
+	rect: SceneRect,
+	natural: { w: number; h: number },
+): { x: number; y: number; width: number; height: number; crop: ImageCrop | null } | null {
+	// Rotation is deferred: a screen-aligned rect maps to a rotated quad in image
+	// space, which the axis-aligned `crop` rect can't represent. Skip such images.
+	if (el.angle && Math.abs(el.angle) > 1e-6) return null;
+
+	const nw = natural.w;
+	const nh = natural.h;
+	const crop = el.crop ?? null;
+	const flipX = el.scale?.[0] === -1;
+	const flipY = el.scale?.[1] === -1;
+
+	// On-canvas size of the *uncropped* image at this element's current scale.
+	const uncroppedW = crop ? el.width / (crop.width / crop.naturalWidth) : el.width;
+	const uncroppedH = crop ? el.height / (crop.height / crop.naturalHeight) : el.height;
+	if (uncroppedW <= 0 || uncroppedH <= 0) return null;
+
+	const natPerCanvasX = nw / uncroppedW;
+	const natPerCanvasY = nh / uncroppedH;
+
+	// Current visible crop origin as seen on screen (undo the flip storage), in
+	// natural px → convert to canvas px to locate the uncropped image's top-left.
+	const visualCropX = crop ? (flipX ? nw - crop.width - crop.x : crop.x) : 0;
+	const visualCropY = crop ? (flipY ? nh - crop.height - crop.y : crop.y) : 0;
+	const uncroppedX = el.x - visualCropX / natPerCanvasX;
+	const uncroppedY = el.y - visualCropY / natPerCanvasY;
+
+	// Intersect the drag rect with the CURRENT VISIBLE box (the element's own
+	// on-canvas rect), not the uncropped image — so a crop can only shrink the
+	// visible region, never re-add pixels an earlier crop removed.
+	const vx = Math.max(rect.x, el.x);
+	const vy = Math.max(rect.y, el.y);
+	const vRight = Math.min(rect.x + rect.width, el.x + el.width);
+	const vBottom = Math.min(rect.y + rect.height, el.y + el.height);
+	const vw = vRight - vx;
+	const vh = vBottom - vy;
+	if (vw < MIN_CROP_SCENE || vh < MIN_CROP_SCENE) return null;
+
+	// Visible sub-rect back into natural px (screen/visual space, pre-flip).
+	const visW = vw * natPerCanvasX;
+	const visH = vh * natPerCanvasY;
+	const visX = (vx - uncroppedX) * natPerCanvasX;
+	const visY = (vy - uncroppedY) * natPerCanvasY;
+
+	// Full coverage → uncrop.
+	if (Math.abs(visX) < CROP_RESET_EPSILON && Math.abs(visY) < CROP_RESET_EPSILON && Math.abs(visW - nw) < CROP_RESET_EPSILON && Math.abs(visH - nh) < CROP_RESET_EPSILON) {
+		return { x: vx, y: vy, width: vw, height: vh, crop: null };
+	}
+
+	// Re-apply flip storage (crop origin measured from the opposite edge).
+	const nextCrop: ImageCrop = {
+		x: flipX ? nw - visW - visX : visX,
+		y: flipY ? nh - visH - visY : visY,
+		width: visW,
+		height: visH,
+		naturalWidth: nw,
+		naturalHeight: nh,
+	};
+	return { x: vx, y: vy, width: vw, height: vh, crop: nextCrop };
+}
+
+/**
+ * The active Excalidraw leaf: the focused leaf when it's an Excalidraw view, else
+ * the first Excalidraw view anywhere (main window or a popout). Convenience for
+ * command/debug entry points that don't have an event target to locate from.
+ */
+export function getActiveExcalidrawLeaf(app: App): WorkspaceLeaf | null {
+	if (isExcalidrawLeaf(app.workspace.activeLeaf)) return app.workspace.activeLeaf;
+	let first: WorkspaceLeaf | null = null;
+	app.workspace.iterateAllLeaves((leaf) => {
+		if (!first && isExcalidrawLeaf(leaf)) first = leaf;
+	});
+	return first;
+}
+
+/**
+ * The union on-canvas bounding box (scene coords) of the currently-selected image
+ * elements, or null if none are selected. Uses each element's rendered box, so a
+ * rotated image contributes its unrotated box — fine for a debug proxy rect.
+ */
+export function getSelectedImageSceneBBox(leaf: WorkspaceLeaf | null): SceneRect | null {
+	const api = getExcalidrawApi(leaf);
+	if (!api?.getSceneElements) return null;
+	let all: readonly SceneElement[];
+	let selectedIds: Record<string, boolean>;
+	try {
+		all = api.getSceneElements();
+		selectedIds = api.getAppState().selectedElementIds ?? {};
+	} catch {
+		return null;
+	}
+	let minX = Infinity;
+	let minY = Infinity;
+	let maxX = -Infinity;
+	let maxY = -Infinity;
+	for (const el of all) {
+		if (!isImageElement(el) || !selectedIds[el.id]) continue;
+		minX = Math.min(minX, el.x);
+		minY = Math.min(minY, el.y);
+		maxX = Math.max(maxX, el.x + el.width);
+		maxY = Math.max(maxY, el.y + el.height);
+	}
+	if (!Number.isFinite(minX)) return null;
+	return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
+/**
+ * Converts a client (viewport-pixel) point in the leaf's window to scene
+ * coordinates, using the exact transform Excalidraw uses internally
+ * (`scene = (client - offset) / zoom - scroll`). Returns null if unavailable.
+ */
+export function clientToSceneCoords(leaf: WorkspaceLeaf | null, clientX: number, clientY: number): { x: number; y: number } | null {
+	const api = getExcalidrawApi(leaf);
+	if (!api) return null;
+	try {
+		const s = api.getAppState();
+		const zoom = s.zoom?.value || 1;
+		return {
+			x: (clientX - (s.offsetLeft ?? 0)) / zoom - s.scrollX,
+			y: (clientY - (s.offsetTop ?? 0)) / zoom - s.scrollY,
+		};
+	} catch {
+		return null;
+	}
+}
+
+/** Ids of the leaf's image elements — the selected ones, or all when `selectedOnly` is false. */
+export function getImageIds(leaf: WorkspaceLeaf | null, selectedOnly: boolean): string[] {
+	const api = getExcalidrawApi(leaf);
+	if (!api?.getSceneElements) return [];
+	try {
+		const all = api.getSceneElements();
+		const selected = api.getAppState().selectedElementIds ?? {};
+		return all.filter((el) => isImageElement(el) && (!selectedOnly || selected[el.id])).map((el) => el.id);
+	} catch {
+		return [];
+	}
+}
+
+/** Outcome of a crop request, for debugging and caller feedback. */
+export interface CropResult {
+	cropped: string[];
+	/** Ids skipped: rotated, missed by the rect, degenerate, or size-unknown. */
+	skipped: string[];
+}
+
+/**
+ * The reusable crop primitive: crop every target image so its visible region is
+ * the part of it inside `rect` (scene coords). Targets `ids` when given, else the
+ * current image selection. Upright and flipped images crop exactly; rotated ones
+ * are skipped (deferred). Writes all changes as one undoable step. Async because
+ * uncropped images must decode to learn their true natural size (cropped images
+ * already carry it in `crop.naturalWidth/Height`).
+ */
+export async function cropImagesToSceneRect(
+	leaf: WorkspaceLeaf | null,
+	rect: SceneRect,
+	ids?: readonly string[],
+): Promise<CropResult> {
+	const result: CropResult = { cropped: [], skipped: [] };
+	const api = getExcalidrawApi(leaf);
+	const view = getExcalidrawView(leaf);
+	if (!api?.getSceneElements || !view?.updateScene) return result;
+
+	let all: readonly SceneElement[];
+	let files: Record<string, { dataURL?: string } | undefined>;
+	let selectedIds: Record<string, boolean>;
+	try {
+		all = api.getSceneElements();
+		files = api.getFiles?.() ?? {};
+		selectedIds = api.getAppState().selectedElementIds ?? {};
+	} catch {
+		return result;
+	}
+
+	const idSet = ids ? new Set(ids) : null;
+	const targets = all.filter(
+		(el): el is ImageSceneElement => isImageElement(el) && (idSet ? idSet.has(el.id) : !!selectedIds[el.id]),
+	);
+	if (targets.length === 0) return result;
+
+	const win = view.containerEl?.ownerDocument?.defaultView ?? window;
+	const naturalSizeOf = makeNaturalSizeResolver(win, files);
+
+	// Resolve each target's natural size (cropped: free; uncropped: decode), then plan.
+	const plans = new Map<string, { x: number; y: number; width: number; height: number; crop: ImageCrop | null }>();
+	await Promise.all(
+		targets.map(async (el) => {
+			const natural = el.crop
+				? { w: el.crop.naturalWidth, h: el.crop.naturalHeight }
+				: el.fileId
+					? await naturalSizeOf(el.fileId)
+					: null;
+			if (!natural) {
+				result.skipped.push(el.id);
+				return;
+			}
+			const plan = planImageCrop(el, rect, natural);
+			if (!plan) {
+				result.skipped.push(el.id);
+				return;
+			}
+			plans.set(el.id, plan);
+		}),
+	);
+	if (plans.size === 0) return result;
+
+	const nextElements = all.map((el) => {
+		const plan = plans.get(el.id);
+		if (!plan) return el;
+		result.cropped.push(el.id);
+		return {
+			...el,
+			x: plan.x,
+			y: plan.y,
+			width: plan.width,
+			height: plan.height,
+			crop: plan.crop,
+			version: (el.version ?? 1) + 1,
+			versionNonce: randomVersionNonce(),
+			updated: Date.now(),
+		};
+	});
+
+	try {
+		view.updateScene({ elements: nextElements, captureUpdate: "IMMEDIATELY", commitToHistory: true });
+	} catch {
+		return { cropped: [], skipped: targets.map((t) => t.id) };
+	}
+	return result;
+}
+
+/**
+ * Clears the `crop` on target images, restoring each to its full original at the
+ * right on-canvas position/size — the inverse of cropImagesToSceneRect and the
+ * programmatic equivalent of Excalidraw's double-click uncrop. Targets `ids` when
+ * given, else the current image selection. Upright and flipped images restore
+ * exactly; rotated ones are skipped (use the native double-click for those).
+ * Synchronous: natural size comes from the existing crop, so nothing is decoded.
+ */
+export function uncropImages(leaf: WorkspaceLeaf | null, ids?: readonly string[]): string[] {
+	const api = getExcalidrawApi(leaf);
+	const view = getExcalidrawView(leaf);
+	if (!api?.getSceneElements || !view?.updateScene) return [];
+
+	let all: readonly SceneElement[];
+	let selectedIds: Record<string, boolean>;
+	try {
+		all = api.getSceneElements();
+		selectedIds = api.getAppState().selectedElementIds ?? {};
+	} catch {
+		return [];
+	}
+
+	const idSet = ids ? new Set(ids) : null;
+	const uncropped: string[] = [];
+	const nextElements = all.map((raw) => {
+		if (!isImageElement(raw)) return raw;
+		const el = raw;
+		const target = idSet ? idSet.has(el.id) : !!selectedIds[el.id];
+		if (!target || !el.crop) return raw;
+		if (el.angle && Math.abs(el.angle) > 1e-6) return raw; // native double-click handles rotated
+
+		const crop = el.crop;
+		const flipX = el.scale?.[0] === -1;
+		const flipY = el.scale?.[1] === -1;
+		const uncroppedW = el.width / (crop.width / crop.naturalWidth);
+		const uncroppedH = el.height / (crop.height / crop.naturalHeight);
+		const visualCropX = flipX ? crop.naturalWidth - crop.width - crop.x : crop.x;
+		const visualCropY = flipY ? crop.naturalHeight - crop.height - crop.y : crop.y;
+		uncropped.push(el.id);
+		return {
+			...el,
+			x: el.x - (visualCropX / crop.naturalWidth) * uncroppedW,
+			y: el.y - (visualCropY / crop.naturalHeight) * uncroppedH,
+			width: uncroppedW,
+			height: uncroppedH,
+			crop: null,
+			version: (el.version ?? 1) + 1,
+			versionNonce: randomVersionNonce(),
+			updated: Date.now(),
+		};
+	});
+	if (uncropped.length === 0) return [];
+
+	try {
+		view.updateScene({ elements: nextElements, captureUpdate: "IMMEDIATELY", commitToHistory: true });
+	} catch {
+		return [];
+	}
+	return uncropped;
 }
 
 /**
