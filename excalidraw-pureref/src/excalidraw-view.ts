@@ -59,6 +59,15 @@ interface ExcalidrawViewLike {
 	updateScene?(scene: { appState: Record<string, unknown> }): void;
 }
 
+interface AppWithPlugins {
+	plugins?: { plugins?: Record<string, unknown> };
+}
+
+/** Whether the Excalidraw dependency has completed plugin registration. */
+export function isExcalidrawPluginAvailable(app: App): boolean {
+	return !!(app as unknown as AppWithPlugins).plugins?.plugins?.["obsidian-excalidraw-plugin"];
+}
+
 function getExcalidrawView(leaf: WorkspaceLeaf | null): ExcalidrawViewLike | null {
 	if (!isExcalidrawLeaf(leaf)) return null;
 	return leaf!.view as unknown as ExcalidrawViewLike;
@@ -174,6 +183,12 @@ export function mirrorViewport(
 export function readContainerSize(leaf: WorkspaceLeaf | null): { width: number; height: number } | null {
 	const s = readViewState(leaf);
 	return s ? { width: s.width, height: s.height } : null;
+}
+
+/** Excalidraw has mounted its imperative interface and measured a usable view. */
+export function isCanvasReady(leaf: WorkspaceLeaf | null): boolean {
+	const size = readContainerSize(leaf);
+	return size !== null && size.width > 0 && size.height > 0;
 }
 
 /**

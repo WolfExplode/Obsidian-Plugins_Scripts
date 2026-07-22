@@ -29,6 +29,7 @@ const emptyData = (): GeometryData => ({ boards: {}, viewports: {} });
 
 export class GeometryStore {
 	private data: GeometryData = emptyData();
+	private writeQueue: Promise<void> = Promise.resolve();
 
 	constructor(private readonly plugin: Plugin) {}
 
@@ -72,7 +73,18 @@ export class GeometryStore {
 	}
 
 	private async persist(): Promise<void> {
-		const existing = ((await this.plugin.loadData()) as Record<string, unknown> | null) ?? {};
-		await this.plugin.saveData({ ...existing, geometry: this.data });
+		// Capture the state associated with this call. Later mutations must not
+		// change an older queued write while it is waiting for the data file.
+		const snapshot: GeometryData = {
+			boards: { ...this.data.boards },
+			viewports: { ...this.data.viewports },
+		};
+		const write = this.writeQueue.then(async () => {
+			const existing = ((await this.plugin.loadData()) as Record<string, unknown> | null) ?? {};
+			await this.plugin.saveData({ ...existing, geometry: snapshot });
+		});
+		// A failed write rejects its caller but cannot poison every future write.
+		this.writeQueue = write.catch(() => undefined);
+		await write;
 	}
 }

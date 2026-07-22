@@ -3,6 +3,7 @@ import type ExcalidrawPureRefPlugin from "../main";
 import {
 	getBrowserWindowIds,
 	getFocusedBrowserWindowId,
+	getBrowserWindowIdForDomWindow,
 	findNewBrowserWindowId,
 	adjustWindowOpacityById,
 	getWindowOpacityById,
@@ -41,6 +42,8 @@ import {
 	enableZenMode,
 	readMainWindowViewportForFile,
 	readContainerSize,
+	isCanvasReady,
+	isExcalidrawPluginAvailable,
 	mirrorViewport,
 	readSceneView,
 	readSceneElements,
@@ -60,13 +63,14 @@ const FOCUS_WAIT_MAX_MS = 1000;
  * setViewState (mount + scene/image load — typically a few hundred ms). Past
  * this we finalize anyway rather than hang.
  */
-const CANVAS_READY_MAX_MS = 3000;
+const CANVAS_READY_MAX_MS = 10000;
 /** Poll interval for the canvas-ready wait, on the main-window timer. */
 const CANVAS_READY_POLL_MS = 16;
 const POPOUT_OPACITY_STEP = 0.05;
 
 interface OpenBoardPopout {
-	leaf: WorkspaceLeaf;
+	leaf: WorkspaceLeaf | null;
+	phase: "opening" | "ready" | "closing";
 	windowId: number | null;
 	doc: Document | null;
 	detachWindowDrag: (() => void) | null;
@@ -80,21 +84,24 @@ interface PendingOpen {
 	existingWindowIds: Set<number>;
 	initialOpacity?: number;
 	timeoutId: number | null;
+	doc: Document | null;
+	entry: OpenBoardPopout;
 }
 
 /**
  * Owns the F11 lifecycle described in CONTEXT.md's "Popout" entry: F11 in an
  * Excalidraw view (main window or an existing Popout, it makes no
  * difference — see the toggle logic below) opens a Board's Popout if none
- * exists, or closes it if one does. Every close path — F11 or the native OS
- * close button — is funneled through the same 'window-close' handling so
- * tracked state and persisted geometry stay consistent regardless of cause
- * (per the Question 12 decision).
+ * exists, or closes it if one does. Programmatic and native close paths share
+ * the same idempotent cleanup implementation so tracked state and persisted
+ * geometry stay consistent regardless of cause.
  */
 export class PopoutManager {
 	private readonly openBoards = new Map<string, OpenBoardPopout>();
 	private pending: PendingOpen | null = null;
 	private readonly refitSuspender: ExcalidrawRefitSuspender;
+	private transitionQueue: Promise<void> = Promise.resolve();
+	private disposed = false;
 	/**
 	 * Which Board the read-only transparent window is currently showing, so F10
 	 * (read-only -> edit) knows which popout to reopen. Non-null iff the
@@ -112,8 +119,25 @@ export class PopoutManager {
 		this.refitSuspender = new ExcalidrawRefitSuspender(plugin.app);
 	}
 
+	private runTransition(label: string, task: () => Promise<void>): Promise<void> {
+		const run = this.transitionQueue.then(async () => {
+			if (this.disposed) return;
+			await task();
+		});
+		const handled = run.catch((error) => {
+			console.error(`[Excalidraw PureRef] failed to ${label}.`, error);
+			new Notice(`Excalidraw PureRef could not ${label}. See the developer console for details.`);
+		});
+		this.transitionQueue = handled;
+		return handled;
+	}
+
+	private isCurrent(filePath: string, entry: OpenBoardPopout): boolean {
+		return !this.disposed && entry.phase !== "closing" && this.openBoards.get(filePath) === entry;
+	}
+
 	isOpen(filePath: string): boolean {
-		return this.openBoards.has(filePath);
+		return this.openBoards.get(filePath)?.phase === "ready";
 	}
 
 	/** True only when the focused native window is one of this plugin's Popouts. */
@@ -137,7 +161,11 @@ export class PopoutManager {
 	 * open -> closed. There is no need to special-case which window the
 	 * keypress came from.
 	 */
-	async toggle(file: TFile | null): Promise<void> {
+	toggle(file: TFile | null): Promise<void> {
+		return this.runTransition("toggle Popout", () => this.toggleNow(file));
+	}
+
+	private async toggleNow(file: TFile | null): Promise<void> {
 		// F11 while the read-only transparent window is up just closes it (per the
 		// requirement); it does not reopen the editable popout.
 		if (isPrototypeOpen()) {
@@ -201,7 +229,11 @@ export class PopoutManager {
 	 *   the popout's geometry (the seamless swap).
 	 * - neither          -> nothing.
 	 */
-	async toggleReadOnlyPrototype(file: TFile | null): Promise<void> {
+	toggleReadOnlyPrototype(file: TFile | null): Promise<void> {
+		return this.runTransition("switch Popout mode", () => this.toggleReadOnlyPrototypeNow(file));
+	}
+
+	private async toggleReadOnlyPrototypeNow(file: TFile | null): Promise<void> {
 		if (isPrototypeOpen()) {
 			const filePath = this.readOnlyFilePath;
 			// Physical bounds so the reopened popout lands where the transparent
@@ -241,6 +273,7 @@ export class PopoutManager {
 		// Persist the popout's latest edits before rendering the file to SVG, so
 		// the read-only mirror shows exactly what the user was just editing.
 		await this.saveLeafBoard(entry?.leaf ?? null);
+		if (!entry || !this.isCurrent(file.path, entry) || entry.phase !== "ready") return;
 
 		// While the popout is still live, capture its camera and the scene's
 		// bounding-box top-left. The SVG normalizes content to (0,0) and records
@@ -269,7 +302,7 @@ export class PopoutManager {
 		// push it — with the scene offset and captured camera — into the
 		// transparent window; setContent waits for load.
 		const svg = await renderBoardSvg(this.plugin, file.path);
-		if (svg && isPrototypeOpen()) {
+		if (svg && isPrototypeOpen() && this.readOnlyFilePath === file.path) {
 			setPrototypeContent({
 				svg,
 				minX: min?.minX ?? 0,
@@ -305,6 +338,10 @@ export class PopoutManager {
 			new Notice("A PureRef popout is still opening — try again in a moment.");
 			return;
 		}
+		if (!isExcalidrawPluginAvailable(this.plugin.app)) {
+			new Notice("Excalidraw PureRef requires the Excalidraw plugin to be enabled and loaded.");
+			return;
+		}
 
 		// Snapshot the originating (main-window) view's camera NOW, before opening
 		// the Popout steals focus/active state, so a first-ever launch can mirror
@@ -314,21 +351,28 @@ export class PopoutManager {
 		const sourceViewState = readMainWindowViewportForFile(this.plugin.app, file.path);
 
 		const existingWindowIds = new Set(getBrowserWindowIds());
-		this.pending = { filePath: file.path, existingWindowIds, initialOpacity, timeoutId: null };
-
 		// Placeholder entry stored BEFORE calling openPopoutLeaf(): Obsidian's
 		// 'window-open' event fires synchronously from inside that call, before
 		// it returns to us, so finalizePendingOpen() must already find this
 		// entry in the map or every `if (entry)` block below silently no-ops
 		// (this is what was breaking window-drag attachment).
 		const entry: OpenBoardPopout = {
-			leaf: null as unknown as WorkspaceLeaf,
+			leaf: null,
+			phase: "opening",
 			windowId: null,
 			doc: null,
 			detachWindowDrag: null,
 			detachChromeHiding: null,
 			detachDropBridge: null,
 			detachBoundsSaving: null,
+		};
+		this.pending = {
+			filePath: file.path,
+			existingWindowIds,
+			initialOpacity,
+			timeoutId: null,
+			doc: null,
+			entry,
 		};
 		this.openBoards.set(file.path, entry);
 
@@ -339,16 +383,15 @@ export class PopoutManager {
 		// open fails before the window is ever marked. See excalidraw-settings.ts.
 		this.refitSuspender.suspend();
 
-		const leaf = this.plugin.app.workspace.openPopoutLeaf();
-		entry.leaf = leaf;
-
-		// Wait for the popout to actually become the focused window before
-		// mounting Excalidraw into it via openFile() — see waitForPopoutFocus
-		// for why. 'window-open' fires synchronously inside openPopoutLeaf()
-		// above, so entry.doc is already populated by the time we get here.
-		await this.waitForPopoutFocus(entry.doc, FOCUS_WAIT_MAX_MS);
-
 		try {
+			const leaf = this.plugin.app.workspace.openPopoutLeaf();
+			entry.leaf = leaf;
+
+			// The nested window-open event normally supplies the document before
+			// openPopoutLeaf returns. Focus is still bounded and cancellable.
+			await this.waitForPopoutFocus(entry.doc, FOCUS_WAIT_MAX_MS, entry);
+			if (!this.isCurrent(file.path, entry)) return;
+
 			// Force the Excalidraw view type explicitly instead of leaf.openFile(),
 			// which lets Obsidian/Excalidraw choose the view. A Board file carrying
 			// `excalidraw-open-md: true` frontmatter would otherwise open as plain
@@ -360,6 +403,7 @@ export class PopoutManager {
 				state: { file: file.path },
 				active: true,
 			});
+			if (!this.isCurrent(file.path, entry)) return;
 
 			// Focus is grabbed here — after Excalidraw's view has mounted —
 			// rather than during the pre-mount window-open handling. See the
@@ -375,40 +419,40 @@ export class PopoutManager {
 			// ms more), so poking Excalidraw here directly would fire a resize and
 			// updateScene INTO a half-loaded scene — a suspected cause of the
 			// occasional "stuck on loading scene". finalizeCanvasWhenReady defers
-			// both until the API responds. Fire-and-forget; it self-cancels if the
-			// Popout is closed while still loading.
-			void this.finalizeCanvasWhenReady(entry, file.path, sourceViewState);
+			// both until the interface responds. This is part of the serialized open
+			// transition: a queued close must not detach the leaf while Excalidraw is
+			// still mounting.
+			await this.finalizeCanvasWhenReady(entry, file.path, sourceViewState);
 		} catch (error) {
 			console.error("Excalidraw PureRef: failed to open board in popout.", error);
-			new Notice("Failed to open PureRef popout.");
-			this.openBoards.delete(file.path);
-			this.pending = null;
-			// The window was never marked, so handleWindowClosed() would early-
-			// return and never resume — balance the suspend() from above here.
-			this.refitSuspender.resume();
+			if (this.isCurrent(file.path, entry)) new Notice("Failed to open PureRef popout.");
+			this.abortOpen(file.path, entry);
 		}
 	}
 
 	private close(filePath: string): void {
 		const entry = this.openBoards.get(filePath);
 		if (!entry) return;
-		// `leaf.detach()` tears down the Electron window before Obsidian delivers
-		// `window-close` in current builds, so snapshot bounds while the window is
-		// still addressable. Native close still uses the handler below as a fallback.
-		this.persistWindowBounds(filePath, entry);
-		// Detaching the leaf closes the popout window (it's the only leaf in
-		// it). State cleanup remains in handleWindowClosed().
-		entry.leaf.detach();
+		void this.finalizeClosedEntry(filePath, entry, entry.doc);
+		try {
+			entry.leaf?.detach();
+		} catch (error) {
+			console.error("[Excalidraw PureRef] failed to detach Popout leaf.", error);
+		}
 	}
 
 	/** Wired to app.workspace.on('window-open', ...) in main.ts. */
 	handleWindowOpened(win: WorkspaceWindow): void {
 		if (!this.pending) return;
+		// The synchronous event from openPopoutLeaf claims this pending open.
+		// Ignore unrelated windows that open while native id detection retries.
+		if (this.pending.doc && this.pending.doc !== win.doc) return;
+		this.pending.doc = win.doc;
 		// Stash the doc onto the entry immediately — before windowId detection
 		// (which may take retries) — so open()'s focus-wait can observe the
 		// popout window as soon as it exists.
-		const entry = this.openBoards.get(this.pending.filePath);
-		if (entry) entry.doc = win.doc;
+		const entry = this.pending.entry;
+		if (this.isCurrent(this.pending.filePath, entry)) entry.doc = win.doc;
 		this.finalizePendingOpen(win.doc);
 	}
 
@@ -426,7 +470,7 @@ export class PopoutManager {
 	 * main window as a guaranteed fallback in case focus never lands (which
 	 * would otherwise throttle the popout's rAF and stall the poll).
 	 */
-	private waitForPopoutFocus(doc: Document | null, maxMs: number): Promise<void> {
+	private waitForPopoutFocus(doc: Document | null, maxMs: number, entry: OpenBoardPopout): Promise<void> {
 		return new Promise<void>((resolve) => {
 			const view = doc?.defaultView;
 			if (!doc || !view) {
@@ -446,6 +490,10 @@ export class PopoutManager {
 			const hardCap = window.setTimeout(finish, maxMs);
 			const poll = () => {
 				if (settled) return;
+				if (entry.phase === "closing" || this.disposed) {
+					finish();
+					return;
+				}
 				if (doc.hasFocus()) {
 					finish();
 					return;
@@ -462,35 +510,81 @@ export class PopoutManager {
 		if (!filePath) return;
 
 		const entry = this.openBoards.get(filePath);
-		// Capture the Popout's final camera while its view is still mounted — this
-		// 'window-close' handler fires early enough that excalidrawAPI is still
-		// live (verified). Reopening restores this exact framing.
-		const viewport = readViewport(entry?.leaf ?? null);
-
-		this.openBoards.delete(filePath);
-		clearPopupDocumentMarker(win.doc);
-		entry?.detachWindowDrag?.();
-		entry?.detachChromeHiding?.();
-		entry?.detachDropBridge?.();
-		entry?.detachBoundsSaving?.();
-		// Restore Excalidraw's zoom-to-fit-on-resize once the last Popout closes.
-		this.refitSuspender.resume();
-
-		if (viewport) {
-			await this.plugin.geometry.setViewport(filePath, viewport);
+		// A late close from an older Popout for this Board must not remove a new
+		// entry that happens to have the same file path.
+		if (!entry || entry.doc !== win.doc) {
+			clearPopupDocumentMarker(win.doc);
+			return;
 		}
+
+		await this.finalizeClosedEntry(filePath, entry, win.doc);
 
 		if (this.readOnlyFilePath === filePath && isPrototypeOpen()) {
 			this.refocusReadOnlyWindowAfterClose();
 		}
 
-		this.persistWindowBounds(filePath, entry);
+	}
+
+	private async finalizeClosedEntry(
+		filePath: string,
+		entry: OpenBoardPopout,
+		doc: Document | null,
+	): Promise<void> {
+		if (!this.isCurrent(filePath, entry)) return;
+		entry.phase = "closing";
+		// Both values must be captured before detach/close invalidates native and
+		// Excalidraw state.
+		const viewport = readViewport(entry.leaf);
+		const bounds = entry.windowId == null ? null : getWindowPhysicalBoundsById(entry.windowId);
+		this.releaseEntry(filePath, entry, doc);
+
+		const writes: Promise<void>[] = [];
+		if (viewport) writes.push(this.plugin.geometry.setViewport(filePath, viewport));
+		if (bounds) writes.push(this.plugin.geometry.set(filePath, bounds));
+		try {
+			await Promise.all(writes);
+		} catch (error) {
+			console.error("[Excalidraw PureRef] failed to persist Popout state.", error);
+		}
+	}
+
+	private releaseEntry(filePath: string, entry: OpenBoardPopout, doc: Document | null): void {
+		if (this.openBoards.get(filePath) === entry) this.openBoards.delete(filePath);
+		if (this.pending?.entry === entry) {
+			if (this.pending.timeoutId != null) window.clearTimeout(this.pending.timeoutId);
+			this.pending = null;
+		}
+		if (doc) clearPopupDocumentMarker(doc);
+		entry.detachWindowDrag?.();
+		entry.detachChromeHiding?.();
+		entry.detachDropBridge?.();
+		entry.detachBoundsSaving?.();
+		entry.detachWindowDrag = null;
+		entry.detachChromeHiding = null;
+		entry.detachDropBridge = null;
+		entry.detachBoundsSaving = null;
+		this.refitSuspender.resume();
+	}
+
+	private abortOpen(filePath: string, entry: OpenBoardPopout): void {
+		if (!this.isCurrent(filePath, entry)) return;
+		entry.phase = "closing";
+		this.releaseEntry(filePath, entry, entry.doc);
+		try {
+			entry.leaf?.detach();
+		} catch {
+			// The window may already be tearing down.
+		}
 	}
 
 	private persistWindowBounds(filePath: string, entry: OpenBoardPopout | undefined): void {
 		if (entry?.windowId == null) return;
 		const bounds = getWindowPhysicalBoundsById(entry.windowId);
-		if (bounds) void this.plugin.geometry.set(filePath, bounds);
+		if (bounds) {
+			void this.plugin.geometry.set(filePath, bounds).catch((error) => {
+				console.error("[Excalidraw PureRef] failed to persist Popout bounds.", error);
+			});
+		}
 	}
 
 	/**
@@ -509,30 +603,56 @@ export class PopoutManager {
 		sourceViewState: ReturnType<typeof readMainWindowViewportForFile>,
 	): Promise<void> {
 		const win = entry.doc?.defaultView;
-		if (!win) return;
+		if (!win) {
+			if (this.isCurrent(filePath, entry)) {
+				new Notice("PureRef popout did not receive an Obsidian window document.");
+				this.abortOpen(filePath, entry);
+			}
+			return;
+		}
 
 		const start = performance.now();
-		while (this.openBoards.get(filePath) === entry) {
-			// readContainerSize returns non-null only once excalidrawAPI is live.
-			if (readContainerSize(entry.leaf) !== null) break;
+		while (this.isCurrent(filePath, entry)) {
+			if (isCanvasReady(entry.leaf)) break;
 			if (performance.now() - start > CANVAS_READY_MAX_MS) break;
 			await new Promise((r) => window.setTimeout(r, CANVAS_READY_POLL_MS));
 		}
 
-		// The Popout may have been closed while we were waiting.
-		if (this.openBoards.get(filePath) !== entry) return;
+		if (!this.isCurrent(filePath, entry)) return;
+		if (!isCanvasReady(entry.leaf)) {
+			console.error("[Excalidraw PureRef] Excalidraw canvas did not initialize within the timeout.");
+			new Notice("Excalidraw did not finish initializing the PureRef popout. The incomplete popout was closed.");
+			this.abortOpen(filePath, entry);
+			return;
+		}
 
 		win.dispatchEvent(new Event("resize"));
 		// One frame so the resize has settled the canvas size before we set the
 		// camera — otherwise Excalidraw's post-resize fit would clobber it.
-		win.requestAnimationFrame(() => {
-			if (this.openBoards.get(filePath) !== entry) return;
-			enableZenMode(entry.leaf);
-			this.applyStartupViewport(entry.leaf, filePath, sourceViewState);
-			// The mode switch can briefly leave the newly created Popout unfocused
-			// while Obsidian mounts Excalidraw. Restore native focus after mounting
-			// and applying the camera so the user can keep working immediately.
-			if (entry.windowId != null) focusWindowById(entry.windowId);
+		await new Promise<void>((resolve) => {
+			let settled = false;
+			const apply = () => {
+				if (settled) return;
+				settled = true;
+				window.clearTimeout(hardCap);
+				if (this.isCurrent(filePath, entry)) {
+					enableZenMode(entry.leaf);
+					this.applyStartupViewport(entry.leaf, filePath, sourceViewState);
+					entry.phase = "ready";
+					// Restore native focus after mounting and applying the camera so the
+					// user can keep working immediately.
+					if (entry.windowId != null) focusWindowById(entry.windowId);
+				}
+				resolve();
+			};
+			// A hidden/minimized renderer can throttle its rAF. The main-window timer
+			// guarantees the serialized transition still completes.
+			const hardCap = window.setTimeout(apply, 1000);
+			try {
+				win.requestAnimationFrame(apply);
+			} catch {
+				apply();
+			}
 		});
 	}
 
@@ -544,7 +664,7 @@ export class PopoutManager {
 	 * Popout's own size; otherwise leave Excalidraw's default fit alone.
 	 */
 	private applyStartupViewport(
-		leaf: WorkspaceLeaf,
+		leaf: WorkspaceLeaf | null,
 		filePath: string,
 		sourceViewState: ReturnType<typeof readMainWindowViewportForFile>,
 	): void {
@@ -576,18 +696,35 @@ export class PopoutManager {
 	}
 
 	dispose(): void {
+		this.disposed = true;
 		if (this.pending?.timeoutId != null) {
 			window.clearTimeout(this.pending.timeoutId);
 		}
 		this.pending = null;
+		const leaves = Array.from(this.openBoards.values(), (entry) => entry.leaf).filter(
+			(leaf): leaf is WorkspaceLeaf => leaf !== null,
+		);
 		for (const entry of this.openBoards.values()) {
-			try {
-				entry.leaf.detach();
-			} catch {
-				// The workspace may already be tearing down.
-			}
+			entry.phase = "closing";
+			if (entry.doc) clearPopupDocumentMarker(entry.doc);
+			entry.detachWindowDrag?.();
+			entry.detachChromeHiding?.();
+			entry.detachDropBridge?.();
+			entry.detachBoundsSaving?.();
 		}
 		this.openBoards.clear();
+		// If unload lands during setViewState/Excalidraw mount, detaching in the
+		// middle of that transition can leave Obsidian's renderer unusable. Queued
+		// tasks observe disposed and exit; detach only after the active task settles.
+		void this.transitionQueue.then(() => {
+			for (const leaf of leaves) {
+				try {
+					leaf.detach();
+				} catch {
+					// The workspace may already be tearing down.
+				}
+			}
+		});
 		// Don't leave the transparent prototype window orphaned after unload.
 		closePrototype();
 		this.readOnlyFilePath = null;
@@ -597,9 +734,14 @@ export class PopoutManager {
 
 	private finalizePendingOpen(doc: Document, attempt = 0): void {
 		if (!this.pending) return;
-		const { filePath, existingWindowIds, initialOpacity } = this.pending;
+		if (this.pending.doc !== doc) return;
+		const { filePath, existingWindowIds, initialOpacity, entry } = this.pending;
 
-		const newWindowId = findNewBrowserWindowId(existingWindowIds);
+		const correlatedWindowId = getBrowserWindowIdForDomWindow(doc.defaultView);
+		const newWindowId =
+			correlatedWindowId != null && !existingWindowIds.has(correlatedWindowId)
+				? correlatedWindowId
+				: findNewBrowserWindowId(existingWindowIds);
 		if (newWindowId == null) {
 			if (attempt >= FINALIZE_MAX_ATTEMPTS) {
 				console.error(
@@ -613,7 +755,7 @@ export class PopoutManager {
 						"hiding, and window drag were not applied. Electron window access may be " +
 						"unavailable in this build (see console for details).",
 				);
-				this.pending = null;
+				this.abortOpen(filePath, entry);
 				return;
 			}
 			this.pending.timeoutId = window.setTimeout(
@@ -626,23 +768,19 @@ export class PopoutManager {
 		console.log("[Excalidraw PureRef] identified new popout window id:", newWindowId);
 		this.pending = null;
 
-		const entry = this.openBoards.get(filePath);
-		if (entry) {
-			entry.windowId = newWindowId;
-			entry.doc = doc;
-		}
+		if (!this.isCurrent(filePath, entry)) return;
+		entry.windowId = newWindowId;
+		entry.doc = doc;
 
 		markPopupDocument(doc, filePath);
 		doc.body.classList.add(CHROME_HIDDEN_CLASS);
 
-		if (entry) {
-			entry.detachWindowDrag = attachWindowDrag(doc, newWindowId);
-			entry.detachChromeHiding = applyChromeHiding(doc);
-			entry.detachDropBridge = attachPopoutDropBridge(doc);
-			entry.detachBoundsSaving = onWindowCloseById(newWindowId, () =>
-				this.persistWindowBounds(filePath, entry),
-			);
-		}
+		entry.detachWindowDrag = attachWindowDrag(doc, newWindowId);
+		entry.detachChromeHiding = applyChromeHiding(doc);
+		entry.detachDropBridge = attachPopoutDropBridge(doc);
+		entry.detachBoundsSaving = onWindowCloseById(newWindowId, () =>
+			this.persistWindowBounds(filePath, entry),
+		);
 
 		setWindowAlwaysOnTopById(newWindowId, true);
 		if (initialOpacity != null) setWindowOpacityById(newWindowId, initialOpacity);

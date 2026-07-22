@@ -37,6 +37,7 @@ export function attachPopoutDropBridge(doc: Document): () => void {
 	const win = doc.defaultView ?? window;
 	// The main window whose realm owns the constructors Excalidraw checks against.
 	const mainWindow = window;
+	let detached = false;
 
 	// Resolve a dropped file's on-disk path. Excalidraw's *embeddable* branch
 	// (video, PDF, etc.) needs the OS path, not the bytes: it reads `file.path`
@@ -145,9 +146,12 @@ export function attachPopoutDropBridge(doc: Document): () => void {
 				console.error("[Excalidraw PureRef] failed to clone dropped file across realms.", error);
 			}
 		}
+		if (detached || doc.defaultView?.closed) return;
 		if (mainFiles.length === 0) return;
 
-		const dropTarget = target ?? doc.querySelector(".excalidraw__canvas.interactive") ?? doc.querySelector(".excalidraw");
+		const originalTarget = target?.isConnected && target.ownerDocument === doc ? target : null;
+		const dropTarget =
+			originalTarget ?? doc.querySelector(".excalidraw__canvas.interactive") ?? doc.querySelector(".excalidraw");
 		if (!dropTarget) return;
 
 		const dataTransfer = new mainWindow.DataTransfer();
@@ -174,6 +178,7 @@ export function attachPopoutDropBridge(doc: Document): () => void {
 	doc.addEventListener("drop", onDrop, true);
 
 	return () => {
+		detached = true;
 		doc.removeEventListener("dragover", onDragOver, true);
 		doc.removeEventListener("drop", onDrop, true);
 	};

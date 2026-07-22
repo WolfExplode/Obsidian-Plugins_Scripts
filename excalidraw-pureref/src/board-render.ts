@@ -194,8 +194,9 @@ export function collectMediaOverlays(
 	return overlays;
 }
 
-/** Full-fidelity, transparent SVG of `filePath` as a string, or null on failure. */
-export async function renderBoardSvg(
+let renderQueue: Promise<void> = Promise.resolve();
+
+async function renderBoardSvgNow(
 	plugin: ExcalidrawPureRefPlugin,
 	filePath: string,
 ): Promise<string | null> {
@@ -239,4 +240,20 @@ export async function renderBoardSvg(
 		console.error("[Excalidraw PureRef] createSVG failed for", filePath, error);
 		return null;
 	}
+}
+
+/**
+ * Full-fidelity transparent SVG of `filePath`, serialized because the
+ * ExcalidrawAutomate renderer carries mutable reset/createSVG working state.
+ */
+export function renderBoardSvg(
+	plugin: ExcalidrawPureRefPlugin,
+	filePath: string,
+): Promise<string | null> {
+	const render = renderQueue.then(() => renderBoardSvgNow(plugin, filePath));
+	renderQueue = render.then(
+		() => undefined,
+		() => undefined,
+	);
+	return render;
 }

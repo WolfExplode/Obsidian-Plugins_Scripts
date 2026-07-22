@@ -113,5 +113,6 @@ export function attachWindowDrag(doc: Document, windowId: number): () => void {
 		doc.removeEventListener("mouseup", onMouseUp, true);
 		doc.removeEventListener("contextmenu", onContextMenu, true);
 		if (state?.rafId != null) popoutWindow.cancelAnimationFrame(state.rafId);
+		state = null;
 	};
 }

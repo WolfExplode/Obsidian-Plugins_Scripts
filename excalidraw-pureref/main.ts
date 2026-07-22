@@ -4,7 +4,6 @@ import { PopoutManager } from "src/popout-manager";
 import { ExcalidrawPureRefSettingTab } from "src/settings-tab";
 import { DEFAULT_SETTINGS, ExcalidrawPureRefSettings } from "src/settings";
 import { getActiveExcalidrawFile } from "src/excalidraw-view";
-import { registerPurInterchangeCommands } from "src/pur-interchange";
 import { installKeyRelay, removeKeyRelay, cleanupOrphanPrototypes } from "src/transparent-proto";
 
 export default class ExcalidrawPureRefPlugin extends Plugin {
@@ -41,7 +40,7 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 
 		this.addCommand({
 			id: "toggle-readonly-transparent-prototype",
-			name: "Toggle read-only transparent prototype (experimental)",
+			name: "Toggle transparent reference mode",
 			hotkeys: [{ modifiers: [], key: "F10" }],
 			checkCallback: (checking) => {
 				const file = getActiveExcalidrawFile(this.app);
@@ -76,8 +75,6 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 				return true;
 			},
 		});
-
-		registerPurInterchangeCommands(this);
 
 		this.registerEvent(
 			this.app.workspace.on("window-open", (win: WorkspaceWindow) => {

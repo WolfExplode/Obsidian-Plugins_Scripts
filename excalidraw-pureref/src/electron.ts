@@ -138,6 +138,35 @@ export function getFocusedBrowserWindowId(): number | null {
 	}
 }
 
+/**
+ * Resolve the BrowserWindow owned by a specific DOM window. Calling that
+ * window's own require executes in its renderer realm, so getCurrentWindow()
+ * is correlated directly instead of inferred from a global id difference.
+ */
+export function getBrowserWindowIdForDomWindow(target: Window | null): number | null {
+	if (!target) return null;
+	try {
+		const targetWithElectron = target as Window & {
+			electron?: { remote?: ElectronRemoteModule };
+			require?: ElectronRequire;
+		};
+		let remoteModule = targetWithElectron.electron?.remote ?? null;
+		if (!remoteModule && targetWithElectron.require) {
+			for (const moduleId of MODULE_IDS) {
+				try {
+					remoteModule = resolveRemoteModule(targetWithElectron.require(moduleId));
+					if (remoteModule) break;
+				} catch {
+					// Try the next Electron bridge exposed in this renderer.
+				}
+			}
+		}
+		return remoteModule?.getCurrentWindow?.()?.id ?? null;
+	} catch {
+		return null;
+	}
+}
+
 export function adjustWindowOpacityById(id: number, delta: number): number | null {
 	const win = getBrowserWindowById(id);
 	if (!win) return null;
