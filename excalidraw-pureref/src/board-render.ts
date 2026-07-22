@@ -1,4 +1,5 @@
 import type ExcalidrawPureRefPlugin from "../main";
+import type { MediaOverlay } from "./transparent-proto";
 
 /**
  * Renders a Board file to a standalone, background-less SVG string, using the
@@ -79,6 +80,118 @@ export function getSceneMin(
 		console.error("[Excalidraw PureRef] getBoundingBox failed.", error);
 		return null;
 	}
+}
+
+/**
+ * Excalidraw file extensions we can play/animate as a live HTML overlay. Local
+ * video and animated images are embedded as "embeddable" elements whose static
+ * SVG export is empty (see MediaOverlay), so the read-only window renders these
+ * with a real <video>/<img>. Regular still images (png/jpg) are NOT here: they
+ * export fine as inline <image>, so they need no overlay.
+ */
+const OVERLAY_KIND_BY_EXT: Record<string, "video" | "image"> = {
+	mp4: "video",
+	webm: "video",
+	mov: "video",
+	m4v: "video",
+	ogv: "video",
+	mkv: "video",
+	gif: "image",
+	apng: "image",
+	webp: "image",
+};
+
+interface EmbeddableLike {
+	type?: string;
+	link?: string | null;
+	x?: number;
+	y?: number;
+	width?: number;
+	height?: number;
+	angle?: number;
+	isDeleted?: boolean;
+}
+
+/**
+ * The vault-file linkpath an embeddable points at, or null if it's not a local
+ * file link (e.g. an `https://` website embed, which the SVG's own iframe
+ * already handles). Handles Obsidian's `[[wikilink|alias#heading]]` form.
+ */
+function localLinkpath(link: string | null | undefined): string | null {
+	if (!link) return null;
+	let s = link.trim();
+	if (/^[a-z]+:\/\//i.test(s)) return null; // http(s)/app/etc — not a vault file
+	const wiki = s.match(/^\[\[([^\]]+)\]\]$/);
+	if (wiki) s = wiki[1];
+	s = s.split("|")[0].split("#")[0].trim();
+	return s || null;
+}
+
+function nodeRequire(): ((id: string) => unknown) | null {
+	return (window as Window & { require?: (id: string) => unknown }).require ?? null;
+}
+
+/**
+ * Live-media overlays for `elements`: every embeddable whose link resolves to a
+ * local video / animated-image file, expressed in scene coordinates so the
+ * read-only window can place a real <video>/<img> exactly where the (empty)
+ * exported element sits. `boardPath` is the source for link resolution. Website
+ * embeds and unresolvable links are skipped.
+ */
+export function collectMediaOverlays(
+	plugin: ExcalidrawPureRefPlugin,
+	elements: readonly unknown[],
+	boardPath: string,
+): MediaOverlay[] {
+	const req = nodeRequire();
+	const adapter = plugin.app.vault.adapter as unknown as { getBasePath?(): string };
+	const basePath = adapter.getBasePath?.();
+	if (!req || !basePath) return [];
+	let path: { join(...parts: string[]): string };
+	let url: { pathToFileURL(p: string): { href: string } };
+	try {
+		path = req("path") as typeof path;
+		url = req("url") as typeof url;
+	} catch {
+		return [];
+	}
+
+	const overlays: MediaOverlay[] = [];
+	let skipped = 0;
+	for (const raw of elements) {
+		const el = raw as EmbeddableLike;
+		if (el.isDeleted || el.type !== "embeddable") continue;
+		const linkpath = localLinkpath(el.link);
+		if (!linkpath) continue; // website embed or no link
+		const dest = plugin.app.metadataCache.getFirstLinkpathDest(linkpath, boardPath);
+		if (!dest) {
+			skipped++;
+			continue;
+		}
+		const kind = OVERLAY_KIND_BY_EXT[dest.extension.toLowerCase()];
+		if (!kind) continue; // linked file isn't a media type we overlay
+		try {
+			const src = url.pathToFileURL(path.join(basePath, dest.path)).href;
+			overlays.push({
+				kind,
+				src,
+				x: el.x ?? 0,
+				y: el.y ?? 0,
+				width: el.width ?? 0,
+				height: el.height ?? 0,
+				angle: el.angle ?? 0,
+			});
+		} catch (error) {
+			console.error("[Excalidraw PureRef] media overlay URL failed for", dest.path, error);
+		}
+	}
+	if (overlays.length || skipped) {
+		console.log(
+			`[Excalidraw PureRef] media overlays: ${overlays.length} rendered` +
+				(skipped ? `, ${skipped} unresolved link(s) skipped` : ""),
+		);
+	}
+	return overlays;
 }
 
 /** Full-fidelity, transparent SVG of `filePath` as a string, or null on failure. */

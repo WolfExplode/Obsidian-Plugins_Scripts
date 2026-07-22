@@ -126,6 +126,13 @@ function createPrototype(options) {
 		webPreferences: {
 			nodeIntegration: true,
 			contextIsolation: false,
+			// This window's page is loaded from disk (loadFile) and displays only
+			// local, trusted content: our own HTML plus vault media referenced by
+			// file:// URLs. Same-origin file access is needed so the read-only
+			// board can paint local <video>/<img> overlays, and muted videos must
+			// be free to autoplay. Both are safe here — no remote content loads.
+			webSecurity: false,
+			autoplayPolicy: "no-user-gesture-required",
 		},
 	});
 
@@ -134,6 +141,16 @@ function createPrototype(options) {
 	} catch (_e) {
 		/* frameless: title is invisible anyway */
 	}
+
+	// loadFile() below loads HTML with its own <title>, which Chromium would push
+	// onto the window title — clobbering MARKER_TITLE and breaking the marker-based
+	// orphan cleanup (closeAllPrototypes matches on getTitle() === MARKER_TITLE).
+	// Intercept the title update, suppress it, and reassert the marker. The window
+	// is frameless + skipTaskbar, so the title is never visible to the user anyway.
+	win.webContents.on("page-title-updated", (e) => {
+		e.preventDefault();
+		if (!win.isDestroyed() && win.getTitle() !== MARKER_TITLE) win.setTitle(MARKER_TITLE);
+	});
 
 	// Highest always-on-top level (ADR 0004) so it floats like the real popout.
 	try {
@@ -241,6 +258,23 @@ function getPrototypeBounds(id) {
 	}
 }
 
+/**
+ * Remove this module from the MAIN-process require cache so the next
+ * `remote.require(<this file>)` recompiles it from disk. This MUST run in the
+ * main process (where this module lives): the renderer can't bust the cache by
+ * deleting `remote.require("module")._cache[key]`, because @electron/remote
+ * forwards function *calls* but not property *deletes*. The renderer therefore
+ * calls this to make .cjs edits hot-reload on a plugin reload — see
+ * transparent-proto.ts loadHelper.
+ */
+function __evictFromCache() {
+	try {
+		delete require.cache[__filename];
+	} catch (_e) {
+		/* best-effort */
+	}
+}
+
 module.exports = {
 	MOVE_CHANNEL,
 	KEY_CHANNEL,
@@ -250,4 +284,5 @@ module.exports = {
 	closeAllPrototypes,
 	getPrototypeBounds,
 	setContent,
+	__evictFromCache,
 };

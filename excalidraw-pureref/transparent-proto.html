@@ -44,6 +44,30 @@
 		background: transparent;
 	}
 
+	/* Live-media overlays (video / animated image) painted on top of the SVG at
+	   the empty region their Excalidraw "embeddable" exported to. Positioned in
+	   the same local coordinate space as the SVG (scene coords minus minX/minY),
+	   inside #viewport so they pan/zoom with the board. object-fit: fill makes
+	   them occupy exactly the box the user drew. */
+	#viewport .epr-media {
+		position: absolute;
+		border: 0;
+		object-fit: fill;
+		transform-origin: center center;
+		background: transparent;
+	}
+
+	/* The board is display-only here — every interaction (pan/zoom/window-move)
+	   lives on #surface/#frame, not the drawing. Excalidraw's SVG export renders
+	   embedded media (e.g. video) and links as interactive <a>/<foreignObject>
+	   nodes; left live they swallow pointer events (blocking MMB-pan over that
+	   region) and, worse, navigate this frameless window away on click — which
+	   wipes the whole document, including the F10/F11 key relay. Making all
+	   injected content pointer-inert keeps every interaction on the surface. */
+	#viewport, #viewport * {
+		pointer-events: none;
+	}
+
 </style>
 </head>
 <body>
@@ -108,6 +132,45 @@
 			applyTransform();
 		}
 
+		// Paint the live-media overlays (video / animated image) on top of the SVG.
+		// Excalidraw exports local media embeds as empty regions; each overlay is a
+		// real element placed in the SVG's local coordinate space (scene - min), so
+		// it pans/zooms with the board via #viewport's transform. Videos autoplay
+		// muted+looped so they "just play" while staying pointer-inert (pan works
+		// over them). Called after innerHTML=svg, which clears any prior overlays.
+		function renderMedia(media) {
+			if (!Array.isArray(media)) return;
+			for (const m of media) {
+				if (!m || !m.src) continue;
+				let node;
+				if (m.kind === "video") {
+					node = document.createElement("video");
+					node.src = m.src;
+					node.autoplay = true;
+					node.loop = true;
+					node.muted = true;
+					node.playsInline = true;
+					node.preload = "auto";
+					// Muted autoplay is permitted, but call play() too in case the
+					// attribute alone is ignored on load in this window.
+					node.addEventListener("canplay", () => { node.play().catch(() => {}); });
+				} else {
+					node = document.createElement("img");
+					node.src = m.src;
+				}
+				node.className = "epr-media";
+				node.style.left = (m.x - minX) + "px";
+				node.style.top = (m.y - minY) + "px";
+				node.style.width = m.width + "px";
+				node.style.height = m.height + "px";
+				if (m.angle) node.style.transform = "rotate(" + m.angle + "rad)";
+				node.addEventListener("error", () => {
+					console.error("[EPR proto] media failed to load:", m.src);
+				});
+				viewport.appendChild(node);
+			}
+		}
+
 		// Receive the board (SVG + scene offset + optional camera) and display it.
 		ipcRenderer.on(CONTENT_CHANNEL, (_e, content) => {
 			content = content || {};
@@ -116,6 +179,7 @@
 			minY = typeof content.minY === "number" ? content.minY : 0;
 			const svgEl = viewport.querySelector("svg");
 			if (!svgEl) return;
+			renderMedia(content.media);
 			if (content.view) {
 				// Match the popout's camera exactly (seamless switch).
 				applySceneView(content.view);
@@ -198,6 +262,17 @@
 
 		// Never let the OS/Chromium context menu appear on RMB.
 		window.addEventListener("contextmenu", (e) => e.preventDefault());
+
+		// Safety net: this frameless window's document IS the read-only UI (frame,
+		// viewport, and the key relay). If anything in the injected board SVG ever
+		// triggers navigation — a link click, a dropped file — the document would
+		// unload and take the F10/F11 handlers with it, leaving the window stuck.
+		// Swallow anchor clicks and block drag-navigation outright.
+		window.addEventListener("click", (e) => {
+			if (e.target && e.target.closest && e.target.closest("a")) e.preventDefault();
+		}, true);
+		window.addEventListener("dragover", (e) => e.preventDefault());
+		window.addEventListener("drop", (e) => e.preventDefault());
 
 		// F10/F11 are Obsidian command hotkeys, but this is a separate window so
 		// they never reach Obsidian on their own (F11 would just toggle Chromium

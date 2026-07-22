@@ -19,7 +19,7 @@ import {
 	setPrototypeContent,
 	type ReadOnlyKeyMessage,
 } from "./transparent-proto";
-import { renderBoardSvg, getSceneMin } from "./board-render";
+import { renderBoardSvg, getSceneMin, collectMediaOverlays } from "./board-render";
 import { markPopupDocument, getPopupFilePath, clearPopupDocumentMarker } from "./document-marker";
 import { attachWindowDrag } from "./window-drag";
 import { applyChromeHiding } from "./chrome-hider";
@@ -204,6 +204,9 @@ export class PopoutManager {
 		const sceneView = readSceneView(entry?.leaf ?? null);
 		const elements = readSceneElements(entry?.leaf ?? null);
 		const min = elements ? getSceneMin(this.plugin, elements) : null;
+		// Local video/animated-media embeds export as empty regions in the SVG;
+		// collect them so the transparent window can overlay live <video>/<img>.
+		const media = elements ? collectMediaOverlays(this.plugin, elements, file.path) : [];
 
 		this.readOnlyFilePath = file.path;
 		this.close(file.path);
@@ -219,6 +222,7 @@ export class PopoutManager {
 				minX: min?.minX ?? 0,
 				minY: min?.minY ?? 0,
 				view: sceneView,
+				media,
 			});
 		}
 	}

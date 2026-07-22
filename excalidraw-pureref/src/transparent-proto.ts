@@ -23,12 +23,31 @@ export interface SceneViewPayload {
 	zoom: number;
 }
 
-/** What we push into the transparent window: the board SVG, its scene offset, and an optional camera. */
+/**
+ * A live-media element to overlay on the static board SVG. Local video/animated
+ * media are stored as Excalidraw "embeddable" elements linking a vault file; the
+ * static SVG export can't rasterize them (they come out empty), so the read-only
+ * window paints a real <video>/<img> at the element's scene geometry instead.
+ * `src` is a file:// URL; coordinates are scene units (same space as minX/minY).
+ */
+export interface MediaOverlay {
+	kind: "video" | "image";
+	src: string;
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+	/** Rotation in radians about the element's center (Excalidraw's `angle`). */
+	angle: number;
+}
+
+/** What we push into the transparent window: the board SVG, its scene offset, a camera, and any live-media overlays. */
 export interface BoardContent {
 	svg: string;
 	minX: number;
 	minY: number;
 	view?: SceneViewPayload | null;
+	media?: MediaOverlay[];
 }
 
 /** F10/F11 relayed out of the transparent window; F10 carries the window's current camera. */
@@ -95,14 +114,27 @@ function loadHelper(plugin: ExcalidrawPureRefPlugin): ProtoHelper | null {
 	}
 	try {
 		// Bust the MAIN-process require cache so edits to the .cjs take effect on a
-		// plugin reload. Without this, remote.require returns the stale cached
-		// module and .cjs changes silently never apply (a full Obsidian restart
-		// would otherwise be required).
+		// plugin reload — otherwise remote.require returns the stale cached module
+		// and .cjs changes silently never apply until a full Obsidian restart.
+		//
+		// The cache CANNOT be busted from here by deleting mod._cache[key]: that
+		// object is reached through @electron/remote's proxy, which forwards
+		// function *calls* to the main process but NOT property *deletes*, so the
+		// delete is a silent no-op on the real (main-process) cache. Instead we let
+		// the helper evict itself — __evictFromCache() runs in main, where
+		// `delete require.cache[__filename]` genuinely takes effect. We call it on
+		// the currently-cached (possibly stale) module, then re-require for a fresh
+		// one. installHandlers() in the .cjs clears prior ipc listeners, so
+		// re-requiring never doubles them up.
+		//
+		// One caveat: the very first load after __evictFromCache was ADDED to the
+		// .cjs still needs a single Obsidian restart (the running main process has
+		// the older module without it). Every edit after that hot-reloads normally.
 		try {
-			const mod = remote.require("module") as { _cache?: Record<string, unknown> };
-			if (mod?._cache) delete mod._cache[paths.helperPath];
+			const stale = remote.require(paths.helperPath) as { __evictFromCache?: () => void };
+			stale.__evictFromCache?.();
 		} catch {
-			/* best-effort cache bust */
+			/* no module cached yet, or an older .cjs without self-eviction */
 		}
 		helper = remote.require(paths.helperPath) as ProtoHelper;
 		htmlPath = paths.htmlPath;
