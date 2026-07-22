@@ -6,6 +6,17 @@ The Obsidian plugin executes the bundled `main.js`, compiled by esbuild from `sr
 
 The repository's `.claude/settings.json` has a Claude-specific post-edit build hook, but do not assume it applies to Codex. To apply a rebuilt plugin in a running Obsidian instance, disable and then enable the `excalidraw-pureref` plugin using the Obsidian DevTools connection.
 
+## Reference material (checked in — read before guessing about Excalidraw)
+
+`excalidraw-pureref/reference/` holds local copies of upstream sources so agents can look things up directly instead of relying on web search or memory:
+
+- `reference/excalidraw-master/` — the **full Excalidraw repo** (the `main`/master branch). Use this as ground truth for core Excalidraw behavior, appState fields, and internals. E.g. box-selection mode is `appState.boxSelectionMode: "contain" | "overlap"` (default `"contain"`; `"overlap"` = select-anything-the-box-touches, the PureRef-style behavior) — defined in `packages/excalidraw/appState.ts`. This feature is shipped on Excalidraw main and confirmed present in the user's Excalidraw.
+- `reference/excalidraw-docs/` — Excalidraw / ExcalidrawAutomate documentation, including `ExcalidrawAutomate full library for LLM training.md` and `source-mdx/`. Use for the Obsidian plugin's scripting/automation API.
+- `reference/PureRef-format-main/` — PureRef file-format reference.
+- `reference/obsidian-synaptic-hatch-master/`, `reference/obsidian-ui-tweaker-master/` — other Obsidian plugins kept for reference/patterns.
+
+When answering questions about Excalidraw internals, grep/read these local copies first.
+
 ## Obsidian DevTools debugging
 
 The `obsidian-devtools-mcp` project is in the repository root (gitignored). It connects through CDP on port 9222. Use `launch-obsidian-debug.ps1` (or its `.bat` wrapper) to quit Obsidian and relaunch it with remote debugging. Obsidian must have been launched with `--remote-debugging-port=9222`; launching normally from the tray/icon will not expose the port.
