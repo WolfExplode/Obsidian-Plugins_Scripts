@@ -1,5 +1,12 @@
 import type { App, TFile, WorkspaceLeaf } from "obsidian";
-import { isPackable, planPack, type PackDirection, type PackElement } from "./pack-elements";
+import {
+	isPackable,
+	planPack,
+	planOptimalPack,
+	type PackDirection,
+	type PackElement,
+	type PackMove,
+} from "./pack-elements";
 
 /**
  * The Excalidraw community plugin registers its view under this type id.
@@ -264,15 +271,17 @@ function randomVersionNonce(): number {
 }
 
 /**
- * PureRef-style Ctrl+Arrow pack for the current selection in a leaf. Reads the
- * selected, packable elements (images/embeds/text — never drawings, shapes,
- * arrows, or bound text), computes a gravity settle toward `direction`, and
- * writes the moved elements back with an undoable history entry. Positions only:
- * nothing is resized or rotated. Returns false (a no-op) when fewer than two
- * packable elements are selected or nothing needed to move, so the caller can
- * let Excalidraw's own arrow-nudge proceed instead.
+ * Shared plumbing for the PureRef arranges: read the selected, packable elements
+ * (images/embeds/text — never drawings, shapes, arrows, or bound text), hand
+ * them to a planner, and write the resulting moves back as one undoable history
+ * entry. Positions only: nothing is resized or rotated. Returns false (a no-op)
+ * when fewer than two packable elements are selected or the plan is empty, so the
+ * caller can let Excalidraw's own key handling proceed instead.
  */
-export function packSelectedElements(leaf: WorkspaceLeaf | null, direction: PackDirection): boolean {
+function applyPack(
+	leaf: WorkspaceLeaf | null,
+	plan: (selected: PackElement[]) => PackMove[],
+): boolean {
 	const api = getExcalidrawApi(leaf);
 	const view = getExcalidrawView(leaf);
 	if (!api?.getSceneElements || !view?.updateScene) return false;
@@ -289,7 +298,7 @@ export function packSelectedElements(leaf: WorkspaceLeaf | null, direction: Pack
 	const selected = all.filter((el) => selectedIds[el.id] && isPackable(el));
 	if (selected.length < 2) return false;
 
-	const moves = planPack(selected as PackElement[], direction, PACK_GAP);
+	const moves = plan(selected as PackElement[]);
 	if (moves.length === 0) return false;
 
 	const moveById = new Map(moves.map((m) => [m.id, m]));
@@ -315,6 +324,23 @@ export function packSelectedElements(leaf: WorkspaceLeaf | null, direction: Pack
 	} catch {
 		return false;
 	}
+}
+
+/**
+ * PureRef-style Ctrl+Arrow gravity pack: settle the selection toward `direction`.
+ * See applyPack for the no-op contract (lets Excalidraw's arrow-nudge proceed).
+ */
+export function packSelectedElements(leaf: WorkspaceLeaf | null, direction: PackDirection): boolean {
+	return applyPack(leaf, (selected) => planPack(selected, direction, PACK_GAP));
+}
+
+/**
+ * PureRef-style Ctrl+Shift+P "Optimal" arrange: re-lay the selection into a
+ * compact, roughly-square, top-left-anchored block. See applyPack for the no-op
+ * contract.
+ */
+export function optimalPackSelectedElements(leaf: WorkspaceLeaf | null): boolean {
+	return applyPack(leaf, (selected) => planOptimalPack(selected, PACK_GAP));
 }
 
 /**
