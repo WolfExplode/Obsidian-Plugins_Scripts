@@ -1,32 +1,39 @@
-import type { TFile } from "obsidian";
+import type { EventRef, TFile, WorkspaceLeaf } from "obsidian";
 import type ExcalidrawPureRefPlugin from "../main";
 import { localLinkpath } from "./board-render";
-import { findExcalidrawLeafForNode, readSceneElements, resizeSceneElements } from "./excalidraw-view";
+import { isExcalidrawLeaf, readSceneElements, resizeSceneElements } from "./excalidraw-view";
 
 /**
- * Fixes the bounds of freshly-imported local media so they match the file's real
+ * Fixes the bounds of freshly-inserted local media so they match the file's real
  * aspect ratio.
  *
- * WHY EXCALIDRAW GETS THIS "WRONG": a dropped video is imported as an
- * `embeddable` element, not an `image`. Excalidraw only measures intrinsic pixel
- * dimensions for images — on insert it reads `naturalWidth/naturalHeight` off the
- * decoded bitmap and sizes the element to that ratio (App.tsx). An embeddable
- * wraps an opaque iframe with no reliable intrinsic size, so instead of loading
- * the media it looks the size up in a hardcoded aspect-ratio table keyed on the
- * embed URL (element/embeddable.ts: YouTube 560×315, generic 560×840, …). A local
- * video matches no entry and lands on the generic default box, so a 16:9 clip
- * gets letterboxed inside a tall/near-square placeholder. There is no per-file
- * "fit to media" setting — only one global default embeddable size.
+ * WHY EXCALIDRAW GETS THIS "WRONG": a video is inserted as an `embeddable`
+ * element, not an `image`. Excalidraw only measures intrinsic pixel dimensions
+ * for images — on insert it reads `naturalWidth/naturalHeight` off the decoded
+ * bitmap and sizes the element to that ratio (App.tsx). An embeddable wraps an
+ * opaque iframe with no reliable intrinsic size, so instead of loading the media
+ * it looks the size up in a hardcoded aspect-ratio table keyed on the embed URL
+ * (element/embeddable.ts: YouTube 560×315, generic 560×840, …). A local video
+ * matches no entry and lands on the generic default box (the Obsidian plugin uses
+ * a 500×500 square), so a 16:9 clip gets letterboxed. There is no per-file "fit
+ * to media" setting — only one global default embeddable size.
  *
- * THE FIX: after a media drop we watch the scene for the new embeddable(s), load
- * the real file just far enough to read `videoWidth/videoHeight` (or an image's
- * natural size for animated gif/webp embeds), and rewrite the element's box to
- * that ratio — preserving the placeholder's centre and visual area — as one
- * undoable step. We only ever touch elements that appear *after* the drop, so an
- * intentionally stretched existing element is never disturbed.
+ * THE FIX: we subscribe to each Excalidraw view's `onChange` and, the first time
+ * an embeddable linking to a local media file appears, load the file just far
+ * enough to read `videoWidth/videoHeight` (or an image's natural size for
+ * animated gif/webp embeds) and rewrite the element's box to that ratio —
+ * preserving the placeholder's centre and visual area — as one undoable step.
+ *
+ * WHY onChange, NOT the drop event: media reaches the scene by several paths —
+ * a drag-drop, a paste, or the plugin's "Insert File From Vault" modal (shown for
+ * files dragged in from outside the vault, whose element only appears after the
+ * user clicks a button, long after any drop). Subscribing to scene changes
+ * catches every path with no timing race. Elements already present when we
+ * subscribe are seeded as "seen" and never touched, so a video you deliberately
+ * stretched is left alone.
  */
 
-/** Media extensions imported as embeddables that we can measure and re-fit. */
+/** Media extensions inserted as embeddables that we can measure and re-fit. */
 const MEDIA_KIND_BY_EXT: Record<string, "video" | "image"> = {
 	mp4: "video",
 	webm: "video",
@@ -39,16 +46,11 @@ const MEDIA_KIND_BY_EXT: Record<string, "video" | "image"> = {
 	webp: "image",
 };
 
-const extOf = (name: string): string => {
-	const dot = name.lastIndexOf(".");
-	return dot >= 0 ? name.slice(dot + 1).toLowerCase() : "";
-};
-
-/** How long a dropped video's element may take to appear before we give up. */
-const POLL_INTERVAL_MS = 150;
-const POLL_TIMEOUT_MS = 6000;
 /** A measured ratio this close to the current one is left alone (already correct). */
 const RATIO_EPSILON = 0.01;
+/** How long to keep retrying attachment while a view's API finishes mounting. */
+const READY_RETRY_MS = 300;
+const READY_RETRY_MAX = 20;
 
 interface EmbeddableEl {
 	id?: string;
@@ -61,38 +63,58 @@ interface EmbeddableEl {
 	isDeleted?: boolean;
 }
 
+/** The slice of the Excalidraw imperative API we use for aspect correction. */
+interface AspectApi {
+	onChange(cb: () => void): () => void;
+	getSceneElements(): readonly EmbeddableEl[];
+	/** In the bundled Excalidraw this is a boolean property, not a method — some
+	 * builds may expose it as a getter/function, so callers handle both. */
+	isDestroyed?: boolean | (() => boolean);
+}
+
 /**
- * A loadable resource URL for an embeddable's linked vault file, or null if the
- * link isn't a resolvable local media file. Uses Obsidian's `getResourcePath`
- * (an `app://` URL): the main and popout renderers block `file://` for media, so
- * that scheme — used by board-render's separate transparent window — errors here.
- * Shares board-render's link parsing so the two agree on what "a local media
- * embed" is.
+ * Whether a view's API reports itself torn down, tolerating property-or-method form.
+ *
+ * DO NOT collapse this to `api.isDestroyed?.()`. In the bundled Excalidraw
+ * `isDestroyed` is a boolean *property*, so `?.()` becomes `false.call(api)` and
+ * throws "d.call is not a function". That throw is silent and nasty: it fired
+ * inside `prune()`, which only iterates once a leaf is attached — so the first
+ * (empty) reconcile attached the main window fine, then every later reconcile
+ * threw before reaching the popout leaf. Net effect was the corrector working in
+ * the main window but never in popouts, with no error surfaced.
  */
-function resolveMediaFile(
-	plugin: ExcalidrawPureRefPlugin,
-	link: string | null | undefined,
-	boardPath: string,
-): { url: string; kind: "video" | "image" } | null {
-	const linkpath = localLinkpath(link);
-	if (!linkpath) return null;
-	const dest = plugin.app.metadataCache.getFirstLinkpathDest(linkpath, boardPath);
-	if (!dest) return null;
-	const kind = MEDIA_KIND_BY_EXT[dest.extension.toLowerCase()];
-	if (!kind) return null;
-	try {
-		return { url: plugin.app.vault.getResourcePath(dest), kind };
-	} catch {
-		return null;
-	}
+function apiDestroyed(api: AspectApi): boolean {
+	const d = api.isDestroyed;
+	return typeof d === "function" ? d() === true : d === true;
+}
+
+function getAspectApi(leaf: WorkspaceLeaf): AspectApi | null {
+	const api = (leaf.view as unknown as { excalidrawAPI?: Partial<AspectApi> }).excalidrawAPI;
+	if (!api || typeof api.onChange !== "function" || typeof api.getSceneElements !== "function") return null;
+	return api as AspectApi;
+}
+
+/**
+ * Debug tooling, off by default. Toggle at runtime (incl. via the Obsidian
+ * DevTools MCP) with `window.__eprAspectDebug.setVerbose(true)`; introspect with
+ * `.state()` / `.leaves()`; force a re-scan with `.reconcile()`. Kept in the
+ * shipped build because this corrector spans main + popout realms, where the only
+ * practical way to see what attached and fired is a live console.
+ */
+const DEBUG_HOOK = "__eprAspectDebug";
+let verbose = false;
+function dbg(...args: unknown[]): void {
+	if (verbose) console.log("[EPR aspect]", ...args);
+}
+
+/** "MAIN" or "POPOUT" for a leaf, by which window its view lives in. */
+function winLabelOf(leaf: WorkspaceLeaf): "MAIN" | "POPOUT" {
+	const w = (leaf.view as unknown as { containerEl?: HTMLElement }).containerEl?.ownerDocument?.defaultView;
+	return w === window ? "MAIN" : "POPOUT";
 }
 
 /** Loads just enough of a media file to read its natural pixel dimensions. */
-function probeNaturalSize(
-	win: Window,
-	url: string,
-	kind: "video" | "image",
-): Promise<{ w: number; h: number } | null> {
+function probeNaturalSize(win: Window, url: string, kind: "video" | "image"): Promise<{ w: number; h: number } | null> {
 	return new Promise((resolve) => {
 		let settled = false;
 		const finish = (result: { w: number; h: number } | null) => {
@@ -140,71 +162,205 @@ function fitBox(el: EmbeddableEl, natural: { w: number; h: number }) {
 	return { id: el.id as string, x: cx - newW / 2, y: cy - newH / 2, width: newW, height: newH };
 }
 
+/** Per-view correction state: unsubscribe handle plus the ids we've resolved. */
+interface Subscription {
+	unsub: () => void;
+	/** Embeddable ids already fitted, seeded, or determined non-media. */
+	seen: Set<string>;
+	/** Media embeddables currently being probed (avoid double work). */
+	inflight: Set<string>;
+}
+
 /**
- * Installs a document-level media aspect-ratio corrector. Attach it BEFORE the
- * drop bridge on the same document: it listens in the capture phase and only
- * reads, so it must run before the bridge's `stopImmediatePropagation` on a
- * bridged drop. Returns a detach function.
+ * Installs the media aspect-ratio corrector across every Excalidraw view — main
+ * window and popouts alike — attaching to new views as they mount and detaching
+ * as they close. Returns a dispose function. Path-independent: it reacts to scene
+ * changes, so it needs no drop hook.
  */
-export function attachVideoAspectCorrector(plugin: ExcalidrawPureRefPlugin, doc: Document): () => void {
-	const win = doc.defaultView ?? window;
-	// Element ids we've already fitted (or are fitting), shared across overlapping
-	// drops so two near-simultaneous polls never fight over the same element.
-	const handled = new Set<string>();
-	let detached = false;
+export function attachVideoAspectCorrector(plugin: ExcalidrawPureRefPlugin): () => void {
+	const subs = new Map<WorkspaceLeaf, Subscription>();
+	let disposed = false;
+	let retryTimer: number | null = null;
+	let retriesLeft = READY_RETRY_MAX;
 
-	const onDrop = (event: DragEvent) => {
-		// Only real user drops; the bridge's re-dispatched synthetic drop isn't
-		// trusted, and the element it creates is caught by the same poll anyway.
-		if (!event.isTrusted) return;
-		const dt = event.dataTransfer;
-		if (!dt || !dt.files || dt.files.length === 0) return;
-		if (!Array.from(dt.files).some((f) => MEDIA_KIND_BY_EXT[extOf(f.name)])) return;
-
-		const target = event.target instanceof Node ? event.target : null;
-		const leaf = findExcalidrawLeafForNode(plugin.app, target);
-		if (!leaf) return;
+	const scanLeaf = (leaf: WorkspaceLeaf, seen: Set<string>, inflight: Set<string>) => {
+		if (disposed) return;
 		const boardPath = (leaf.view as unknown as { file?: TFile }).file?.path;
 		if (!boardPath) return;
+		const win = (leaf.view as unknown as { containerEl?: HTMLElement }).containerEl?.ownerDocument?.defaultView ?? window;
+		const winLabel = winLabelOf(leaf);
 
-		// Embeddables already in the scene at drop time are off-limits — we only
-		// fit ones the drop is about to add, so a user's manual sizing is safe.
-		const preexisting = new Set<string>();
 		for (const raw of readSceneElements(leaf) ?? []) {
 			const el = raw as EmbeddableEl;
-			if (el.type === "embeddable" && el.id) preexisting.add(el.id);
-		}
+			if (el.type !== "embeddable" || !el.id || el.isDeleted) continue;
+			const id = el.id;
+			if (seen.has(id) || inflight.has(id)) continue;
 
-		const deadline = Date.now() + POLL_TIMEOUT_MS;
-		const tick = () => {
-			if (detached || Date.now() > deadline) return;
-			for (const raw of readSceneElements(leaf) ?? []) {
-				const el = raw as EmbeddableEl;
-				if (el.type !== "embeddable" || !el.id || el.isDeleted) continue;
-				if (preexisting.has(el.id) || handled.has(el.id)) continue;
-				const media = resolveMediaFile(plugin, el.link, boardPath);
-				if (!media) continue;
-				handled.add(el.id);
-				const id = el.id;
-				void probeNaturalSize(win, media.url, media.kind).then((natural) => {
-					if (detached || !natural) return;
-					// Re-read: the element may have moved/resized while we probed.
-					const current = (readSceneElements(leaf) ?? []).find((e) => (e as EmbeddableEl).id === id) as
-						| EmbeddableEl
-						| undefined;
-					if (!current) return;
-					const resize = fitBox(current, natural);
-					if (resize) resizeSceneElements(leaf, [resize]);
-				});
+			const linkpath = localLinkpath(el.link);
+			if (!linkpath) {
+				seen.add(id); // external URL (youtube/website) or no link — never local media
+				continue;
 			}
-			win.setTimeout(tick, POLL_INTERVAL_MS);
-		};
-		win.setTimeout(tick, POLL_INTERVAL_MS);
+			const dest = plugin.app.metadataCache.getFirstLinkpathDest(linkpath, boardPath);
+			if (!dest) continue; // file may still be writing; leave unseen to retry on next change
+			const kind = MEDIA_KIND_BY_EXT[dest.extension.toLowerCase()];
+			if (!kind) {
+				seen.add(id); // a non-media embed (PDF, etc.)
+				continue;
+			}
+
+			inflight.add(id);
+			let url: string;
+			try {
+				url = plugin.app.vault.getResourcePath(dest);
+			} catch {
+				inflight.delete(id);
+				seen.add(id);
+				continue;
+			}
+			dbg(winLabel, "probing new media embed", id, kind);
+			void probeNaturalSize(win, url, kind).then((natural) => {
+				inflight.delete(id);
+				seen.add(id);
+				if (disposed || !natural) {
+					dbg(winLabel, "probe failed", id, natural);
+					return;
+				}
+				// Re-read: the element may have moved/resized while we probed.
+				const current = (readSceneElements(leaf) ?? []).find((e) => (e as EmbeddableEl).id === id) as
+					| EmbeddableEl
+					| undefined;
+				if (!current) return;
+				const resize = fitBox(current, natural);
+				dbg(winLabel, "resize", id, natural, resize ? `-> ${Math.round(resize.width)}x${Math.round(resize.height)}` : "already correct");
+				if (resize) resizeSceneElements(leaf, [resize]);
+			});
+		}
 	};
 
-	doc.addEventListener("drop", onDrop, true);
+	const attachToLeaf = (leaf: WorkspaceLeaf): boolean => {
+		if (subs.has(leaf)) return true;
+		if (!isExcalidrawLeaf(leaf)) return true; // not our concern; treat as "settled"
+		const api = getAspectApi(leaf);
+		if (!api) {
+			dbg(winLabelOf(leaf), "leaf not ready (no API yet)");
+			return false; // an Excalidraw view whose API hasn't mounted yet
+		}
+
+		const seen = new Set<string>();
+		const inflight = new Set<string>();
+		// Seed with whatever's already on the canvas so pre-existing media (which
+		// the user may have sized on purpose) is never touched — only new inserts.
+		try {
+			for (const el of api.getSceneElements()) {
+				if (el.type === "embeddable" && el.id) seen.add(el.id);
+			}
+		} catch (err) {
+			dbg(winLabelOf(leaf), "seed getSceneElements threw", err);
+			return false;
+		}
+		let unsub: () => void;
+		try {
+			unsub = api.onChange(() => scanLeaf(leaf, seen, inflight));
+		} catch (err) {
+			dbg(winLabelOf(leaf), "onChange subscribe threw", err);
+			return false;
+		}
+		subs.set(leaf, { unsub, seen, inflight });
+		dbg("attached to", winLabelOf(leaf), "leaf", (leaf.view as unknown as { file?: TFile }).file?.path, "seeded", seen.size);
+		return true;
+	};
+
+	/** Drops subscriptions for views that have closed or been destroyed. */
+	const prune = () => {
+		for (const [leaf, sub] of subs) {
+			const api = getAspectApi(leaf);
+			const gone = !isExcalidrawLeaf(leaf) || !api || apiDestroyed(api);
+			if (gone) {
+				try {
+					sub.unsub();
+				} catch {
+					/* view already torn down */
+				}
+				subs.delete(leaf);
+			}
+		}
+	};
+
+	// Attach to every current Excalidraw view; report whether any is still mounting.
+	const reconcile = () => {
+		if (disposed) return;
+		prune();
+		let allReady = true;
+		let excalidrawLeaves = 0;
+		plugin.app.workspace.iterateAllLeaves((leaf) => {
+			if (!isExcalidrawLeaf(leaf)) return;
+			excalidrawLeaves++;
+			if (!attachToLeaf(leaf)) allReady = false;
+		});
+		dbg("reconcile: excalidrawLeaves =", excalidrawLeaves, "attached =", subs.size, "allReady =", allReady);
+		// A just-opened view's imperative API mounts a beat after the workspace
+		// event fires; keep retrying briefly until it's there.
+		if (!allReady && retriesLeft > 0 && retryTimer == null) {
+			retriesLeft--;
+			retryTimer = window.setTimeout(() => {
+				retryTimer = null;
+				reconcile();
+			}, READY_RETRY_MS);
+		} else if (allReady) {
+			retriesLeft = READY_RETRY_MAX;
+		}
+	};
+
+	const refs: EventRef[] = [
+		plugin.app.workspace.on("layout-change", reconcile),
+		plugin.app.workspace.on("active-leaf-change", reconcile),
+	];
+	reconcile();
+
+	// Live introspection hook (see dbg / DEBUG_HOOK). Lets the console or the
+	// DevTools MCP see what's attached and force a re-scan without a rebuild.
+	(window as unknown as Record<string, unknown>)[DEBUG_HOOK] = {
+		setVerbose: (v: boolean) => {
+			verbose = v;
+		},
+		reconcile,
+		/** The leaves we're actively subscribed to. */
+		state: () =>
+			Array.from(subs.entries()).map(([leaf, sub]) => ({
+				window: winLabelOf(leaf),
+				file: (leaf.view as unknown as { file?: TFile }).file?.path,
+				seen: sub.seen.size,
+				inflight: sub.inflight.size,
+			})),
+		/** Every Excalidraw leaf and whether we've attached to it. */
+		leaves: () => {
+			const rows: Array<Record<string, unknown>> = [];
+			plugin.app.workspace.iterateAllLeaves((leaf) => {
+				if (!isExcalidrawLeaf(leaf)) return;
+				rows.push({
+					window: winLabelOf(leaf),
+					file: (leaf.view as unknown as { file?: TFile }).file?.path,
+					apiReady: !!getAspectApi(leaf),
+					attached: subs.has(leaf),
+				});
+			});
+			return rows;
+		},
+	};
+
 	return () => {
-		detached = true;
-		doc.removeEventListener("drop", onDrop, true);
+		disposed = true;
+		if (retryTimer != null) window.clearTimeout(retryTimer);
+		for (const ref of refs) plugin.app.workspace.offref(ref);
+		for (const sub of subs.values()) {
+			try {
+				sub.unsub();
+			} catch {
+				/* ignore */
+			}
+		}
+		subs.clear();
+		delete (window as unknown as Record<string, unknown>)[DEBUG_HOOK];
 	};
 }

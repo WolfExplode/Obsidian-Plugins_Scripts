@@ -6,6 +6,7 @@ import { DEFAULT_SETTINGS, ExcalidrawPureRefSettings } from "src/settings";
 import { getActiveExcalidrawFile } from "src/excalidraw-view";
 import { attachPackKeydown } from "src/pack-keys";
 import { attachPopoutDropBridge } from "src/popout-drop-bridge";
+import { attachInsertModalAutoConfirm } from "src/insert-modal-autoconfirm";
 import { attachVideoAspectCorrector } from "src/video-aspect";
 import { installKeyRelay, removeKeyRelay, cleanupOrphanPrototypes } from "src/transparent-proto";
 
@@ -36,10 +37,16 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 		// (see PopoutManager); there the bridge also heals cross-realm drops, so it
 		// takes over every file drop. Here it only intervenes when a name needs
 		// fixing, leaving Excalidraw's native import path untouched otherwise.
-		// Registered BEFORE the drop bridge so its capture-phase drop listener runs
-		// first — the bridge's stopImmediatePropagation must not preempt it.
-		this.register(attachVideoAspectCorrector(this, window.document));
+		// Refit freshly-inserted local media (videos/animated images) to their true
+		// aspect ratio across every Excalidraw view — main window and popouts. Hooks
+		// each view's scene changes, so it needs no drop listener.
+		this.register(attachVideoAspectCorrector(this));
 		this.register(attachPopoutDropBridge(window.document, { alwaysBridge: false }));
+
+		// Skip the Excalidraw "Insert File From Vault" popup when it offers only one
+		// option (e.g. a dropped video → "as Embeddable"). Popouts get their own
+		// observer when they open (see PopoutManager).
+		this.register(attachInsertModalAutoConfirm(window.document));
 
 		this.addCommand({
 			id: "toggle-pureref-popout",
