@@ -121,6 +121,13 @@ function transformElements(active: ActiveTransform, current: ScenePoint, snapRot
  * G moves, R rotates, and S uniformly scales about the selection center.
  * Move the pointer to preview, left-click/Enter to commit, or Esc/right-click
  * to restore the exact pre-transform scene.
+ *
+ * G/R/S/Alt+R/Alt+S all shadow Excalidraw's own shortcuts via a capture-phase
+ * DOM race, version-pinned to Excalidraw core 0.18.0 (obsidian-excalidraw-plugin
+ * 2.25.3). If these stop working, double-fire with Excalidraw's own actions, or
+ * (see onPointerMove below) stop landing in undo history after a version bump,
+ * see docs/integrations/excalidraw-shortcut-interception.md for the full
+ * mechanism and exact diff targets before re-deriving it from scratch.
  */
 export function attachTransformKeydown(win: Window, app: App): () => void {
 	const doc = win.document;
@@ -212,7 +219,16 @@ export function attachTransformKeydown(win: Window, app: App): () => void {
 		if (!point) return;
 		if (!active.start) active.start = point;
 		active.latest = transformElements(active, point, event.shiftKey && active.mode === "rotate");
-		applySelectionTransform(active.leaf, active.latest, "NEVER");
+		// EVENTUALLY, not NEVER: Excalidraw's store advances its undo snapshot on
+		// BOTH "never" and "immediately" (only "eventually" leaves it untouched — see
+		// packages/element/src/store.ts processAction, verified against core version
+		// 0.18.0 in reference/excalidraw-master — re-check this switch if that file's
+		// behavior changes after an obsidian-excalidraw-plugin version bump).
+		// Previewing every mouse-move frame with "never" was dragging the snapshot
+		// along with the live preview, so by the time commit() fired "immediately"
+		// the diff against that snapshot was empty and nothing ever reached the undo
+		// stack.
+		applySelectionTransform(active.leaf, active.latest, "EVENTUALLY");
 		event.preventDefault();
 		event.stopImmediatePropagation();
 	};

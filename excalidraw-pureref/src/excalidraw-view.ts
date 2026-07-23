@@ -459,7 +459,7 @@ export function getSelectedTransformElements(leaf: WorkspaceLeaf | null): Transf
 export function applySelectionTransform(
 	leaf: WorkspaceLeaf | null,
 	transforms: readonly TransformElement[],
-	captureUpdate: "NEVER" | "IMMEDIATELY",
+	captureUpdate: "NEVER" | "EVENTUALLY" | "IMMEDIATELY",
 ): boolean {
 	if (transforms.length === 0) return false;
 	const api = getExcalidrawApi(leaf);

@@ -39,9 +39,22 @@ interface ElectronScreen {
 	screenToDipRect(win: ElectronBrowserWindow | null, rect: ElectronBounds): ElectronBounds;
 }
 
+interface ElectronOpenDialogResult {
+	canceled: boolean;
+	filePaths: string[];
+}
+
+interface ElectronDialog {
+	showOpenDialog(
+		win: ElectronBrowserWindow | null,
+		options: { title?: string; properties?: string[] },
+	): Promise<ElectronOpenDialogResult>;
+}
+
 interface ElectronRemoteModule {
 	getCurrentWindow?(): ElectronBrowserWindow | null;
 	screen?: ElectronScreen;
+	dialog?: ElectronDialog;
 	BrowserWindow?: {
 		getFocusedWindow(): ElectronBrowserWindow | null;
 		getAllWindows(): ElectronBrowserWindow[];
@@ -139,11 +152,11 @@ export function getFocusedBrowserWindowId(): number | null {
 }
 
 /**
- * Resolve the BrowserWindow owned by a specific DOM window. Calling that
- * window's own require executes in its renderer realm, so getCurrentWindow()
- * is correlated directly instead of inferred from a global id difference.
+ * Resolve the Electron remote module from a specific DOM window's own bridge,
+ * so calls made against it (getCurrentWindow, dialog, …) execute in that
+ * window's renderer realm instead of being inferred from the global one.
  */
-export function getBrowserWindowIdForDomWindow(target: Window | null): number | null {
+function resolveRemoteModuleForDomWindow(target: Window | null): ElectronRemoteModule | null {
 	if (!target) return null;
 	try {
 		const targetWithElectron = target as Window & {
@@ -161,7 +174,41 @@ export function getBrowserWindowIdForDomWindow(target: Window | null): number | 
 				}
 			}
 		}
-		return remoteModule?.getCurrentWindow?.()?.id ?? null;
+		return remoteModule;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Resolve the BrowserWindow owned by a specific DOM window. Calling that
+ * window's own require executes in its renderer realm, so getCurrentWindow()
+ * is correlated directly instead of inferred from a global id difference.
+ */
+export function getBrowserWindowIdForDomWindow(target: Window | null): number | null {
+	try {
+		return resolveRemoteModuleForDomWindow(target)?.getCurrentWindow?.()?.id ?? null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Opens the native "choose a folder" dialog anchored to whichever window
+ * (main or Popout) the export command was triggered from. Resolves to null on
+ * cancel or when the dialog can't be reached at all.
+ */
+export async function pickDirectoryForDomWindow(target: Window | null, title: string): Promise<string | null> {
+	const remoteModule = resolveRemoteModuleForDomWindow(target);
+	if (!remoteModule?.dialog?.showOpenDialog) return null;
+	try {
+		const owner = remoteModule.getCurrentWindow?.() ?? null;
+		const result = await remoteModule.dialog.showOpenDialog(owner, {
+			title,
+			properties: ["openDirectory", "createDirectory"],
+		});
+		if (result.canceled || result.filePaths.length === 0) return null;
+		return result.filePaths[0];
 	} catch {
 		return null;
 	}

@@ -3,7 +3,8 @@ import { GeometryStore } from "src/geometry-store";
 import { PopoutManager } from "src/popout-manager";
 import { ExcalidrawPureRefSettingTab } from "src/settings-tab";
 import { DEFAULT_SETTINGS, ExcalidrawPureRefSettings } from "src/settings";
-import { getActiveExcalidrawFile } from "src/excalidraw-view";
+import { getActiveExcalidrawFile, getActiveExcalidrawLeaf } from "src/excalidraw-view";
+import { exportSelectedMedia } from "src/media-export";
 import { attachPackKeydown } from "src/pack-keys";
 import { attachPopoutDropBridge } from "src/popout-drop-bridge";
 import { attachInsertModalAutoConfirm } from "src/insert-modal-autoconfirm";
@@ -144,6 +145,23 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 				void this.popouts.handleWindowClosed(win);
 			}),
 		);
+
+		// Deliberately reassigns Excalidraw's own Ctrl+Shift+E ("Export image" dialog)
+		// the same way the opacity commands above already reassign its Ctrl+-/Ctrl+=
+		// zoom shortcuts: an Obsidian command's own hotkey wins over Excalidraw's
+		// internal bubble-phase handler, so no DOM-capture trick is needed here.
+		this.addCommand({
+			id: "export-selected-media",
+			name: "Export selected media to folder",
+			hotkeys: [{ modifiers: ["Ctrl", "Shift"], key: "E" }],
+			checkCallback: (checking) => {
+				const leaf = getActiveExcalidrawLeaf(this.app);
+				if (!leaf) return false;
+				if (checking) return true;
+				void exportSelectedMedia(this.app, leaf);
+				return true;
+			},
+		});
 
 		this.addSettingTab(new ExcalidrawPureRefSettingTab(this.app, this));
 	}
