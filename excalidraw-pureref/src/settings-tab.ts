@@ -33,7 +33,7 @@ export class ExcalidrawPureRefSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Popout opacity")
-			.setDesc("While a Popout is focused, use Ctrl+- to make the whole window 5% more transparent or Ctrl+plus to make it 5% more opaque. Opacity carries across read-only/edit mode switches.");
+			.setDesc("Use Ctrl+- or Ctrl+plus on selected Excalidraw elements to change their opacity by 10%. With no selection in a focused Popout, the same keys change the whole window by 5%. Opacity carries across read-only/edit mode switches.");
 
 		new Setting(containerEl)
 			.setName("Forget remembered popout positions")

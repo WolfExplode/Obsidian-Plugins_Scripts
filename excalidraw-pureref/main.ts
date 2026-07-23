@@ -9,6 +9,7 @@ import { attachPopoutDropBridge } from "src/popout-drop-bridge";
 import { attachInsertModalAutoConfirm } from "src/insert-modal-autoconfirm";
 import { attachVideoAspectCorrector } from "src/video-aspect";
 import { attachCropDrag, installCropDebugHook } from "src/crop-drag";
+import { attachOpacityKeydown } from "src/opacity-keys";
 import { installKeyRelay, removeKeyRelay, cleanupOrphanPrototypes } from "src/transparent-proto";
 
 export default class ExcalidrawPureRefPlugin extends Plugin {
@@ -32,6 +33,7 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 		// their own binding when they open (see PopoutManager). Capture-phase, so
 		// it preempts Excalidraw's own arrow handling — see attachPackKeydown.
 		this.register(attachPackKeydown(window, this.app));
+		this.register(attachOpacityKeydown(window, this.app));
 
 		// Sanitize wikilink-unsafe characters out of dropped attachment filenames
 		// in the main window. Popout windows get their own bridge when they open

@@ -52,6 +52,7 @@ interface ExcalidrawViewState extends ExcalidrawViewport {
 /** The Excalidraw element fields we read for bounding-box math and packing. */
 interface SceneElement extends PackElement {
 	version?: number;
+	opacity?: number;
 }
 
 interface ExcalidrawApi {
@@ -305,9 +306,53 @@ export function readSceneElements(leaf: WorkspaceLeaf | null): readonly unknown[
  */
 const PACK_GAP = 8;
 
+/** The same ten-percent increment used by Excalidraw's opacity control. */
+const ELEMENT_OPACITY_STEP = 10;
+
 /** A pseudo-random 31-bit integer for an element's versionNonce (mirrors Excalidraw). */
 function randomVersionNonce(): number {
 	return Math.floor(Math.random() * 0x7fffffff);
+}
+
+/**
+ * Changes every currently selected scene element's opacity in one undoable
+ * history entry. A false return means there was no concrete element selection,
+ * so callers can leave a window-level Ctrl+plus/minus command untouched.
+ */
+export function adjustSelectedElementsOpacity(leaf: WorkspaceLeaf | null, direction: -1 | 1): boolean {
+	const api = getExcalidrawApi(leaf);
+	const view = getExcalidrawView(leaf);
+	if (!api?.getSceneElements || !view?.updateScene) return false;
+
+	let all: readonly SceneElement[];
+	let selectedIds: Record<string, boolean>;
+	try {
+		all = api.getSceneElements();
+		selectedIds = api.getAppState().selectedElementIds ?? {};
+	} catch {
+		return false;
+	}
+
+	let selected = false;
+	const nextElements = all.map((el) => {
+		if (!selectedIds[el.id] || el.isDeleted) return el;
+		selected = true;
+		return {
+			...el,
+			opacity: Math.max(0, Math.min(100, (el.opacity ?? 100) + direction * ELEMENT_OPACITY_STEP)),
+			version: (el.version ?? 1) + 1,
+			versionNonce: randomVersionNonce(),
+			updated: Date.now(),
+		};
+	});
+	if (!selected) return false;
+
+	try {
+		view.updateScene({ elements: nextElements, captureUpdate: "IMMEDIATELY", commitToHistory: true });
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 /**

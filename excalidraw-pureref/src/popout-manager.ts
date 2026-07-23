@@ -37,6 +37,7 @@ import { attachPopoutDropBridge } from "./popout-drop-bridge";
 import { attachInsertModalAutoConfirm } from "./insert-modal-autoconfirm";
 import { attachPackKeydown } from "./pack-keys";
 import { attachCropDrag } from "./crop-drag";
+import { attachOpacityKeydown } from "./opacity-keys";
 import { ExcalidrawRefitSuspender } from "./excalidraw-settings";
 import {
 	EXCALIDRAW_VIEW_TYPE,
@@ -52,6 +53,7 @@ import {
 	readSceneView,
 	readSceneElements,
 	applySceneView,
+	adjustSelectedElementsOpacity,
 	type SceneView,
 } from "./excalidraw-view";
 
@@ -83,6 +85,7 @@ interface OpenBoardPopout {
 	detachInsertModal: (() => void) | null;
 	detachBoundsSaving: (() => void) | null;
 	detachPackKeys: (() => void) | null;
+	detachOpacityKeys: (() => void) | null;
 	detachCropDrag: (() => void) | null;
 }
 
@@ -153,11 +156,17 @@ export class PopoutManager {
 		return focusedWindowId != null && Array.from(this.openBoards.values()).some((entry) => entry.windowId === focusedWindowId);
 	}
 
-	/** Changes opacity only for the focused native Popout, not the main window. */
+	/**
+	 * A selected element takes precedence over the native Popout window. Keeping
+	 * this rule here (as well as in the capture key listener) matters because
+	 * Obsidian may dispatch its command before a Popout canvas receives keydown.
+	 */
 	adjustFocusedPopoutOpacity(direction: -1 | 1): boolean {
 		const focusedWindowId = getFocusedBrowserWindowId();
 		if (focusedWindowId == null) return false;
-		if (!Array.from(this.openBoards.values()).some((entry) => entry.windowId === focusedWindowId)) return false;
+		const entry = Array.from(this.openBoards.values()).find((candidate) => candidate.windowId === focusedWindowId);
+		if (!entry) return false;
+		if (adjustSelectedElementsOpacity(entry.leaf, direction)) return true;
 		return adjustWindowOpacityById(focusedWindowId, direction * POPOUT_OPACITY_STEP) != null;
 	}
 
@@ -374,6 +383,7 @@ export class PopoutManager {
 			detachInsertModal: null,
 			detachBoundsSaving: null,
 			detachPackKeys: null,
+			detachOpacityKeys: null,
 			detachCropDrag: null,
 		};
 		this.pending = {
@@ -571,6 +581,7 @@ export class PopoutManager {
 		entry.detachInsertModal?.();
 		entry.detachBoundsSaving?.();
 		entry.detachPackKeys?.();
+		entry.detachOpacityKeys?.();
 		entry.detachCropDrag?.();
 		entry.detachWindowDrag = null;
 		entry.detachChromeHiding = null;
@@ -578,6 +589,7 @@ export class PopoutManager {
 		entry.detachInsertModal = null;
 		entry.detachBoundsSaving = null;
 		entry.detachPackKeys = null;
+		entry.detachOpacityKeys = null;
 		entry.detachCropDrag = null;
 		this.refitSuspender.resume();
 	}
@@ -732,6 +744,7 @@ export class PopoutManager {
 			entry.detachInsertModal?.();
 			entry.detachBoundsSaving?.();
 			entry.detachPackKeys?.();
+			entry.detachOpacityKeys?.();
 			entry.detachCropDrag?.();
 		}
 		this.openBoards.clear();
@@ -802,6 +815,11 @@ export class PopoutManager {
 		entry.detachDropBridge = attachPopoutDropBridge(doc);
 		entry.detachInsertModal = attachInsertModalAutoConfirm(doc);
 		if (doc.defaultView) entry.detachPackKeys = attachPackKeydown(doc.defaultView, this.plugin.app);
+		if (doc.defaultView) {
+			entry.detachOpacityKeys = attachOpacityKeydown(doc.defaultView, this.plugin.app, {
+				onNoSelection: (direction) => this.adjustFocusedPopoutOpacity(direction),
+			});
+		}
 		if (doc.defaultView) entry.detachCropDrag = attachCropDrag(doc.defaultView, this.plugin.app);
 		entry.detachBoundsSaving = onWindowCloseById(newWindowId, () =>
 			this.persistWindowBounds(filePath, entry),
