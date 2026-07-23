@@ -879,8 +879,8 @@ async function renderViewportPng(
 	return { dataURL: canvas.toDataURL("image/png"), data, width: canvas.width, height: canvas.height };
 }
 
-function sourceToCurrentLocal(el: ImageSceneElement, state: ViewportCropState | null, natural: { w: number; h: number }): AffineTransform {
-	if (state) return state.sourceToLocal;
+/** Maps an image file's natural pixels into its *currently visible* local box. */
+function filePixelsToCurrentLocal(el: ImageSceneElement, natural: { w: number; h: number }): AffineTransform {
 	const crop = el.crop ?? { x: 0, y: 0, width: natural.w, height: natural.h, naturalWidth: natural.w, naturalHeight: natural.h };
 	const flipX = el.scale?.[0] === -1;
 	const flipY = el.scale?.[1] === -1;
@@ -899,6 +899,33 @@ function sourceToCurrentLocal(el: ImageSceneElement, state: ViewportCropState | 
 		e: flipX ? el.width + visualCropX * scaleX : -visualCropX * scaleX,
 		f: flipY ? el.height + visualCropY * scaleY : -visualCropY * scaleY,
 	};
+}
+
+/**
+ * Restores the coordinate relationship for a materialized viewport crop.
+ *
+ * A viewport crop starts as a generated PNG whose local coordinate system is
+ * the bounding box of `state.polygon`. Excalidraw can subsequently native-crop,
+ * flip, resize, and rotate that PNG. Its native crop is expressed in PNG pixels,
+ * whereas the saved polygon/source transform is expressed in the original local
+ * units. Compose the two here before applying another viewport crop.
+ */
+function viewportCropToCurrentLocal(
+	el: ImageSceneElement,
+	state: ViewportCropState,
+	generatedNatural: { w: number; h: number },
+): AffineTransform | null {
+	const outputBounds = polygonBounds(state.polygon);
+	if (!outputBounds || outputBounds.width <= 0 || outputBounds.height <= 0) return null;
+	const localToGeneratedPixels: AffineTransform = {
+		a: generatedNatural.w / outputBounds.width,
+		b: 0,
+		c: 0,
+		d: generatedNatural.h / outputBounds.height,
+		e: -outputBounds.x * generatedNatural.w / outputBounds.width,
+		f: -outputBounds.y * generatedNatural.h / outputBounds.height,
+	};
+	return multiplyAffine(filePixelsToCurrentLocal(el, generatedNatural), localToGeneratedPixels);
 }
 
 function localPolygonForSceneRect(el: ImageSceneElement, rect: SceneRect): CropPoint[] | null {
@@ -922,7 +949,8 @@ async function planViewportCrop(
 	leaf: WorkspaceLeaf | null,
 	el: ImageSceneElement,
 	rect: SceneRect,
-	natural: { w: number; h: number },
+	sourceNatural: { w: number; h: number },
+	generatedNatural: { w: number; h: number },
 	files: Record<string, { dataURL?: string } | undefined>,
 	sourceIsDarkThemed: boolean,
 ): Promise<ViewportCropPlan | null> {
@@ -931,12 +959,18 @@ async function planViewportCrop(
 	if (!sourceFileId) return null;
 	const sourceDataURL = getSourceDataURL(leaf, files, sourceFileId, sourceIsDarkThemed);
 	if (!sourceDataURL) return null;
-	const currentPolygon = existing?.polygon ?? [
+	const viewportToCurrent = existing
+		? viewportCropToCurrentLocal(el, existing, generatedNatural)
+		: null;
+	if (existing && !viewportToCurrent) return null;
+	const currentPolygon = (existing
+		? existing.polygon.map((point) => applyAffine(viewportToCurrent!, point))
+		: [
 		{ x: 0, y: 0 },
 		{ x: el.width, y: 0 },
 		{ x: el.width, y: el.height },
 		{ x: 0, y: el.height },
-	];
+	]);
 	const localRect = localPolygonForSceneRect(el, rect);
 	if (!localRect) return null;
 	// A crop rectangle that contains the entire current visible polygon is a
@@ -952,7 +986,9 @@ async function planViewportCrop(
 	if (!bounds || bounds.width < MIN_CROP_SCENE || bounds.height < MIN_CROP_SCENE) return null;
 	const sceneToOutput: AffineTransform = { a: 1, b: 0, c: 0, d: 1, e: -bounds.x, f: -bounds.y };
 	const nextPolygon = scenePolygon.map((p) => applyAffine(sceneToOutput, p));
-	const currentSourceToLocal = sourceToCurrentLocal(el, existing, natural);
+	const currentSourceToLocal = existing
+		? multiplyAffine(viewportToCurrent!, existing.sourceToLocal)
+		: filePixelsToCurrentLocal(el, sourceNatural);
 	const sourceToOutput = multiplyAffine(sceneToOutput, multiplyAffine(toScene, currentSourceToLocal));
 	const baseCrop = existing?.baseCrop ?? el.crop ?? null;
 	const sourcePath = existing?.sourcePath ?? getSourcePath(leaf, sourceFileId);
@@ -961,8 +997,8 @@ async function planViewportCrop(
 		version: 1,
 		sourceFileId,
 		sourcePath,
-		sourceNaturalWidth: existing?.sourceNaturalWidth ?? natural.w,
-		sourceNaturalHeight: existing?.sourceNaturalHeight ?? natural.h,
+		sourceNaturalWidth: existing?.sourceNaturalWidth ?? sourceNatural.w,
+		sourceNaturalHeight: existing?.sourceNaturalHeight ?? sourceNatural.h,
 		baseCrop,
 		sourceToLocal: sourceToOutput,
 		polygon: nextPolygon,
@@ -970,8 +1006,8 @@ async function planViewportCrop(
 	};
 	const png = await renderViewportPng(
 		sourceDataURL,
-		existing?.sourceNaturalWidth ?? natural.w,
-		existing?.sourceNaturalHeight ?? natural.h,
+		existing?.sourceNaturalWidth ?? sourceNatural.w,
+		existing?.sourceNaturalHeight ?? sourceNatural.h,
 		bounds.width,
 		bounds.height,
 		nextPolygon,
@@ -1249,19 +1285,25 @@ export async function cropImagesToSceneRect(
 	await Promise.all(
 		targets.map(async (el) => {
 			const viewport = getViewportCropState(el);
-			const natural = viewport
-				? { w: viewport.sourceNaturalWidth, h: viewport.sourceNaturalHeight }
-				: el.crop
+			// `sourceNatural` is the original image retained by a viewport crop;
+			// `elementNatural` is the PNG currently attached to the element. They
+			// diverge once a custom crop has been materialized, and the latter is
+			// required to compose any native Excalidraw crop made in between two
+			// custom crops.
+			const elementNatural = el.crop
 				? { w: el.crop.naturalWidth, h: el.crop.naturalHeight }
 				: el.fileId
 					? await naturalSizeOf(el.fileId)
 					: null;
-			if (!natural) {
+			if (!elementNatural) {
 				result.skipped.push(el.id);
 				return;
 			}
+			const sourceNatural = viewport
+				? { w: viewport.sourceNaturalWidth, h: viewport.sourceNaturalHeight }
+				: elementNatural;
 			const viewportPlan = (el.angle && Math.abs(el.angle) > 1e-6) || getViewportCropState(el)
-				? await planViewportCrop(app, leaf, el, rect, natural, files, sourceIsDarkThemed)
+				? await planViewportCrop(app, leaf, el, rect, sourceNatural, elementNatural, files, sourceIsDarkThemed)
 				: null;
 			if (viewportPlan) {
 				plans.set(el.id, {
@@ -1292,7 +1334,7 @@ export async function cropImagesToSceneRect(
 				}
 				return;
 			}
-			const plan = planImageCrop(el, rect, natural);
+			const plan = planImageCrop(el, rect, elementNatural);
 			if (!plan) {
 				result.skipped.push(el.id);
 				return;
@@ -1425,13 +1467,30 @@ export async function uncropImages(app: App, leaf: WorkspaceLeaf | null, ids?: r
 			const nw = viewport.sourceNaturalWidth;
 			const nh = viewport.sourceNaturalHeight;
 			const sourceCrop = crop ?? { x: 0, y: 0, width: nw, height: nh };
-			const sourceToScene = multiplyAffine(elementLocalToScene(el), viewport.sourceToLocal);
+			// The generated viewport PNG may itself have been natively cropped before
+			// this double-click. Fold that generated-PNG crop back into the original
+			// source transform, otherwise the restored element is offset by the crop
+			// origin (and becomes increasingly wrong after repeated operations).
+			const generatedNatural = el.crop
+				? { w: el.crop.naturalWidth, h: el.crop.naturalHeight }
+				: (() => {
+					const bounds = polygonBounds(viewport.polygon);
+					return bounds ? { w: bounds.width, h: bounds.height } : null;
+				})();
+			if (!generatedNatural) return raw;
+			const viewportToCurrent = viewportCropToCurrentLocal(el, viewport, generatedNatural);
+			if (!viewportToCurrent) return raw;
+			const sourceToScene = multiplyAffine(
+				elementLocalToScene(el),
+				multiplyAffine(viewportToCurrent, viewport.sourceToLocal),
+			);
 			const p0 = applyAffine(sourceToScene, { x: sourceCrop.x, y: sourceCrop.y });
 			const p1 = applyAffine(sourceToScene, { x: sourceCrop.x + sourceCrop.width, y: sourceCrop.y });
 			const p2 = applyAffine(sourceToScene, { x: sourceCrop.x, y: sourceCrop.y + sourceCrop.height });
 			const width = Math.hypot(p1.x - p0.x, p1.y - p0.y);
 			const height = Math.hypot(p2.x - p0.x, p2.y - p0.y);
 			if (width <= 0 || height <= 0) return raw;
+			const orientation = (p1.x - p0.x) * (p2.y - p0.y) - (p1.y - p0.y) * (p2.x - p0.x);
 			const center = {
 				x: (p0.x + p1.x + p2.x + (p1.x + p2.x - p0.x)) / 4,
 				y: (p0.y + p1.y + p2.y + (p1.y + p2.y - p0.y)) / 4,
@@ -1448,6 +1507,10 @@ export async function uncropImages(app: App, leaf: WorkspaceLeaf | null, ids?: r
 				height,
 				angle: Math.atan2(p1.y - p0.y, p1.x - p0.x),
 				crop: crop ?? null,
+				// The affine transform above contains any original or subsequently
+				// applied mirror. Encode its handedness exactly once in the restored
+				// element; retaining the generated PNG's scale would mirror it twice.
+				scale: [1, orientation < 0 ? -1 : 1],
 				customData: Object.keys(customData).length ? customData : undefined,
 				version: (el.version ?? 1) + 1,
 				versionNonce: randomVersionNonce(),
