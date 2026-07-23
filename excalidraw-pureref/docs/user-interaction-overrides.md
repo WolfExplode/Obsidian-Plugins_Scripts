@@ -29,6 +29,7 @@ to a normal move so it cannot duplicate a newly clicked element.
 | **Ctrl+Shift+P** | Rearranges selected packable references into a compact layout. | Normal view and editable Popout. |
 | **G** / **R** / **S** with selected elements | Starts a Blender-style move, rotation, or uniform scale around the selection center. Move to preview; left-click or Enter commits; Esc or right-click cancels. Hold **Shift** during rotation to snap to 15° increments. | Normal view and editable Popout. |
 | **R** without a selection | Does not select the Rectangle tool. Excalidraw's **2** shortcut remains available. | Normal view and editable Popout. |
+| **Alt+S** | Does nothing. Excalidraw's "toggle object snap" shortcut is dropped because it also force-disables grid mode; toggle object snap from the canvas context menu instead. | Normal view and editable Popout. |
 | **Alt+R** while an Excalidraw drawing is the active leaf | Reserved by the plugin; does **not** run Templater's "Replace templates in the active file" (which errors on a drawing). Templater's Alt+R still works in every markdown context. | Excalidraw drawing (non-markdown) mode only. See [Obsidian hotkey interception](integrations/obsidian-hotkey-interception.md). |
 | **F11** | Opens or closes the PureRef Popout for the active Board. | An Excalidraw Board. |
 | **F10** | Switches an existing editable Popout and its read-only transparent reference mode. | Only when one of those modes exists. |

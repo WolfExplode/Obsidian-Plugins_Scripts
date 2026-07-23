@@ -41,6 +41,7 @@ import { attachOpacityKeydown } from "./opacity-keys";
 import { attachFlipDrag } from "./flip-drag";
 import { attachAltDragDuplicateBlocker } from "./alt-drag";
 import { attachTransformKeydown } from "./transform-keys";
+import { attachSnapKeyBlocker } from "./snap-keys";
 import { ExcalidrawRefitSuspender } from "./excalidraw-settings";
 import {
 	EXCALIDRAW_VIEW_TYPE,
@@ -93,6 +94,7 @@ interface OpenBoardPopout {
 	detachFlipDrag: (() => void) | null;
 	detachAltDragBlocker: (() => void) | null;
 	detachTransformKeys: (() => void) | null;
+	detachSnapKeys: (() => void) | null;
 }
 
 interface PendingOpen {
@@ -394,6 +396,7 @@ export class PopoutManager {
 			detachFlipDrag: null,
 			detachAltDragBlocker: null,
 			detachTransformKeys: null,
+			detachSnapKeys: null,
 		};
 		this.pending = {
 			filePath: file.path,
@@ -595,6 +598,7 @@ export class PopoutManager {
 		entry.detachFlipDrag?.();
 		entry.detachAltDragBlocker?.();
 		entry.detachTransformKeys?.();
+		entry.detachSnapKeys?.();
 		entry.detachWindowDrag = null;
 		entry.detachChromeHiding = null;
 		entry.detachDropBridge = null;
@@ -606,6 +610,7 @@ export class PopoutManager {
 		entry.detachFlipDrag = null;
 		entry.detachAltDragBlocker = null;
 		entry.detachTransformKeys = null;
+		entry.detachSnapKeys = null;
 		this.refitSuspender.resume();
 	}
 
@@ -764,6 +769,7 @@ export class PopoutManager {
 			entry.detachFlipDrag?.();
 			entry.detachAltDragBlocker?.();
 			entry.detachTransformKeys?.();
+			entry.detachSnapKeys?.();
 		}
 		this.openBoards.clear();
 		// If unload lands during setViewState/Excalidraw mount, detaching in the
@@ -842,6 +848,7 @@ export class PopoutManager {
 		if (doc.defaultView) entry.detachFlipDrag = attachFlipDrag(doc.defaultView, this.plugin.app);
 		if (doc.defaultView) entry.detachAltDragBlocker = attachAltDragDuplicateBlocker(doc.defaultView, this.plugin.app);
 		if (doc.defaultView) entry.detachTransformKeys = attachTransformKeydown(doc.defaultView, this.plugin.app);
+		if (doc.defaultView) entry.detachSnapKeys = attachSnapKeyBlocker(doc.defaultView, this.plugin.app);
 		entry.detachBoundsSaving = onWindowCloseById(newWindowId, () =>
 			this.persistWindowBounds(filePath, entry),
 		);

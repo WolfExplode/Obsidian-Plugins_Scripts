@@ -14,6 +14,7 @@ import { attachOpacityKeydown } from "src/opacity-keys";
 import { attachFlipDrag } from "src/flip-drag";
 import { attachAltDragDuplicateBlocker } from "src/alt-drag";
 import { attachTransformKeydown } from "src/transform-keys";
+import { attachSnapKeyBlocker } from "src/snap-keys";
 import { attachAltRHotkey } from "src/alt-r";
 import { installKeyRelay, removeKeyRelay, cleanupOrphanPrototypes } from "src/transparent-proto";
 
@@ -63,6 +64,10 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 		this.register(attachFlipDrag(window, this.app));
 		this.register(attachAltDragDuplicateBlocker(window, this.app));
 		this.register(attachTransformKeydown(window, this.app));
+		// Drop Excalidraw's Alt+S "toggle object snap" shortcut inside a Board, since
+		// it also force-disables grid mode. Popouts get their own binding in
+		// PopoutManager. See attachSnapKeyBlocker.
+		this.register(attachSnapKeyBlocker(window, this.app));
 		// Claim Alt+R while a drawing is the active leaf so it stops triggering
 		// Templater (which errors with no markdown editor). Reserved for an upcoming
 		// feature. Rides Obsidian's global keymap, so one registration covers popouts
