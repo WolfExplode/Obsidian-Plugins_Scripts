@@ -5,6 +5,7 @@ import {
 	findExcalidrawLeafForNode,
 	getActiveExcalidrawLeaf,
 	getImageIds,
+	getViewportCropImageIds,
 	getSelectedImageSceneBBox,
 	uncropImages,
 	type CropResult,
@@ -16,8 +17,8 @@ import {
  * every selected image is cropped to the part of it inside that rectangle. If
  * nothing is selected, the gesture is a no-op. It drives the same primitive the
  * debug hook proved — cropImagesToSceneRect — so
- * upright/flipped images crop exactly, rotated ones are skipped, the original is
- * always retained (double-click re-exposes it), and it's one undoable step.
+ * upright/flipped images use native crop, rotated images use one composed
+ * polygon crop, the original is always retained, and it's one undoable step.
  *
  * Bound per window (main window and each Popout, like attachPackKeydown) so the
  * Popout inherits the feature for free. The marquee overlay lives in that
@@ -71,12 +72,34 @@ export function attachCropDrag(win: Window, app: App): () => void {
 			return;
 		}
 		if (event.repeat || isEditableTarget(event.target)) return;
+		if (event.key === "Enter") {
+			const leaf = getActiveExcalidrawLeaf(app);
+			// A custom crop is materialized as an ordinary image, but native crop
+			// must not edit that generated PNG. The first double-click is the
+			// explicit way to remove the custom layer.
+			if (getViewportCropImageIds(leaf, true).length) {
+				event.preventDefault();
+				event.stopImmediatePropagation();
+				return;
+			}
+		}
 		if (event.key.toLowerCase() === "c" && !event.ctrlKey && !event.metaKey && !event.altKey) {
 			cHeld = true;
 			// Signal crop mode; Excalidraw may override the cursor over its canvas,
 			// which is harmless — the definitive crosshair is the overlay while dragging.
 			doc.body.style.cursor = "crosshair";
 		}
+	};
+
+	const onDoubleClick = (event: MouseEvent) => {
+		const target = event.target as Node | null;
+		const leaf = findExcalidrawLeafForNode(app, target);
+		if (!leaf || getViewportCropImageIds(leaf, true).length === 0) return;
+		event.preventDefault();
+		event.stopImmediatePropagation();
+		// First double-click removes only our polygon crop. The next one is
+		// deliberately allowed to reach Excalidraw's native crop editor.
+		void uncropImages(app, leaf, getViewportCropImageIds(leaf, true));
 	};
 
 	const onKeyUp = (event: KeyboardEvent) => {
@@ -146,7 +169,7 @@ export function attachCropDrag(win: Window, app: App): () => void {
 		// selection must be a no-op; never fall back to all images on the board.
 		const selected = getImageIds(leaf, true);
 		if (selected.length === 0) return;
-		void cropImagesToSceneRect(leaf, rect, selected);
+		void cropImagesToSceneRect(app, leaf, rect, selected);
 	};
 
 	win.addEventListener("keydown", onKeyDown, true);
@@ -155,6 +178,7 @@ export function attachCropDrag(win: Window, app: App): () => void {
 	win.addEventListener("pointerdown", onPointerDown, true);
 	win.addEventListener("pointermove", onPointerMove, true);
 	win.addEventListener("pointerup", onPointerUp, true);
+	win.addEventListener("dblclick", onDoubleClick, true);
 
 	return () => {
 		endDrag();
@@ -164,6 +188,7 @@ export function attachCropDrag(win: Window, app: App): () => void {
 		win.removeEventListener("pointerdown", onPointerDown, true);
 		win.removeEventListener("pointermove", onPointerMove, true);
 		win.removeEventListener("pointerup", onPointerUp, true);
+		win.removeEventListener("dblclick", onDoubleClick, true);
 	};
 }
 
@@ -189,7 +214,7 @@ export function installCropDebugHook(app: App): () => void {
 			return bbox;
 		},
 		crop: async (rect: SceneRect) => {
-			const result = await cropImagesToSceneRect(getActiveExcalidrawLeaf(app), rect);
+			const result = await cropImagesToSceneRect(app, getActiveExcalidrawLeaf(app), rect);
 			log("crop", result);
 			return result;
 		},
@@ -206,12 +231,12 @@ export function installCropDebugHook(app: App): () => void {
 				width: bbox.width - insetPx * 2,
 				height: bbox.height - insetPx * 2,
 			};
-			const result = await cropImagesToSceneRect(leaf, rect);
+			const result = await cropImagesToSceneRect(app, leaf, rect);
 			log(`cropSelection(${insetPx})`, result);
 			return result;
 		},
-		uncrop: () => {
-			const uncropped = uncropImages(getActiveExcalidrawLeaf(app));
+		uncrop: async () => {
+			const uncropped = await uncropImages(app, getActiveExcalidrawLeaf(app));
 			console.log(`[EPR crop] uncrop: restored=${uncropped.length}`, uncropped);
 			return uncropped;
 		},

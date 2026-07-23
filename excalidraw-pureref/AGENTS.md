@@ -17,6 +17,15 @@ The repository's `.claude/settings.json` has a Claude-specific post-edit build h
 
 When answering questions about Excalidraw internals, grep/read these local copies first.
 
+## Generated image integration
+
+Before changing any code that creates a vault image or changes an Excalidraw
+image element's `fileId`, read
+`docs/integrations/obsidian-excalidraw-generated-images.md`. Obsidian's vault,
+ExcalidrawData, Excalidraw core, and persisted Board state each own a different
+part of the lifecycle; changing their registration order can break either
+immediate rendering or reload persistence.
+
 ## Obsidian DevTools debugging
 
 The `obsidian-devtools-mcp` project is in the repository root (gitignored). It connects through CDP on port 9222. Use `launch-obsidian-debug.ps1` (or its `.bat` wrapper) to quit Obsidian and relaunch it with remote debugging. Obsidian must have been launched with `--remote-debugging-port=9222`; launching normally from the tray/icon will not expose the port.

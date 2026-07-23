@@ -11,10 +11,10 @@ rectangle, mirroring PureRef's crop gesture. If images are selected, all of them
 are cropped; if nothing is selected, every image the rectangle covers is cropped.
 It is bound per window and so works in the main window and every Popout.
 
-The crop is driven entirely through Excalidraw's own `crop` element field — not a
-bespoke image rewrite. The full source image is always retained, so Excalidraw's
-native double-click (or `Enter`) still re-exposes the whole original, and the
-change is a single undoable step.
+Upright images are driven through Excalidraw's own `crop` element field. Rotated
+images require a generated viewport PNG because a screen-aligned polygon cannot
+be represented by that axis-aligned field. In both cases the full source image
+is retained, and the change is a single undoable step.
 
 ## Notable behaviours
 
@@ -35,14 +35,33 @@ decoded bitmap onto the element's box (`renderElement.ts` `drawImage`). For an
 (`scale === -1`) are exact too: the crop origin is stored from the opposite edge
 (`nw - width - x`), matching Excalidraw's `adjustCropPosition`.
 
-**Rotated images are skipped.** A screen-aligned rectangle over a rotated image
-is a rotated quad in image space, which an axis-aligned `crop` cannot represent.
-Matching PureRef here would require rasterising the rotated pixels into a new
-image file — destructive, and it would throw away the retained original that is
-the whole point of using the native crop. So rotated images are left untouched
-(reported in `CropResult.skipped`); the user can still crop them via Excalidraw's
-own double-click crop editor. This may be revisited if cropping rotated
-references turns out to be common.
+**Rotated images use a composed viewport crop.** A screen-aligned rectangle over
+a rotated image is a rotated polygon in image space, which an axis-aligned
+native `crop` cannot represent. The plugin therefore stores the original source,
+the native crop that existed before the custom layer, an affine source-to-local
+transform, and the accumulated visible polygon in `customData`. It materialises
+that state as one canvas-rendered PNG-backed Excalidraw image. Subsequent
+rotations move the polygon with the image; subsequent crops intersect the
+existing polygon with a new rectangle and render again from the original source,
+so repeated operations can produce multi-sided results without stacking or
+accumulating raster generations.
+
+The generated PNG is saved beside the source image as a named vault
+attachment. Its path is stored in the element's custom metadata. Re-cropping
+switches to the replacement and then removes the previous generated attachment;
+exiting the custom crop first restores the original/native image and only then
+removes the generated attachment. Cleanup waits until the live scene no longer
+references the generated file ID, avoiding a renderer-versus-deletion race.
+
+The first double-click on a custom-cropped image removes the custom layer and
+restores the underlying native-cropped image. The next double-click reaches
+Excalidraw's normal crop editor. Native crop entry is blocked while the custom
+layer is active so the generated PNG is never edited directly.
+
+The generated-image registration and cleanup contract is shared infrastructure,
+not a crop-specific decision. See the [Obsidian–Excalidraw generated-image
+lifecycle](../integrations/obsidian-excalidraw-generated-images.md) before
+changing it.
 
 **Natural pixel size.** `crop.{x,y,width,height}` must be true decoded pixels.
 Already-cropped images carry the size in `crop.naturalWidth/Height` (free);
@@ -54,10 +73,11 @@ which is why `cropImagesToSceneRect` is async.
 The feature follows the established per-window attach pattern (see
 `attachPackKeydown`), which is what lets the Popout inherit it for free:
 
-- **`cropImagesToSceneRect(leaf, rect, ids?)`** in `excalidraw-view.ts` — the
-  reusable primitive (scene-rectangle → native crop). `uncropImages` is its
-  inverse. Both write through `updateScene` with a version bump, as one history
-  entry, exactly like `resizeSceneElements`.
+- **`cropImagesToSceneRect(app, leaf, rect, ids?)`** in `excalidraw-view.ts` — the
+  reusable primitive (scene-rectangle → native crop or composed viewport crop).
+  `uncropImages` removes the custom layer first, then handles native crop state.
+  Both write through `updateScene` with a version bump, as one history entry,
+  exactly like `resizeSceneElements`.
 - **`attachCropDrag(win, app)`** in `crop-drag.ts` — the C-held marquee overlay
   that produces the dragged rectangle and calls the primitive. Registered on the
   main window in `main.ts` and on each Popout in `popout-manager.ts` alongside
