@@ -38,6 +38,8 @@ import { attachInsertModalAutoConfirm } from "./insert-modal-autoconfirm";
 import { attachPackKeydown } from "./pack-keys";
 import { attachCropDrag } from "./crop-drag";
 import { attachOpacityKeydown } from "./opacity-keys";
+import { attachFlipDrag } from "./flip-drag";
+import { attachAltDragDuplicateBlocker } from "./alt-drag";
 import { ExcalidrawRefitSuspender } from "./excalidraw-settings";
 import {
 	EXCALIDRAW_VIEW_TYPE,
@@ -87,6 +89,8 @@ interface OpenBoardPopout {
 	detachPackKeys: (() => void) | null;
 	detachOpacityKeys: (() => void) | null;
 	detachCropDrag: (() => void) | null;
+	detachFlipDrag: (() => void) | null;
+	detachAltDragBlocker: (() => void) | null;
 }
 
 interface PendingOpen {
@@ -385,6 +389,8 @@ export class PopoutManager {
 			detachPackKeys: null,
 			detachOpacityKeys: null,
 			detachCropDrag: null,
+			detachFlipDrag: null,
+			detachAltDragBlocker: null,
 		};
 		this.pending = {
 			filePath: file.path,
@@ -583,6 +589,8 @@ export class PopoutManager {
 		entry.detachPackKeys?.();
 		entry.detachOpacityKeys?.();
 		entry.detachCropDrag?.();
+		entry.detachFlipDrag?.();
+		entry.detachAltDragBlocker?.();
 		entry.detachWindowDrag = null;
 		entry.detachChromeHiding = null;
 		entry.detachDropBridge = null;
@@ -591,6 +599,8 @@ export class PopoutManager {
 		entry.detachPackKeys = null;
 		entry.detachOpacityKeys = null;
 		entry.detachCropDrag = null;
+		entry.detachFlipDrag = null;
+		entry.detachAltDragBlocker = null;
 		this.refitSuspender.resume();
 	}
 
@@ -746,6 +756,8 @@ export class PopoutManager {
 			entry.detachPackKeys?.();
 			entry.detachOpacityKeys?.();
 			entry.detachCropDrag?.();
+			entry.detachFlipDrag?.();
+			entry.detachAltDragBlocker?.();
 		}
 		this.openBoards.clear();
 		// If unload lands during setViewState/Excalidraw mount, detaching in the
@@ -821,6 +833,8 @@ export class PopoutManager {
 			});
 		}
 		if (doc.defaultView) entry.detachCropDrag = attachCropDrag(doc.defaultView, this.plugin.app);
+		if (doc.defaultView) entry.detachFlipDrag = attachFlipDrag(doc.defaultView, this.plugin.app);
+		if (doc.defaultView) entry.detachAltDragBlocker = attachAltDragDuplicateBlocker(doc.defaultView, this.plugin.app);
 		entry.detachBoundsSaving = onWindowCloseById(newWindowId, () =>
 			this.persistWindowBounds(filePath, entry),
 		);

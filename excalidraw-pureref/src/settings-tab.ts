@@ -12,6 +12,9 @@ export class ExcalidrawPureRefSettingTab extends PluginSettingTab {
 
 		containerEl.createEl("h2", { text: "Excalidraw PureRef" });
 		containerEl.createEl("p", {
+			text: "With image elements selected, hold Alt+Shift and drag left/right to flip horizontally or up/down to flip vertically. Alt-drag duplication is disabled while this plugin is active; Alt-drag moves normally.",
+		});
+		containerEl.createEl("p", {
 			text:
 				"Press F11 while an Excalidraw board is focused to open (or close) a chrome-free, " +
 				"always-on-top PureRef-style popout of that board. There is no in-canvas UI for this " +

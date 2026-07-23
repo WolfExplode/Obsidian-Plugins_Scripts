@@ -6,6 +6,7 @@ Start here when orienting yourself in this plugin's behavior and constraints.
 | --- | --- |
 | Why the plugin integrates with, rather than forks, Excalidraw | [ADR 0001](adr/0001-standalone-plugin-depends-on-excalidraw.md) |
 | Decisions and product constraints | [Architecture Decision Records](adr/) |
+| User-visible changes to Excalidraw's normal gestures and shortcuts | [Excalidraw interaction overrides](user-interaction-overrides.md) |
 | Generated images, Excalidraw binary state, and vault persistence | [Obsidian–Excalidraw generated-image lifecycle](integrations/obsidian-excalidraw-generated-images.md) |
 | Popout lifecycle and ownership | [Popout lifecycle](popout-lifecycle.md) |
 | Investigations and rejected/paused platform routes | [Transparent Popout investigation](transparent-popout-investigation.md), [illegal-access investigation](illegal-access-investigation.md) |

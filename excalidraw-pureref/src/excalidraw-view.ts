@@ -484,6 +484,8 @@ export interface ImageCrop {
 	naturalHeight: number;
 }
 
+export type ImageFlipAxis = "horizontal" | "vertical";
+
 /** The image-element fields the crop primitive reads. */
 interface ImageSceneElement extends SceneElement {
 	versionNonce?: number;
@@ -1238,6 +1240,48 @@ export function getImageIds(leaf: WorkspaceLeaf | null, selectedOnly: boolean): 
 		return all.filter((el) => isImageElement(el) && (!selectedOnly || selected[el.id])).map((el) => el.id);
 	} catch {
 		return [];
+	}
+}
+
+/**
+ * Mirrors image elements around their own centers. `ids` captures the selection
+ * at gesture start so a pointer-up cannot accidentally affect a new selection.
+ */
+export function flipImageElements(leaf: WorkspaceLeaf | null, axis: ImageFlipAxis, ids?: readonly string[]): boolean {
+	const api = getExcalidrawApi(leaf);
+	const view = getExcalidrawView(leaf);
+	if (!api?.getSceneElements || !view?.updateScene) return false;
+
+	let all: readonly SceneElement[];
+	let selectedIds: Record<string, boolean>;
+	try {
+		all = api.getSceneElements();
+		selectedIds = api.getAppState().selectedElementIds ?? {};
+	} catch {
+		return false;
+	}
+
+	const idSet = ids ? new Set(ids) : null;
+	let flipped = false;
+	const nextElements = all.map((raw) => {
+		if (!isImageElement(raw) || !(idSet ? idSet.has(raw.id) : selectedIds[raw.id])) return raw;
+		flipped = true;
+		const [scaleX = 1, scaleY = 1] = raw.scale ?? [1, 1];
+		return {
+			...raw,
+			scale: axis === "horizontal" ? [-scaleX, scaleY] : [scaleX, -scaleY],
+			version: (raw.version ?? 1) + 1,
+			versionNonce: randomVersionNonce(),
+			updated: Date.now(),
+		};
+	});
+	if (!flipped) return false;
+
+	try {
+		view.updateScene({ elements: nextElements, captureUpdate: "IMMEDIATELY", commitToHistory: true });
+		return true;
+	} catch {
+		return false;
 	}
 }
 

@@ -10,6 +10,8 @@ import { attachInsertModalAutoConfirm } from "src/insert-modal-autoconfirm";
 import { attachVideoAspectCorrector } from "src/video-aspect";
 import { attachCropDrag, installCropDebugHook } from "src/crop-drag";
 import { attachOpacityKeydown } from "src/opacity-keys";
+import { attachFlipDrag } from "src/flip-drag";
+import { attachAltDragDuplicateBlocker } from "src/alt-drag";
 import { installKeyRelay, removeKeyRelay, cleanupOrphanPrototypes } from "src/transparent-proto";
 
 export default class ExcalidrawPureRefPlugin extends Plugin {
@@ -51,6 +53,8 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 		// edit window inherits the feature. The console hook (window.__eprCropDebug)
 		// stays available to drive the same crop primitive without a pointer gesture.
 		this.register(attachCropDrag(window, this.app));
+		this.register(attachFlipDrag(window, this.app));
+		this.register(attachAltDragDuplicateBlocker(window, this.app));
 		this.register(installCropDebugHook(this.app));
 
 		// Skip the Excalidraw "Insert File From Vault" popup when it offers only one
