@@ -8,6 +8,7 @@ import { attachPackKeydown } from "src/pack-keys";
 import { attachPopoutDropBridge } from "src/popout-drop-bridge";
 import { attachInsertModalAutoConfirm } from "src/insert-modal-autoconfirm";
 import { attachVideoAspectCorrector } from "src/video-aspect";
+import { attachImageScaleCorrector } from "src/image-scale";
 import { attachCropDrag, installCropDebugHook } from "src/crop-drag";
 import { attachOpacityKeydown } from "src/opacity-keys";
 import { attachFlipDrag } from "src/flip-drag";
@@ -47,6 +48,10 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 		// aspect ratio across every Excalidraw view — main window and popouts. Hooks
 		// each view's scene changes, so it needs no drop listener.
 		this.register(attachVideoAspectCorrector(this));
+		// PureRef-style pixel-accurate import: resize freshly-inserted images to their
+		// native pixel dimensions so relative resolutions line up 1:1. Like the aspect
+		// corrector, it hooks each view's scene changes across main window and popouts.
+		this.register(attachImageScaleCorrector(this));
 		this.register(attachPopoutDropBridge(window.document, { alwaysBridge: false }));
 
 		// PureRef-style hold-C + drag to crop the selected images, in the main window.
