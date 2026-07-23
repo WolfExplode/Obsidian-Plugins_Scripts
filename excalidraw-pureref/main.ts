@@ -14,6 +14,7 @@ import { attachOpacityKeydown } from "src/opacity-keys";
 import { attachFlipDrag } from "src/flip-drag";
 import { attachAltDragDuplicateBlocker } from "src/alt-drag";
 import { attachTransformKeydown } from "src/transform-keys";
+import { attachAltRHotkey } from "src/alt-r";
 import { installKeyRelay, removeKeyRelay, cleanupOrphanPrototypes } from "src/transparent-proto";
 
 export default class ExcalidrawPureRefPlugin extends Plugin {
@@ -62,6 +63,11 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 		this.register(attachFlipDrag(window, this.app));
 		this.register(attachAltDragDuplicateBlocker(window, this.app));
 		this.register(attachTransformKeydown(window, this.app));
+		// Claim Alt+R while a drawing is the active leaf so it stops triggering
+		// Templater (which errors with no markdown editor). Reserved for an upcoming
+		// feature. Rides Obsidian's global keymap, so one registration covers popouts
+		// too — see attachAltRHotkey.
+		this.register(attachAltRHotkey(this));
 		this.register(installCropDebugHook(this.app));
 
 		// Skip the Excalidraw "Insert File From Vault" popup when it offers only one

@@ -29,6 +29,7 @@ to a normal move so it cannot duplicate a newly clicked element.
 | **Ctrl+Shift+P** | Rearranges selected packable references into a compact layout. | Normal view and editable Popout. |
 | **G** / **R** / **S** with selected elements | Starts a Blender-style move, rotation, or uniform scale around the selection center. Move to preview; left-click or Enter commits; Esc or right-click cancels. Hold **Shift** during rotation to snap to 15° increments. | Normal view and editable Popout. |
 | **R** without a selection | Does not select the Rectangle tool. Excalidraw's **2** shortcut remains available. | Normal view and editable Popout. |
+| **Alt+R** while an Excalidraw drawing is the active leaf | Reserved by the plugin; does **not** run Templater's "Replace templates in the active file" (which errors on a drawing). Templater's Alt+R still works in every markdown context. | Excalidraw drawing (non-markdown) mode only. See [Obsidian hotkey interception](integrations/obsidian-hotkey-interception.md). |
 | **F11** | Opens or closes the PureRef Popout for the active Board. | An Excalidraw Board. |
 | **F10** | Switches an existing editable Popout and its read-only transparent reference mode. | Only when one of those modes exists. |
 
@@ -48,6 +49,11 @@ mode switches.
   the plugin selects it automatically.
 - Inserted local videos and animated images are resized to their intrinsic aspect
   ratio after Excalidraw has added them.
+- Inserted images are resized to their **native pixel dimensions** (PureRef-style),
+  so relative resolutions line up 1:1 and a higher-resolution image imports larger
+  than a lower-resolution one, instead of every image being clamped to the same
+  size. Applies to freshly inserted images only; images already on the Board are
+  left as-is.
 
 These integrations are designed to be additive where possible. The explicit
 gesture and shortcut overrides above are the intentional exceptions.
