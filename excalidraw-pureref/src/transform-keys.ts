@@ -24,6 +24,33 @@ interface ActiveTransform {
 	pivot: ScenePoint;
 	start: ScenePoint | null;
 	latest: TransformElement[];
+	/** The document we painted the mode cursor on, so clear() can undo it. */
+	cursorDoc: Document | null;
+}
+
+/**
+ * Modal-transform state, deliberately MODULE-level rather than per-instance.
+ *
+ * WHY: attachTransformKeydown is bound once per window (main window + each
+ * Popout), but a Popout's events do not stay in one realm — a real keypress made
+ * in a Popout is delivered to the *main* window's listeners, while its pointer
+ * events stay in the Popout. With per-instance closures that split the gesture in
+ * half: the instance that received the keydown held `active` but never saw the
+ * mouse, and the instance seeing the mouse had `active === null`, so G/R/S
+ * silently did nothing in a Popout. Sharing the state means whichever instance
+ * receives each event drives the same transform.
+ */
+let active: ActiveTransform | null = null;
+/** Last pointer position seen in ANY window, with the leaf it was over. */
+let lastPointer: {
+	leaf: NonNullable<ReturnType<typeof findExcalidrawLeafForNode>>;
+	x: number;
+	y: number;
+} | null = null;
+
+/** The document owning a leaf's view, where its mode cursor belongs. */
+function leafDocument(leaf: ActiveTransform["leaf"]): Document | null {
+	return (leaf.view as unknown as { containerEl?: HTMLElement }).containerEl?.ownerDocument ?? null;
 }
 
 function isEditableTarget(target: EventTarget | null): boolean {
@@ -97,13 +124,14 @@ function transformElements(active: ActiveTransform, current: ScenePoint, snapRot
  */
 export function attachTransformKeydown(win: Window, app: App): () => void {
 	const doc = win.document;
-	let active: ActiveTransform | null = null;
-	let lastPointer: { leaf: ReturnType<typeof findExcalidrawLeafForNode>; x: number; y: number } | null = null;
 	let suppressNextContextMenu = false;
 
 	const clear = () => {
-		active = null;
+		// Clear the cursor on whichever document we actually painted it on — with a
+		// Popout open that is not necessarily this instance's own document.
+		active?.cursorDoc?.body.style.removeProperty("cursor");
 		doc.body.style.removeProperty("cursor");
+		active = null;
 	};
 	const cancel = () => {
 		if (active) applySelectionTransform(active.leaf, active.baseline, "NEVER");
@@ -165,8 +193,14 @@ export function attachTransformKeydown(win: Window, app: App): () => void {
 		if (baseline.length === 0) return;
 
 		const pointer = lastPointer?.leaf === leaf ? clientToSceneCoords(leaf, lastPointer.x, lastPointer.y) : null;
-		active = { mode, leaf, baseline, pivot: selectionCenter(baseline), start: pointer, latest: baseline };
-		doc.body.style.cursor = mode === "move" ? "move" : mode === "rotate" ? "crosshair" : "nwse-resize";
+		// Paint the cursor on the transformed leaf's OWN document, not this
+		// instance's: a Popout keypress is delivered to the main window's handler,
+		// so `doc` here is often the wrong window entirely.
+		const cursorDoc = leafDocument(leaf);
+		active = { mode, leaf, baseline, pivot: selectionCenter(baseline), start: pointer, latest: baseline, cursorDoc };
+		if (cursorDoc) {
+			cursorDoc.body.style.cursor = mode === "move" ? "move" : mode === "rotate" ? "crosshair" : "nwse-resize";
+		}
 	};
 
 	const onPointerMove = (event: PointerEvent) => {
@@ -210,14 +244,25 @@ export function attachTransformKeydown(win: Window, app: App): () => void {
 		event.stopImmediatePropagation();
 	};
 
-	const onBlur = () => cancel();
+	/**
+	 * Whether the in-flight transform is being applied to a leaf in THIS window.
+	 * Now that the state is shared, blur/teardown must not tear down a transform
+	 * another window owns — a Popout keypress activates via the main window's
+	 * handler, so the main window blurring (because the Popout took focus) must
+	 * leave that Popout transform running.
+	 */
+	const ownsActive = () => !!active && leafDocument(active.leaf) === doc;
+
+	const onBlur = () => {
+		if (ownsActive()) cancel();
+	};
 	win.addEventListener("keydown", onKeyDown, true);
 	win.addEventListener("pointermove", onPointerMove, true);
 	win.addEventListener("pointerdown", onPointerDown, true);
 	win.addEventListener("contextmenu", onContextMenu, true);
 	win.addEventListener("blur", onBlur);
 	return () => {
-		cancel();
+		if (ownsActive()) cancel();
 		win.removeEventListener("keydown", onKeyDown, true);
 		win.removeEventListener("pointermove", onPointerMove, true);
 		win.removeEventListener("pointerdown", onPointerDown, true);

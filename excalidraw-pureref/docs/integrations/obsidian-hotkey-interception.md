@@ -68,7 +68,10 @@ To claim `<hotkey>` for command `<id>` only in context C:
 Because this rides Obsidian's global keymap — which already spans popout windows —
 **one registration covers the main window and every popout**. Do not add
 per-window wiring for keymap-level shortcuts (contrast the DOM-capture features,
-which must be attached per window).
+which must be attached per window — see
+[Obsidian window event listeners](obsidian-window-event-listeners.md), which also
+documents how events route between windows and why gesture state must not live in
+a per-window closure).
 
 For the drawing-vs-markdown test specifically, `isExcalidrawLeaf(activeLeaf)` is
 the correct signal: the host's "toggle Excalidraw/Markdown" swaps the leaf's view

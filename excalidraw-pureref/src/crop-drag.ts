@@ -5,6 +5,7 @@ import {
 	findExcalidrawLeafForNode,
 	getActiveExcalidrawLeaf,
 	getImageIds,
+	getNativeCropImageIds,
 	getViewportCropImageIds,
 	getSelectedImageSceneBBox,
 	uncropImages,
@@ -94,7 +95,25 @@ export function attachCropDrag(win: Window, app: App): () => void {
 	const onDoubleClick = (event: MouseEvent) => {
 		const target = event.target as Node | null;
 		const leaf = findExcalidrawLeafForNode(app, target);
-		if (!leaf || getViewportCropImageIds(leaf, true).length === 0) return;
+		if (!leaf) return;
+
+		// Alt+double-click removes Excalidraw's *native* crop, restoring each
+		// selected image to the full original. Held separate from the plain
+		// double-click below so the two crop layers stay independently reversible:
+		// plain peels the plugin's custom crop, Alt peels the native one. When
+		// nothing qualifies (no native crop, or a rotated image the restore math
+		// cannot handle) the event is left alone so Excalidraw's own double-click
+		// crop editor still opens.
+		if (event.altKey) {
+			const nativeCropped = getNativeCropImageIds(leaf, true);
+			if (nativeCropped.length === 0) return;
+			event.preventDefault();
+			event.stopImmediatePropagation();
+			void uncropImages(app, leaf, nativeCropped);
+			return;
+		}
+
+		if (getViewportCropImageIds(leaf, true).length === 0) return;
 		event.preventDefault();
 		event.stopImmediatePropagation();
 		// First double-click removes only our polygon crop. The next one is

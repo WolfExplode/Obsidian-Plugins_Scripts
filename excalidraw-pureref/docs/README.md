@@ -9,6 +9,7 @@ Start here when orienting yourself in this plugin's behavior and constraints.
 | User-visible changes to Excalidraw's normal gestures and shortcuts | [Excalidraw interaction overrides](user-interaction-overrides.md) |
 | Generated images, Excalidraw binary state, and vault persistence | [Obsidian–Excalidraw generated-image lifecycle](integrations/obsidian-excalidraw-generated-images.md) |
 | Claiming a keyboard shortcut another plugin owns | [Obsidian hotkey interception](integrations/obsidian-hotkey-interception.md) |
+| Adding keyboard/pointer listeners, and how events route between windows | [Obsidian window event listeners](integrations/obsidian-window-event-listeners.md) |
 | Popout lifecycle and ownership | [Popout lifecycle](popout-lifecycle.md) |
 | Investigations and rejected/paused platform routes | [Transparent Popout investigation](transparent-popout-investigation.md), [illegal-access investigation](illegal-access-investigation.md) |
 

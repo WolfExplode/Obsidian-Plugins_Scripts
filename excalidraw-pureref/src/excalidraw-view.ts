@@ -1470,6 +1470,39 @@ export function getViewportCropImageIds(leaf: WorkspaceLeaf | null, selectedOnly
 	}
 }
 
+/**
+ * Returns selected or all images carrying a *native* Excalidraw crop that this
+ * plugin can restore in place — the targets for Alt+double-click.
+ *
+ * Deliberately narrower than "has a crop". Images with the custom viewport-crop
+ * layer are excluded: plain double-click already owns those, and uncropImages
+ * would take its viewport branch and peel off the custom layer instead of the
+ * native crop, which is not what Alt+double-click promises. Rotated images are
+ * excluded for the same reason uncropImages skips them — the axis-aligned
+ * restore math does not hold once the element is turned, so those are left to
+ * fall through to Excalidraw's own double-click crop editor.
+ */
+export function getNativeCropImageIds(leaf: WorkspaceLeaf | null, selectedOnly: boolean): string[] {
+	const api = getExcalidrawApi(leaf);
+	if (!api?.getSceneElements) return [];
+	try {
+		const selected = api.getAppState().selectedElementIds ?? {};
+		return api
+			.getSceneElements()
+			.filter(
+				(el): el is ImageSceneElement =>
+					isImageElement(el) &&
+					(!selectedOnly || !!selected[el.id]) &&
+					!!el.crop &&
+					!getViewportCropState(el) &&
+					!(el.angle && Math.abs(el.angle) > 1e-6),
+			)
+			.map((el) => el.id);
+	} catch {
+		return [];
+	}
+}
+
 /** Outcome of a crop request, for debugging and caller feedback. */
 export interface CropResult {
 	cropped: string[];
