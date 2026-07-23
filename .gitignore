@@ -4,6 +4,7 @@ __pycache__/
 # Dependencies and vendored/reference material
 node_modules/
 reference/
+Obsidian Documentation
 
 # Local tooling
 .claude/
