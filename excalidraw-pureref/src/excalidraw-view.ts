@@ -622,6 +622,92 @@ function makeNaturalSizeResolver(win: Window, files: Record<string, { dataURL?: 
 	};
 }
 
+/** A size this close to the target is already reset — leave it alone. */
+const SCALE_RESET_EPSILON = 0.01;
+
+/**
+ * Clears every selected element's rotation (Blender's Alt+R). Excalidraw rotates
+ * an element about the centre of its unrotated box, so dropping `angle` to 0
+ * leaves x/y/width/height — and therefore the centre — exactly where they are.
+ * Returns false when nothing is selected or everything is already upright, so a
+ * caller can leave the keystroke unconsumed.
+ */
+export function resetSelectedRotation(leaf: WorkspaceLeaf | null): boolean {
+	const rotated = getSelectedTransformElements(leaf).filter((element) => element.angle !== 0);
+	if (rotated.length === 0) return false;
+	return applySelectionTransform(
+		leaf,
+		rotated.map((element) => ({ ...element, angle: 0 })),
+		"IMMEDIATELY",
+	);
+}
+
+/**
+ * Resets every selected image to 100% scale — its native pixel size (Blender's
+ * Alt+S), the same size the plugin imports at, so a reset image lines up 1:1
+ * with freshly imported ones again.
+ *
+ * A natively cropped image resets to its *visible* crop measured in natural
+ * pixels, never the whole file, so the reset cannot re-expose cropped-away
+ * content (that stays Excalidraw's double-click uncrop). Rotation and flips
+ * (`scale: [-1, 1]`) are deliberately preserved — this restores size only —
+ * and each image resizes about its own centre. One undoable step.
+ *
+ * Returns false when the selection holds no image that needs resizing.
+ */
+export async function resetSelectedImageScale(leaf: WorkspaceLeaf | null): Promise<boolean> {
+	const api = getExcalidrawApi(leaf);
+	const view = getExcalidrawView(leaf);
+	if (!api?.getSceneElements || !api.getFiles || !view?.updateScene) return false;
+
+	let all: readonly SceneElement[];
+	let selectedIds: Record<string, boolean>;
+	let files: Record<string, { dataURL?: string } | undefined>;
+	try {
+		all = api.getSceneElements();
+		selectedIds = api.getAppState().selectedElementIds ?? {};
+		files = api.getFiles();
+	} catch {
+		return false;
+	}
+
+	const targets = all.filter((el): el is ImageSceneElement => isImageElement(el) && !!selectedIds[el.id]);
+	if (targets.length === 0) return false;
+
+	const win = view.containerEl?.ownerDocument?.defaultView ?? window;
+	const naturalSizeOf = makeNaturalSizeResolver(win, files);
+
+	const transforms: TransformElement[] = [];
+	for (const el of targets) {
+		// A native crop already records its visible size in natural pixels, so only
+		// an uncropped image needs its file decoded.
+		const target = el.crop
+			? { w: el.crop.width, h: el.crop.height }
+			: el.fileId
+				? await naturalSizeOf(el.fileId)
+				: null;
+		if (!target || target.w <= 0 || target.h <= 0) continue;
+		if (
+			Math.abs(el.width - target.w) <= SCALE_RESET_EPSILON * target.w &&
+			Math.abs(el.height - target.h) <= SCALE_RESET_EPSILON * target.h
+		) {
+			continue; // already at 100%
+		}
+		const cx = el.x + el.width / 2;
+		const cy = el.y + el.height / 2;
+		transforms.push({
+			id: el.id,
+			x: cx - target.w / 2,
+			y: cy - target.h / 2,
+			width: target.w,
+			height: target.h,
+			angle: el.angle ?? 0,
+		});
+	}
+	if (transforms.length === 0) return false;
+	return applySelectionTransform(leaf, transforms, "IMMEDIATELY");
+}
+
 interface CropPoint {
 	x: number;
 	y: number;

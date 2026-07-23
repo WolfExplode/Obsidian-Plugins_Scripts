@@ -4,6 +4,8 @@ import {
 	clientToSceneCoords,
 	findExcalidrawLeafForNode,
 	getSelectedTransformElements,
+	resetSelectedImageScale,
+	resetSelectedRotation,
 	type TransformElement,
 } from "./excalidraw-view";
 
@@ -123,6 +125,32 @@ export function attachTransformKeydown(win: Window, app: App): () => void {
 			event.preventDefault();
 			event.stopImmediatePropagation();
 			commit();
+			return;
+		}
+		// Blender-style resets, the counterpart to the modal R/S below: Alt+R clears
+		// rotation, Alt+S restores native pixel size. Both keys are already reserved
+		// inside a Board — Alt+S because Excalidraw's object-snap shortcut is dropped,
+		// Alt+R because it is held back from Templater — so consuming them here takes
+		// nothing away. Skipped while a modal transform is running, which owns the
+		// keyboard until it commits or cancels.
+		if (
+			!active &&
+			event.altKey &&
+			!event.ctrlKey &&
+			!event.metaKey &&
+			!event.shiftKey &&
+			!event.repeat &&
+			(event.code === "KeyR" || event.code === "KeyS") &&
+			!isEditableTarget(event.target)
+		) {
+			const resetLeaf = findExcalidrawLeafForNode(app, event.target as Node | null);
+			if (!resetLeaf) return;
+			// Consume unconditionally: these keys must never reach Excalidraw or
+			// Obsidian from a Board, even when the selection has nothing to reset.
+			event.preventDefault();
+			event.stopImmediatePropagation();
+			if (event.code === "KeyR") resetSelectedRotation(resetLeaf);
+			else void resetSelectedImageScale(resetLeaf);
 			return;
 		}
 		if (event.repeat || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || isEditableTarget(event.target)) return;
