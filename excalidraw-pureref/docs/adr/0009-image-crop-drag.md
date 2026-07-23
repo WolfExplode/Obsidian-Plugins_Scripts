@@ -6,10 +6,10 @@ status: accepted
 
 ## Decision
 
-Holding **C** and dragging a rectangle over the Board crops images to that
-rectangle, mirroring PureRef's crop gesture. If images are selected, all of them
-are cropped; if nothing is selected, every image the rectangle covers is cropped.
-It is bound per window and so works in the main window and every Popout.
+Holding **C** and dragging a rectangle over the Board crops the selected images
+to that rectangle, mirroring PureRef's crop gesture. If nothing is selected, the
+gesture is a no-op. It is bound per window and so works in the main window and
+every Popout.
 
 The crop is driven entirely through Excalidraw's own `crop` element field — not a
 bespoke image rewrite. The full source image is always retained, so Excalidraw's

@@ -13,9 +13,9 @@ import {
 
 /**
  * PureRef-style crop: hold **C** and drag a rectangle over the Board; on release
- * every selected image is cropped to the part of it inside that rectangle (if
- * nothing is selected, every image the rectangle covers is cropped instead). It
- * drives the same primitive the debug hook proved — cropImagesToSceneRect — so
+ * every selected image is cropped to the part of it inside that rectangle. If
+ * nothing is selected, the gesture is a no-op. It drives the same primitive the
+ * debug hook proved — cropImagesToSceneRect — so
  * upright/flipped images crop exactly, rotated ones are skipped, the original is
  * always retained (double-click re-exposes it), and it's one undoable step.
  *
@@ -142,10 +142,11 @@ export function attachCropDrag(win: Window, app: App): () => void {
 			width: Math.abs(p2.x - p1.x),
 			height: Math.abs(p2.y - p1.y),
 		};
-		// Crop the selection; with nothing selected, crop whatever the rect covers.
+		// Crop only the images selected when the gesture completes. An empty
+		// selection must be a no-op; never fall back to all images on the board.
 		const selected = getImageIds(leaf, true);
-		const ids = selected.length > 0 ? undefined : getImageIds(leaf, false);
-		void cropImagesToSceneRect(leaf, rect, ids);
+		if (selected.length === 0) return;
+		void cropImagesToSceneRect(leaf, rect, selected);
 	};
 
 	win.addEventListener("keydown", onKeyDown, true);
