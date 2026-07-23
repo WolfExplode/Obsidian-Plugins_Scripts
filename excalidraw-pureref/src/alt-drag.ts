@@ -39,40 +39,22 @@ function relayWithoutAlt(event: PointerEvent): void {
  * `attachFlipDrag`, which intercepts it first for the PureRef flip gesture.
  */
 export function attachAltDragDuplicateBlocker(win: Window, app: App): () => void {
-	const relayedPointers = new Set<number>();
-
-	const shouldStartRelay = (event: PointerEvent): boolean => {
+	const shouldRelayMove = (event: PointerEvent): boolean => {
 		if ((event as unknown as Record<string, unknown>)[RELAYED_POINTER_EVENT]) return false;
-		if (!event.altKey || event.shiftKey || event.ctrlKey || event.metaKey || event.button !== 0) return false;
+		if (!event.altKey || event.shiftKey || event.ctrlKey || event.metaKey) return false;
 		const target = event.target as HTMLElement | null;
 		return !!target && target.tagName === "CANVAS" && !!findExcalidrawLeafForNode(app, target);
 	};
 
-	const onPointerDown = (event: PointerEvent) => {
-		if (!shouldStartRelay(event)) return;
-		relayedPointers.add(event.pointerId);
+	const onPointerMove = (event: PointerEvent) => {
+		if (!shouldRelayMove(event)) return;
 		event.preventDefault();
 		event.stopImmediatePropagation();
 		relayWithoutAlt(event);
 	};
 
-	const onPointerEvent = (event: PointerEvent) => {
-		if (!relayedPointers.has(event.pointerId) || (event as unknown as Record<string, unknown>)[RELAYED_POINTER_EVENT]) return;
-		if (event.type === "pointerup" || event.type === "pointercancel") relayedPointers.delete(event.pointerId);
-		event.preventDefault();
-		event.stopImmediatePropagation();
-		relayWithoutAlt(event);
-	};
-
-	win.addEventListener("pointerdown", onPointerDown, true);
-	win.addEventListener("pointermove", onPointerEvent, true);
-	win.addEventListener("pointerup", onPointerEvent, true);
-	win.addEventListener("pointercancel", onPointerEvent, true);
+	win.addEventListener("pointermove", onPointerMove, true);
 	return () => {
-		relayedPointers.clear();
-		win.removeEventListener("pointerdown", onPointerDown, true);
-		win.removeEventListener("pointermove", onPointerEvent, true);
-		win.removeEventListener("pointerup", onPointerEvent, true);
-		win.removeEventListener("pointercancel", onPointerEvent, true);
+		win.removeEventListener("pointermove", onPointerMove, true);
 	};
 }

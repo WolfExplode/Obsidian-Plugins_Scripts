@@ -420,6 +420,90 @@ export interface ElementResize {
 	height: number;
 }
 
+/** The mutable geometry needed for a modal selection transform. */
+export interface TransformElement {
+	id: string;
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+	angle: number;
+}
+
+/** Returns a stable snapshot of the current selection's transformable elements. */
+export function getSelectedTransformElements(leaf: WorkspaceLeaf | null): TransformElement[] {
+	const api = getExcalidrawApi(leaf);
+	if (!api?.getSceneElements) return [];
+	try {
+		const selectedIds = api.getAppState().selectedElementIds ?? {};
+		return api.getSceneElements().flatMap((element) => {
+			if (!selectedIds[element.id] || element.isDeleted) return [];
+			return [{
+				id: element.id,
+				x: element.x,
+				y: element.y,
+				width: element.width,
+				height: element.height,
+				angle: element.angle ?? 0,
+			}];
+		});
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * Applies a modal-transform preview or final result. Preview updates are kept
+ * out of history; the final identical update is captured as one undo step.
+ */
+export function applySelectionTransform(
+	leaf: WorkspaceLeaf | null,
+	transforms: readonly TransformElement[],
+	captureUpdate: "NEVER" | "IMMEDIATELY",
+): boolean {
+	if (transforms.length === 0) return false;
+	const api = getExcalidrawApi(leaf);
+	const view = getExcalidrawView(leaf);
+	if (!api?.getSceneElements || !view?.updateScene) return false;
+
+	let all: readonly SceneElement[];
+	try {
+		all = api.getSceneElements();
+	} catch {
+		return false;
+	}
+	const byId = new Map(transforms.map((transform) => [transform.id, transform]));
+	let changed = false;
+	const nextElements = all.map((element) => {
+		const transform = byId.get(element.id);
+		if (!transform) return element;
+		changed = true;
+		return {
+			...element,
+			x: transform.x,
+			y: transform.y,
+			width: transform.width,
+			height: transform.height,
+			angle: transform.angle,
+			version: (element.version ?? 1) + 1,
+			versionNonce: randomVersionNonce(),
+			updated: Date.now(),
+		};
+	});
+	if (!changed) return false;
+
+	try {
+		view.updateScene({
+			elements: nextElements,
+			captureUpdate,
+			commitToHistory: captureUpdate === "IMMEDIATELY",
+		});
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 /**
  * Rewrites the position/size of specific scene elements in one undoable step,
  * leaving every other element untouched. Used by the video aspect-ratio

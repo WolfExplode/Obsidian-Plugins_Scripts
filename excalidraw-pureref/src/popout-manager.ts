@@ -40,6 +40,7 @@ import { attachCropDrag } from "./crop-drag";
 import { attachOpacityKeydown } from "./opacity-keys";
 import { attachFlipDrag } from "./flip-drag";
 import { attachAltDragDuplicateBlocker } from "./alt-drag";
+import { attachTransformKeydown } from "./transform-keys";
 import { ExcalidrawRefitSuspender } from "./excalidraw-settings";
 import {
 	EXCALIDRAW_VIEW_TYPE,
@@ -91,6 +92,7 @@ interface OpenBoardPopout {
 	detachCropDrag: (() => void) | null;
 	detachFlipDrag: (() => void) | null;
 	detachAltDragBlocker: (() => void) | null;
+	detachTransformKeys: (() => void) | null;
 }
 
 interface PendingOpen {
@@ -391,6 +393,7 @@ export class PopoutManager {
 			detachCropDrag: null,
 			detachFlipDrag: null,
 			detachAltDragBlocker: null,
+			detachTransformKeys: null,
 		};
 		this.pending = {
 			filePath: file.path,
@@ -591,6 +594,7 @@ export class PopoutManager {
 		entry.detachCropDrag?.();
 		entry.detachFlipDrag?.();
 		entry.detachAltDragBlocker?.();
+		entry.detachTransformKeys?.();
 		entry.detachWindowDrag = null;
 		entry.detachChromeHiding = null;
 		entry.detachDropBridge = null;
@@ -601,6 +605,7 @@ export class PopoutManager {
 		entry.detachCropDrag = null;
 		entry.detachFlipDrag = null;
 		entry.detachAltDragBlocker = null;
+		entry.detachTransformKeys = null;
 		this.refitSuspender.resume();
 	}
 
@@ -758,6 +763,7 @@ export class PopoutManager {
 			entry.detachCropDrag?.();
 			entry.detachFlipDrag?.();
 			entry.detachAltDragBlocker?.();
+			entry.detachTransformKeys?.();
 		}
 		this.openBoards.clear();
 		// If unload lands during setViewState/Excalidraw mount, detaching in the
@@ -835,6 +841,7 @@ export class PopoutManager {
 		if (doc.defaultView) entry.detachCropDrag = attachCropDrag(doc.defaultView, this.plugin.app);
 		if (doc.defaultView) entry.detachFlipDrag = attachFlipDrag(doc.defaultView, this.plugin.app);
 		if (doc.defaultView) entry.detachAltDragBlocker = attachAltDragDuplicateBlocker(doc.defaultView, this.plugin.app);
+		if (doc.defaultView) entry.detachTransformKeys = attachTransformKeydown(doc.defaultView, this.plugin.app);
 		entry.detachBoundsSaving = onWindowCloseById(newWindowId, () =>
 			this.persistWindowBounds(filePath, entry),
 		);

@@ -27,6 +27,8 @@ to a normal move so it cannot duplicate a newly clicked element.
 | **Ctrl+−** / **Ctrl++** without a selection | Does nothing in a normal Excalidraw view. Changes the editable PureRef Popout's whole-window opacity by 5%. | As stated. The Popout consumes this shortcut so Excalidraw does not zoom. |
 | **Ctrl+Arrow** | Packs selected packable references toward that edge. | Normal view and editable Popout. |
 | **Ctrl+Shift+P** | Rearranges selected packable references into a compact layout. | Normal view and editable Popout. |
+| **G** / **R** / **S** with selected elements | Starts a Blender-style move, rotation, or uniform scale around the selection center. Move to preview; left-click or Enter commits; Esc or right-click cancels. Hold **Shift** during rotation to snap to 15° increments. | Normal view and editable Popout. |
+| **R** without a selection | Does not select the Rectangle tool. Excalidraw's **2** shortcut remains available. | Normal view and editable Popout. |
 | **F11** | Opens or closes the PureRef Popout for the active Board. | An Excalidraw Board. |
 | **F10** | Switches an existing editable Popout and its read-only transparent reference mode. | Only when one of those modes exists. |
 
