@@ -68,7 +68,6 @@ interface ExcalidrawApi {
 		zenModeEnabled?: boolean;
 		boxSelectionMode?: "contain" | "overlap";
 		selectedElementIds?: Record<string, boolean>;
-		gridSize?: number;
 	};
 	getSceneElements?(): readonly SceneElement[];
 	/** The scene's binary files, keyed by an image element's `fileId`. */
@@ -301,11 +300,11 @@ export function readSceneElements(leaf: WorkspaceLeaf | null): readonly unknown[
 }
 
 /**
- * Fallback gap between packed elements, in scene units, for when Excalidraw's
- * app state doesn't expose a grid size. Matches Excalidraw's own default grid
- * size (DEFAULT_GRID_SIZE in packages/common/src/constants.ts).
+ * Small gap left between packed elements, in scene units. Kept modest so packed
+ * references sit close (PureRef-tight) without touching. Tunable; could become a
+ * setting later.
  */
-const DEFAULT_PACK_GAP = 20;
+const PACK_GAP = 8;
 
 /** The same ten-percent increment used by Excalidraw's opacity control. */
 const ELEMENT_OPACITY_STEP = 10;
@@ -366,7 +365,7 @@ export function adjustSelectedElementsOpacity(leaf: WorkspaceLeaf | null, direct
  */
 function applyPack(
 	leaf: WorkspaceLeaf | null,
-	plan: (selected: PackElement[], gap: number) => PackMove[],
+	plan: (selected: PackElement[]) => PackMove[],
 ): boolean {
 	const api = getExcalidrawApi(leaf);
 	const view = getExcalidrawView(leaf);
@@ -374,12 +373,9 @@ function applyPack(
 
 	let all: readonly SceneElement[];
 	let selectedIds: Record<string, boolean>;
-	let gap: number;
 	try {
 		all = api.getSceneElements();
-		const appState = api.getAppState();
-		selectedIds = appState.selectedElementIds ?? {};
-		gap = appState.gridSize ?? DEFAULT_PACK_GAP;
+		selectedIds = api.getAppState().selectedElementIds ?? {};
 	} catch {
 		return false;
 	}
@@ -387,7 +383,7 @@ function applyPack(
 	const selected = all.filter((el) => selectedIds[el.id] && isPackable(el));
 	if (selected.length < 2) return false;
 
-	const moves = plan(selected as PackElement[], gap);
+	const moves = plan(selected as PackElement[]);
 	if (moves.length === 0) return false;
 
 	const moveById = new Map(moves.map((m) => [m.id, m]));
@@ -1852,7 +1848,7 @@ export async function uncropImages(app: App, leaf: WorkspaceLeaf | null, ids?: r
  * See applyPack for the no-op contract (lets Excalidraw's arrow-nudge proceed).
  */
 export function packSelectedElements(leaf: WorkspaceLeaf | null, direction: PackDirection): boolean {
-	return applyPack(leaf, (selected, gap) => planPack(selected, direction, gap));
+	return applyPack(leaf, (selected) => planPack(selected, direction, PACK_GAP));
 }
 
 /**
@@ -1861,7 +1857,7 @@ export function packSelectedElements(leaf: WorkspaceLeaf | null, direction: Pack
  * contract.
  */
 export function optimalPackSelectedElements(leaf: WorkspaceLeaf | null): boolean {
-	return applyPack(leaf, (selected, gap) => planOptimalPack(selected, gap));
+	return applyPack(leaf, (selected) => planOptimalPack(selected, PACK_GAP));
 }
 
 /**
