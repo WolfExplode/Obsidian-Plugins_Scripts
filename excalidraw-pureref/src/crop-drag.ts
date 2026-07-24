@@ -98,12 +98,11 @@ export function attachCropDrag(win: Window, app: App): () => void {
 		if (!leaf) return;
 
 		// Alt+double-click removes Excalidraw's *native* crop, restoring each
-		// selected image to the full original. Held separate from the plain
-		// double-click below so the two crop layers stay independently reversible:
-		// plain peels the plugin's custom crop, Alt peels the native one. When
-		// nothing qualifies (no native crop, or a rotated image the restore math
-		// cannot handle) the event is left alone so Excalidraw's own double-click
-		// crop editor still opens.
+		// selected image to the full original — rotated images included. Held
+		// separate from the plain double-click below so the two crop layers stay
+		// independently reversible: plain peels the plugin's custom crop, Alt
+		// peels the native one. When nothing qualifies (no native crop) the event
+		// is left alone so Excalidraw's own double-click crop editor still opens.
 		if (event.altKey) {
 			const nativeCropped = getNativeCropImageIds(leaf, true);
 			if (nativeCropped.length === 0) return;

@@ -768,6 +768,14 @@ function applyAffine(transform: AffineTransform, point: CropPoint): CropPoint {
 	};
 }
 
+/** Rotates/scales a vector by `transform`'s linear part only — no translation. */
+function rotateVector(transform: AffineTransform, vector: CropPoint): CropPoint {
+	return {
+		x: transform.a * vector.x + transform.c * vector.y,
+		y: transform.b * vector.x + transform.d * vector.y,
+	};
+}
+
 function invertAffine(transform: AffineTransform): AffineTransform | null {
 	const det = transform.a * transform.d - transform.b * transform.c;
 	if (Math.abs(det) < 1e-9) return null;
@@ -1478,9 +1486,8 @@ export function getViewportCropImageIds(leaf: WorkspaceLeaf | null, selectedOnly
  * layer are excluded: plain double-click already owns those, and uncropImages
  * would take its viewport branch and peel off the custom layer instead of the
  * native crop, which is not what Alt+double-click promises. Rotated images are
- * excluded for the same reason uncropImages skips them — the axis-aligned
- * restore math does not hold once the element is turned, so those are left to
- * fall through to Excalidraw's own double-click crop editor.
+ * included — uncropImages rotates the restore offset into scene space via
+ * elementLocalToScene, so the axis-aligned math holds at any angle.
  */
 export function getNativeCropImageIds(leaf: WorkspaceLeaf | null, selectedOnly: boolean): string[] {
 	const api = getExcalidrawApi(leaf);
@@ -1494,8 +1501,7 @@ export function getNativeCropImageIds(leaf: WorkspaceLeaf | null, selectedOnly: 
 					isImageElement(el) &&
 					(!selectedOnly || !!selected[el.id]) &&
 					!!el.crop &&
-					!getViewportCropState(el) &&
-					!(el.angle && Math.abs(el.angle) > 1e-6),
+					!getViewportCropState(el),
 			)
 			.map((el) => el.id);
 	} catch {
@@ -1810,7 +1816,6 @@ export async function uncropImages(app: App, leaf: WorkspaceLeaf | null, ids?: r
 			};
 		}
 		if (!target || !el.crop) return raw;
-		if (el.angle && Math.abs(el.angle) > 1e-6) return raw; // native double-click handles rotated
 
 		const crop = el.crop;
 		const flipX = el.scale?.[0] === -1;
@@ -1819,11 +1824,38 @@ export async function uncropImages(app: App, leaf: WorkspaceLeaf | null, ids?: r
 		const uncroppedH = el.height / (crop.height / crop.naturalHeight);
 		const visualCropX = flipX ? crop.naturalWidth - crop.width - crop.x : crop.x;
 		const visualCropY = flipY ? crop.naturalHeight - crop.height - crop.y : crop.y;
+		const offsetX = (visualCropX / crop.naturalWidth) * uncroppedW;
+		const offsetY = (visualCropY / crop.naturalHeight) * uncroppedH;
 		uncropped.push(el.id);
+
+		// Crop/flip happen in the element's local (pre-rotation) frame, so at
+		// angle 0 the restored corner is a plain subtraction. Once rotated, the
+		// local offset from the full box's corner to the visible box's corner
+		// must be rotated into scene space before it can be applied — otherwise
+		// growing the box shifts the visible content off its on-screen spot.
+		// `elementLocalToScene` already encodes the current box's rotation about
+		// its own centre; reuse its linear part to rotate the offset, then place
+		// the new (larger) box's centre so the crop sub-rect lands exactly where
+		// the visible box is now, and derive its corner the same way Excalidraw
+		// always does — centre minus half the (new) unrotated size.
+		let x: number;
+		let y: number;
+		if (Math.abs(el.angle ?? 0) > 1e-6) {
+			const local = elementLocalToScene(el);
+			const halfNew = rotateVector(local, { x: uncroppedW / 2, y: uncroppedH / 2 });
+			const offsetRot = rotateVector(local, { x: offsetX, y: offsetY });
+			const centerNew = { x: local.e + halfNew.x - offsetRot.x, y: local.f + halfNew.y - offsetRot.y };
+			x = centerNew.x - uncroppedW / 2;
+			y = centerNew.y - uncroppedH / 2;
+		} else {
+			x = el.x - offsetX;
+			y = el.y - offsetY;
+		}
+
 		return {
 			...el,
-			x: el.x - (visualCropX / crop.naturalWidth) * uncroppedW,
-			y: el.y - (visualCropY / crop.naturalHeight) * uncroppedH,
+			x,
+			y,
 			width: uncroppedW,
 			height: uncroppedH,
 			crop: null,
