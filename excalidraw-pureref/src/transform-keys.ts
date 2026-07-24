@@ -188,6 +188,31 @@ export function attachTransformKeydown(win: Window, app: App): () => void {
 			else void resetSelectedImageScale(resetLeaf);
 			return;
 		}
+		// X natively activates the freedraw tool (Tools.tsx TOOLS.freedraw.letterKey is
+		// [P, X]) — we want it to delete the selection instead. Rather than reimplement
+		// actionDeleteSelected's frame/binding/group logic, swallow X and re-dispatch a
+		// synthetic Delete keydown at the same target so Excalidraw's own unmodified
+		// handler performs the deletion. Skipped while a modal transform is running,
+		// same as Alt+R/S above.
+		if (
+			!active &&
+			!event.repeat &&
+			!event.ctrlKey &&
+			!event.metaKey &&
+			!event.altKey &&
+			!event.shiftKey &&
+			event.code === "KeyX" &&
+			!isEditableTarget(event.target)
+		) {
+			const leaf = findExcalidrawLeafForNode(app, event.target as Node | null);
+			if (!leaf) return;
+			event.preventDefault();
+			event.stopImmediatePropagation();
+			(event.target as EventTarget).dispatchEvent(
+				new KeyboardEvent("keydown", { key: "Delete", code: "Delete", bubbles: true, cancelable: true }),
+			);
+			return;
+		}
 		if (event.repeat || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || isEditableTarget(event.target)) return;
 		const mode: TransformMode | null = event.code === "KeyG" ? "move" : event.code === "KeyR" ? "rotate" : event.code === "KeyS" ? "scale" : null;
 		if (!mode) return;
