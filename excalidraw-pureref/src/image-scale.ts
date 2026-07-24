@@ -31,6 +31,18 @@ import { isExcalidrawLeaf, readSceneElements, resizeSceneElements } from "./exca
  * subscribe are seeded as "seen" and never touched, so an image you deliberately
  * resized is left alone; only genuinely new inserts are corrected.
  *
+ * WHY TRACKING IS BY fileId, NOT ELEMENT id: copying an image element from one
+ * board to another gives it a brand-new element id (Excalidraw requires unique
+ * ids per scene) but keeps the same fileId — Excalidraw derives fileId from the
+ * file's content hash, so the same image always carries the same fileId no
+ * matter how many boards it's pasted into. If we tracked "seen" per element id,
+ * a copy-paste would look like a fresh insert on the destination board and get
+ * forcibly re-scaled to native size, silently overriding whatever size — native
+ * or deliberately resized — it had on the source board. Tracking resolved
+ * fileIds in one Set shared across every leaf for the plugin's lifetime means a
+ * file is auto-fit to native size at most once, ever; every later copy of that
+ * same image anywhere keeps whatever size the copy arrived with.
+ *
  * Structure mirrors the video aspect corrector (video-aspect.ts) — same
  * main+popout reconcile, ready-retry, realm-correct decoding, and debug hook.
  */
@@ -160,6 +172,10 @@ interface Subscription {
  */
 export function attachImageScaleCorrector(plugin: ExcalidrawPureRefPlugin): () => void {
 	const subs = new Map<WorkspaceLeaf, Subscription>();
+	// fileIds already resolved (corrected or found already-native) on ANY board.
+	// Shared across every leaf so a copy-pasted element — same fileId, new element
+	// id — is never re-corrected. See the fileId-vs-element-id note above.
+	const resolvedFileIds = new Set<string>();
 	let disposed = false;
 	let retryTimer: number | null = null;
 	let retriesLeft = READY_RETRY_MAX;
@@ -185,14 +201,23 @@ export function attachImageScaleCorrector(plugin: ExcalidrawPureRefPlugin): () =
 			if (seen.has(id) || inflight.has(id)) continue;
 			if (!el.fileId) continue; // placeholder not yet bound to a file — retry next change
 
+			if (resolvedFileIds.has(el.fileId)) {
+				// Already resolved elsewhere (e.g. this is a copy of an element from
+				// another board) — leave its size exactly as pasted.
+				seen.add(id);
+				continue;
+			}
+
 			const dataURL = files[el.fileId]?.dataURL;
 			if (!dataURL) continue; // bytes still loading; leave unseen to retry on next change
 
 			inflight.add(id);
-			dbg(winLabel, "probing new image", id, el.fileId);
+			const fileId = el.fileId;
+			dbg(winLabel, "probing new image", id, fileId);
 			void probeImageSize(win, dataURL).then((natural) => {
 				inflight.delete(id);
 				seen.add(id);
+				resolvedFileIds.add(fileId);
 				if (disposed || !natural) {
 					dbg(winLabel, "probe failed", id, natural);
 					return;
@@ -224,7 +249,10 @@ export function attachImageScaleCorrector(plugin: ExcalidrawPureRefPlugin): () =
 		// the user may have sized on purpose) are never touched — only new inserts.
 		try {
 			for (const el of api.getSceneElements()) {
-				if (el.type === "image" && el.id) seen.add(el.id);
+				if (el.type === "image" && el.id) {
+					seen.add(el.id);
+					if (el.fileId) resolvedFileIds.add(el.fileId);
+				}
 			}
 		} catch (err) {
 			dbg(winLabelOf(leaf), "seed getSceneElements threw", err);
@@ -296,6 +324,8 @@ export function attachImageScaleCorrector(plugin: ExcalidrawPureRefPlugin): () =
 			verbose = v;
 		},
 		reconcile,
+		/** fileIds resolved (corrected or already-native) anywhere this session. */
+		resolvedFileIds: () => resolvedFileIds.size,
 		/** The leaves we're actively subscribed to. */
 		state: () =>
 			Array.from(subs.entries()).map(([leaf, sub]) => ({

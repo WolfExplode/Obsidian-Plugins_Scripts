@@ -31,6 +31,17 @@ import { isExcalidrawLeaf, readSceneElements, resizeSceneElements } from "./exca
  * catches every path with no timing race. Elements already present when we
  * subscribe are seeded as "seen" and never touched, so a video you deliberately
  * stretched is left alone.
+ *
+ * WHY TRACKING IS BY the linked file's vault path, NOT ELEMENT id: copying an
+ * embeddable from one board to another gives it a brand-new element id but
+ * keeps the same `link`/target file. If we tracked "seen" per element id, a
+ * copy-paste would look like a fresh insert on the destination board and get
+ * forcibly re-fit to the media's native aspect ratio, silently overriding
+ * whatever box — fitted or deliberately stretched — it had on the source
+ * board. Tracking resolved file paths in one Set shared across every leaf for
+ * the plugin's lifetime means a given media file is auto-fit at most once,
+ * ever; every later copy of an embeddable pointing at it keeps whatever size
+ * the copy arrived with.
  */
 
 /** Media extensions inserted as embeddables that we can measure and re-fit. */
@@ -179,6 +190,10 @@ interface Subscription {
  */
 export function attachVideoAspectCorrector(plugin: ExcalidrawPureRefPlugin): () => void {
 	const subs = new Map<WorkspaceLeaf, Subscription>();
+	// Vault paths of media files already resolved (fitted or found already-correct)
+	// on ANY board. Shared across every leaf so a copy-pasted embeddable — same
+	// target file, new element id — is never re-fitted. See the note above.
+	const resolvedPaths = new Set<string>();
 	let disposed = false;
 	let retryTimer: number | null = null;
 	let retriesLeft = READY_RETRY_MAX;
@@ -209,6 +224,13 @@ export function attachVideoAspectCorrector(plugin: ExcalidrawPureRefPlugin): () 
 				continue;
 			}
 
+			if (resolvedPaths.has(dest.path)) {
+				// Already resolved elsewhere (e.g. this is a copy of an embeddable
+				// from another board) — leave its box exactly as pasted.
+				seen.add(id);
+				continue;
+			}
+
 			inflight.add(id);
 			let url: string;
 			try {
@@ -218,10 +240,12 @@ export function attachVideoAspectCorrector(plugin: ExcalidrawPureRefPlugin): () 
 				seen.add(id);
 				continue;
 			}
+			const destPath = dest.path;
 			dbg(winLabel, "probing new media embed", id, kind);
 			void probeNaturalSize(win, url, kind).then((natural) => {
 				inflight.delete(id);
 				seen.add(id);
+				resolvedPaths.add(destPath);
 				if (disposed || !natural) {
 					dbg(winLabel, "probe failed", id, natural);
 					return;
@@ -249,11 +273,17 @@ export function attachVideoAspectCorrector(plugin: ExcalidrawPureRefPlugin): () 
 
 		const seen = new Set<string>();
 		const inflight = new Set<string>();
+		const boardPath = (leaf.view as unknown as { file?: TFile }).file?.path;
 		// Seed with whatever's already on the canvas so pre-existing media (which
 		// the user may have sized on purpose) is never touched — only new inserts.
 		try {
 			for (const el of api.getSceneElements()) {
-				if (el.type === "embeddable" && el.id) seen.add(el.id);
+				if (el.type === "embeddable" && el.id) {
+					seen.add(el.id);
+					const linkpath = boardPath ? localLinkpath((el as EmbeddableEl).link) : null;
+					const dest = linkpath ? plugin.app.metadataCache.getFirstLinkpathDest(linkpath, boardPath as string) : null;
+					if (dest) resolvedPaths.add(dest.path);
+				}
 			}
 		} catch (err) {
 			dbg(winLabelOf(leaf), "seed getSceneElements threw", err);
@@ -325,6 +355,8 @@ export function attachVideoAspectCorrector(plugin: ExcalidrawPureRefPlugin): () 
 			verbose = v;
 		},
 		reconcile,
+		/** Media file paths resolved (fitted or already-correct) anywhere this session. */
+		resolvedPaths: () => resolvedPaths.size,
 		/** The leaves we're actively subscribed to. */
 		state: () =>
 			Array.from(subs.entries()).map(([leaf, sub]) => ({
