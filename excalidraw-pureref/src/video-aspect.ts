@@ -124,6 +124,57 @@ function winLabelOf(leaf: WorkspaceLeaf): "MAIN" | "POPOUT" {
 	return w === window ? "MAIN" : "POPOUT";
 }
 
+/**
+ * Whether the Excalidraw view is still loading its saved scene into the API.
+ *
+ * See the identical check in image-scale.ts: the Excalidraw plugin sets
+ * `view.semaphores.justLoaded = true` before it populates the API with a
+ * file's persisted elements, clearing it again on the first `onChange` after
+ * that population completes. Without this, seeding "seen" the instant the API
+ * exists can race the persisted elements landing — every embeddable already
+ * on a board opened for the first time then looks like a brand-new insert and
+ * gets force-fit to the media's aspect ratio. Fails open (seeds immediately)
+ * if the property is absent.
+ */
+function isStillLoading(leaf: WorkspaceLeaf): boolean {
+	const semaphores = (leaf.view as unknown as { semaphores?: { justLoaded?: boolean } }).semaphores;
+	return semaphores?.justLoaded === true;
+}
+
+/**
+ * Reads embeddable ids and their resolved target paths straight out of the
+ * file's *parsed, on-disk* scene — `view.excalidrawData.scene` — independent
+ * of whatever the live imperative API currently holds.
+ *
+ * See the identical function in image-scale.ts for the full story: on a
+ * heavy board the live scene can take minutes to catch up to the saved file
+ * (observed live via the Obsidian DevTools MCP — the same board kept
+ * surfacing "new" embeddables in bursts minutes apart as the user scrolled).
+ * The parsed on-disk scene is one synchronous `JSON.parse`, done up front,
+ * so it reliably lists every embeddable that was actually saved — the true
+ * "pre-existing" set — no matter how slowly the live API catches up.
+ */
+function getPersistedEmbeddableSeed(
+	leaf: WorkspaceLeaf,
+	plugin: ExcalidrawPureRefPlugin,
+	boardPath: string,
+): { ids: Set<string>; paths: Set<string> } | null {
+	const scene = (leaf.view as unknown as { excalidrawData?: { scene?: { elements?: readonly EmbeddableEl[] } } })
+		.excalidrawData?.scene;
+	const elements = scene?.elements;
+	if (!Array.isArray(elements)) return null;
+	const ids = new Set<string>();
+	const paths = new Set<string>();
+	for (const el of elements) {
+		if (el?.type !== "embeddable" || !el.id) continue;
+		ids.add(el.id);
+		const linkpath = localLinkpath(el.link);
+		const dest = linkpath ? plugin.app.metadataCache.getFirstLinkpathDest(linkpath, boardPath) : null;
+		if (dest) paths.add(dest.path);
+	}
+	return { ids, paths };
+}
+
 /** Loads just enough of a media file to read its natural pixel dimensions. */
 function probeNaturalSize(win: Window, url: string, kind: "video" | "image"): Promise<{ w: number; h: number } | null> {
 	return new Promise((resolve) => {
@@ -198,12 +249,19 @@ export function attachVideoAspectCorrector(plugin: ExcalidrawPureRefPlugin): () 
 	let retryTimer: number | null = null;
 	let retriesLeft = READY_RETRY_MAX;
 
-	const scanLeaf = (leaf: WorkspaceLeaf, seen: Set<string>, inflight: Set<string>) => {
+	const scanLeaf = (leaf: WorkspaceLeaf, sub: Subscription) => {
 		if (disposed) return;
 		const boardPath = (leaf.view as unknown as { file?: TFile }).file?.path;
 		if (!boardPath) return;
 		const win = (leaf.view as unknown as { containerEl?: HTMLElement }).containerEl?.ownerDocument?.defaultView ?? window;
 		const winLabel = winLabelOf(leaf);
+		const { seen, inflight } = sub;
+
+		// The live scene can still be catching up to the on-disk file (see the
+		// getPersistedEmbeddableSeed doc comment) — re-check on every scan, not
+		// just at attach, so embeddables that only just streamed into the parsed
+		// data get folded into `seen` instead of treated as imports.
+		const persisted = getPersistedEmbeddableSeed(leaf, plugin, boardPath);
 
 		for (const raw of readSceneElements(leaf) ?? []) {
 			const el = raw as EmbeddableEl;
@@ -217,6 +275,14 @@ export function attachVideoAspectCorrector(plugin: ExcalidrawPureRefPlugin): () 
 				continue;
 			}
 			const dest = plugin.app.metadataCache.getFirstLinkpathDest(linkpath, boardPath);
+
+			if (persisted?.ids.has(id) || (dest && persisted?.paths.has(dest.path))) {
+				// Present in the saved file — pre-existing, not an import.
+				seen.add(id);
+				if (dest) resolvedPaths.add(dest.path);
+				continue;
+			}
+
 			if (!dest) continue; // file may still be writing; leave unseen to retry on next change
 			const kind = MEDIA_KIND_BY_EXT[dest.extension.toLowerCase()];
 			if (!kind) {
@@ -270,6 +336,10 @@ export function attachVideoAspectCorrector(plugin: ExcalidrawPureRefPlugin): () 
 			dbg(winLabelOf(leaf), "leaf not ready (no API yet)");
 			return false; // an Excalidraw view whose API hasn't mounted yet
 		}
+		if (isStillLoading(leaf)) {
+			dbg(winLabelOf(leaf), "leaf still loading its saved scene (justLoaded)");
+			return false; // wait for the persisted elements to land before seeding "seen"
+		}
 
 		const seen = new Set<string>();
 		const inflight = new Set<string>();
@@ -289,14 +359,23 @@ export function attachVideoAspectCorrector(plugin: ExcalidrawPureRefPlugin): () 
 			dbg(winLabelOf(leaf), "seed getSceneElements threw", err);
 			return false;
 		}
-		let unsub: () => void;
+		// Also seed from the parsed on-disk scene — see getPersistedEmbeddableSeed's
+		// doc comment for why the live canvas alone isn't a reliable snapshot.
+		if (boardPath) {
+			const persisted = getPersistedEmbeddableSeed(leaf, plugin, boardPath);
+			if (persisted) {
+				for (const id of persisted.ids) seen.add(id);
+				for (const path of persisted.paths) resolvedPaths.add(path);
+			}
+		}
+		const sub: Subscription = { unsub: () => {}, seen, inflight };
 		try {
-			unsub = api.onChange(() => scanLeaf(leaf, seen, inflight));
+			sub.unsub = api.onChange(() => scanLeaf(leaf, sub));
 		} catch (err) {
 			dbg(winLabelOf(leaf), "onChange subscribe threw", err);
 			return false;
 		}
-		subs.set(leaf, { unsub, seen, inflight });
+		subs.set(leaf, sub);
 		dbg("attached to", winLabelOf(leaf), "leaf", (leaf.view as unknown as { file?: TFile }).file?.path, "seeded", seen.size);
 		return true;
 	};

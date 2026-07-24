@@ -117,6 +117,60 @@ function winLabelOf(leaf: WorkspaceLeaf): "MAIN" | "POPOUT" {
 	return w === window ? "MAIN" : "POPOUT";
 }
 
+/**
+ * Whether the Excalidraw view is still loading its saved scene into the API.
+ *
+ * The Excalidraw plugin sets `view.semaphores.justLoaded = true` before it
+ * populates the API with a file's persisted elements, and clears it again on
+ * the first `onChange` after that population completes. Without this check we
+ * seed our "seen" set from `getSceneElements()` the instant the API object
+ * exists, which can be *before* the persisted elements have been loaded into
+ * it — every image already on a board opened for the first time (e.g. a board
+ * created before this plugin was installed) then looks like a brand-new
+ * insert on the next `onChange` and gets force-fit to native pixel size.
+ * Treating `justLoaded === true` as "not ready yet" defers seeding until
+ * after the real scene has landed. If the property is absent (older/forked
+ * Excalidraw builds), we fail open and seed immediately as before.
+ */
+function isStillLoading(leaf: WorkspaceLeaf): boolean {
+	const semaphores = (leaf.view as unknown as { semaphores?: { justLoaded?: boolean } }).semaphores;
+	return semaphores?.justLoaded === true;
+}
+
+/**
+ * Reads the image element ids and fileIds straight out of the file's *parsed,
+ * on-disk* scene — `view.excalidrawData.scene`, the plain object the
+ * Excalidraw plugin gets from `JSON.parse`-ing the saved markdown block,
+ * independent of whatever the live imperative API currently holds.
+ *
+ * WHY THIS EXISTS, NOT JUST THE LIVE-API SEED AT ATTACH: on a board with many
+ * embedded images the live scene (`api.getSceneElements()`) can populate over
+ * *minutes*, not milliseconds — observed live via the Obsidian DevTools MCP,
+ * a single board kept surfacing "new" images in bursts several minutes apart
+ * as the user scrolled, long after any reasonable settle window. Gating
+ * on load flags or quiescence can't outlast an arbitrarily slow/streamed
+ * live population. The parsed on-disk scene has no such streaming: it's one
+ * synchronous `JSON.parse` of already-in-memory text, done before any
+ * per-image byte decoding starts, so it reliably lists every element that
+ * was actually saved to the file — the true "pre-existing" set — regardless
+ * of how slowly the live API catches up to it.
+ */
+function getPersistedImageSeed(leaf: WorkspaceLeaf): { ids: Set<string>; fileIds: Set<string> } | null {
+	const scene = (leaf.view as unknown as { excalidrawData?: { scene?: { elements?: readonly ImageEl[] } } })
+		.excalidrawData?.scene;
+	const elements = scene?.elements;
+	if (!Array.isArray(elements)) return null;
+	const ids = new Set<string>();
+	const fileIds = new Set<string>();
+	for (const el of elements) {
+		if (el?.type === "image" && el.id) {
+			ids.add(el.id);
+			if (el.fileId) fileIds.add(el.fileId);
+		}
+	}
+	return { ids, fileIds };
+}
+
 /** Decodes an image data URL far enough to read its natural pixel dimensions. */
 function probeImageSize(win: Window, dataURL: string): Promise<{ w: number; h: number } | null> {
 	return new Promise((resolve) => {
@@ -180,12 +234,13 @@ export function attachImageScaleCorrector(plugin: ExcalidrawPureRefPlugin): () =
 	let retryTimer: number | null = null;
 	let retriesLeft = READY_RETRY_MAX;
 
-	const scanLeaf = (leaf: WorkspaceLeaf, seen: Set<string>, inflight: Set<string>) => {
+	const scanLeaf = (leaf: WorkspaceLeaf, sub: Subscription) => {
 		if (disposed) return;
 		const api = getScaleApi(leaf);
 		if (!api) return;
 		const win = (leaf.view as unknown as { containerEl?: HTMLElement }).containerEl?.ownerDocument?.defaultView ?? window;
 		const winLabel = winLabelOf(leaf);
+		const { seen, inflight } = sub;
 
 		let files: Record<string, { dataURL?: string } | undefined>;
 		try {
@@ -194,11 +249,25 @@ export function attachImageScaleCorrector(plugin: ExcalidrawPureRefPlugin): () =
 			return;
 		}
 
+		// The live scene can still be catching up to the on-disk file (see the
+		// getPersistedImageSeed doc comment) — re-check the persisted scene on
+		// every scan, not just at attach, so images that only just streamed into
+		// the parsed data get folded into `seen` instead of treated as imports.
+		const persisted = getPersistedImageSeed(leaf);
+
 		for (const raw of readSceneElements(leaf) ?? []) {
 			const el = raw as ImageEl;
 			if (el.type !== "image" || !el.id || el.isDeleted) continue;
 			const id = el.id;
 			if (seen.has(id) || inflight.has(id)) continue;
+
+			if (persisted?.ids.has(id) || (el.fileId && persisted?.fileIds.has(el.fileId))) {
+				// Present in the saved file — pre-existing, not an import.
+				seen.add(id);
+				if (el.fileId) resolvedFileIds.add(el.fileId);
+				continue;
+			}
+
 			if (!el.fileId) continue; // placeholder not yet bound to a file — retry next change
 
 			if (resolvedFileIds.has(el.fileId)) {
@@ -242,6 +311,10 @@ export function attachImageScaleCorrector(plugin: ExcalidrawPureRefPlugin): () =
 			dbg(winLabelOf(leaf), "leaf not ready (no API yet)");
 			return false; // an Excalidraw view whose API hasn't mounted yet
 		}
+		if (isStillLoading(leaf)) {
+			dbg(winLabelOf(leaf), "leaf still loading its saved scene (justLoaded)");
+			return false; // wait for the persisted elements to land before seeding "seen"
+		}
 
 		const seen = new Set<string>();
 		const inflight = new Set<string>();
@@ -258,14 +331,21 @@ export function attachImageScaleCorrector(plugin: ExcalidrawPureRefPlugin): () =
 			dbg(winLabelOf(leaf), "seed getSceneElements threw", err);
 			return false;
 		}
-		let unsub: () => void;
+		// Also seed from the parsed on-disk scene — see getPersistedImageSeed's
+		// doc comment for why the live canvas alone isn't a reliable snapshot.
+		const persisted = getPersistedImageSeed(leaf);
+		if (persisted) {
+			for (const id of persisted.ids) seen.add(id);
+			for (const fileId of persisted.fileIds) resolvedFileIds.add(fileId);
+		}
+		const sub: Subscription = { unsub: () => {}, seen, inflight };
 		try {
-			unsub = api.onChange(() => scanLeaf(leaf, seen, inflight));
+			sub.unsub = api.onChange(() => scanLeaf(leaf, sub));
 		} catch (err) {
 			dbg(winLabelOf(leaf), "onChange subscribe threw", err);
 			return false;
 		}
-		subs.set(leaf, { unsub, seen, inflight });
+		subs.set(leaf, sub);
 		dbg("attached to", winLabelOf(leaf), "leaf", (leaf.view as unknown as { file?: TFile }).file?.path, "seeded", seen.size);
 		return true;
 	};
