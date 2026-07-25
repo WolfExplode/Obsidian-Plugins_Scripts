@@ -51,8 +51,8 @@ Conventions that matter:
 For scene reactions rather than input, prefer the view-subscription model:
 subscribe to each view's `onChange` and reconcile across leaves on
 `layout-change` / `active-leaf-change`. See [video-aspect.ts](../../src/video-aspect.ts)
-and [image-scale.ts](../../src/image-scale.ts) for the established shape
-(seed-existing-as-seen, ready-retry while the API mounts, prune on teardown).
+for the established shape (seed-existing-as-seen, ready-retry while the API
+mounts, prune on teardown).
 
 ## Cross-window event routing (the important part)
 

@@ -127,7 +127,7 @@ function winLabelOf(leaf: WorkspaceLeaf): "MAIN" | "POPOUT" {
 /**
  * Whether the Excalidraw view is still loading its saved scene into the API.
  *
- * See the identical check in image-scale.ts: the Excalidraw plugin sets
+ * The Excalidraw plugin sets
  * `view.semaphores.justLoaded = true` before it populates the API with a
  * file's persisted elements, clearing it again on the first `onChange` after
  * that population completes. Without this, seeding "seen" the instant the API
@@ -146,8 +146,7 @@ function isStillLoading(leaf: WorkspaceLeaf): boolean {
  * file's *parsed, on-disk* scene — `view.excalidrawData.scene` — independent
  * of whatever the live imperative API currently holds.
  *
- * See the identical function in image-scale.ts for the full story: on a
- * heavy board the live scene can take minutes to catch up to the saved file
+ * On a heavy board the live scene can take minutes to catch up to the saved file
  * (observed live via the Obsidian DevTools MCP — the same board kept
  * surfacing "new" embeddables in bursts minutes apart as the user scrolled).
  * The parsed on-disk scene is one synchronous `JSON.parse`, done up front,

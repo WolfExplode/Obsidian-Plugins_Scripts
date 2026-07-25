@@ -8,8 +8,8 @@ import { exportSelectedMedia } from "src/media-export";
 import { attachPackKeydown } from "src/pack-keys";
 import { attachPopoutDropBridge } from "src/popout-drop-bridge";
 import { attachInsertModalAutoConfirm } from "src/insert-modal-autoconfirm";
+import { attachAnimatedImageEmbedConversion } from "src/animated-image-drop";
 import { attachVideoAspectCorrector } from "src/video-aspect";
-import { attachImageScaleCorrector } from "src/image-scale";
 import { attachCropDrag, installCropDebugHook } from "src/crop-drag";
 import { attachOpacityKeydown } from "src/opacity-keys";
 import { attachFlipDrag } from "src/flip-drag";
@@ -51,10 +51,6 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 		// aspect ratio across every Excalidraw view — main window and popouts. Hooks
 		// each view's scene changes, so it needs no drop listener.
 		this.register(attachVideoAspectCorrector(this));
-		// PureRef-style pixel-accurate import: resize freshly-inserted images to their
-		// native pixel dimensions so relative resolutions line up 1:1. Like the aspect
-		// corrector, it hooks each view's scene changes across main window and popouts.
-		this.register(attachImageScaleCorrector(this));
 		this.register(attachPopoutDropBridge(window.document, { alwaysBridge: false }));
 
 		// PureRef-style hold-C + drag to crop the selected images, in the main window.
@@ -80,6 +76,12 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 		// option (e.g. a dropped video → "as Embeddable"). Popouts get their own
 		// observer when they open (see PopoutManager).
 		this.register(attachInsertModalAutoConfirm(window.document));
+
+		// Convert a freshly-inserted animated image (gif/webp/apng) from a static
+		// Image into a playing Embeddable — see animated-image-drop.ts for why
+		// Excalidraw's own drag-drop never offers that choice for this case. Spans
+		// main window and popouts alike, same as the aspect/scale correctors above.
+		this.register(attachAnimatedImageEmbedConversion(this));
 
 		this.addCommand({
 			id: "toggle-pureref-popout",

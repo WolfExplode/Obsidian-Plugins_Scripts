@@ -552,6 +552,47 @@ export function resizeSceneElements(leaf: WorkspaceLeaf | null, resizes: readonl
 }
 
 /**
+ * Marks specific scene elements deleted in one undoable step, leaving every
+ * other element untouched. Used to remove the placeholder `image` element the
+ * animated-image-to-embeddable converter replaces with an `embeddable`.
+ */
+export function deleteSceneElements(leaf: WorkspaceLeaf | null, ids: readonly string[]): boolean {
+	if (ids.length === 0) return false;
+	const api = getExcalidrawApi(leaf);
+	const view = getExcalidrawView(leaf);
+	if (!api?.getSceneElements || !view?.updateScene) return false;
+
+	let all: readonly SceneElement[];
+	try {
+		all = api.getSceneElements();
+	} catch {
+		return false;
+	}
+
+	const idSet = new Set(ids);
+	let changed = false;
+	const nextElements = all.map((el) => {
+		if (!idSet.has(el.id) || el.isDeleted) return el;
+		changed = true;
+		return {
+			...el,
+			isDeleted: true,
+			version: (el.version ?? 1) + 1,
+			versionNonce: randomVersionNonce(),
+			updated: Date.now(),
+		};
+	});
+	if (!changed) return false;
+
+	try {
+		view.updateScene({ elements: nextElements, captureUpdate: "IMMEDIATELY", commitToHistory: true });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
  * Excalidraw's native image crop, stored in the *source image's* natural-pixel
  * space (pre-rotation, pre-flip). The renderer draws the sub-rect
  * `[x, y, width, height]` of the decoded bitmap — whose true size is
@@ -644,8 +685,7 @@ export function resetSelectedRotation(leaf: WorkspaceLeaf | null): boolean {
 
 /**
  * Resets every selected image to 100% scale — its native pixel size (Blender's
- * Alt+S), the same size the plugin imports at, so a reset image lines up 1:1
- * with freshly imported ones again.
+ * Alt+S).
  *
  * A natively cropped image resets to its *visible* crop measured in natural
  * pixels, never the whole file, so the reset cannot re-expose cropped-away
@@ -1038,6 +1078,20 @@ function getSourcePath(leaf: WorkspaceLeaf | null, fileId: string): string | und
 		return getExcalidrawData(leaf)?.getFile?.(fileId)?.file?.path;
 	} catch {
 		return undefined;
+	}
+}
+
+/**
+ * The vault file a scene `image` element's `fileId` resolves to, straight from
+ * the Excalidraw plugin's own file registry (`excalidrawData.getFile`). Used
+ * by the animated-image-to-embeddable converter to identify a freshly-inserted
+ * gif/webp/apng without needing its own bookkeeping of vault paths.
+ */
+export function getSceneElementFile(leaf: WorkspaceLeaf | null, fileId: string): TFile | null {
+	try {
+		return getExcalidrawData(leaf)?.getFile?.(fileId)?.file ?? null;
+	} catch {
+		return null;
 	}
 }
 
