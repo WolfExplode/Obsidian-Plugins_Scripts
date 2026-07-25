@@ -76,8 +76,8 @@ export function attachCropDrag(win: Window, app: App): () => void {
 		if (event.key === "Enter") {
 			const leaf = getActiveExcalidrawLeaf(app);
 			// A custom crop is materialized as an ordinary image, but native crop
-			// must not edit that generated PNG. The first double-click is the
-			// explicit way to remove the custom layer.
+			// must not edit that generated PNG. Alt+double-click is the explicit
+			// way to remove the custom layer.
 			if (getViewportCropImageIds(leaf, true).length) {
 				event.preventDefault();
 				event.stopImmediatePropagation();
@@ -97,13 +97,18 @@ export function attachCropDrag(win: Window, app: App): () => void {
 		const leaf = findExcalidrawLeafForNode(app, target);
 		if (!leaf) return;
 
-		// Alt+double-click removes Excalidraw's *native* crop, restoring each
-		// selected image to the full original — rotated images included. Held
-		// separate from the plain double-click below so the two crop layers stay
-		// independently reversible: plain peels the plugin's custom crop, Alt
-		// peels the native one. When nothing qualifies (no native crop) the event
-		// is left alone so Excalidraw's own double-click crop editor still opens.
+		// Alt+double-click clears either crop layer. Prefer the plugin's custom
+		// layer, which restores the underlying native crop if there is one; then
+		// clear ordinary native crops. When nothing qualifies, leave the event
+		// alone so Excalidraw's own double-click crop editor can still open.
 		if (event.altKey) {
+			const viewportCropped = getViewportCropImageIds(leaf, true);
+			if (viewportCropped.length) {
+				event.preventDefault();
+				event.stopImmediatePropagation();
+				void uncropImages(app, leaf, viewportCropped);
+				return;
+			}
 			const nativeCropped = getNativeCropImageIds(leaf, true);
 			if (nativeCropped.length === 0) return;
 			event.preventDefault();
@@ -112,12 +117,7 @@ export function attachCropDrag(win: Window, app: App): () => void {
 			return;
 		}
 
-		if (getViewportCropImageIds(leaf, true).length === 0) return;
-		event.preventDefault();
-		event.stopImmediatePropagation();
-		// First double-click removes only our polygon crop. The next one is
-		// deliberately allowed to reach Excalidraw's native crop editor.
-		void uncropImages(app, leaf, getViewportCropImageIds(leaf, true));
+		// Plain double-click remains available to Excalidraw's native crop editor.
 	};
 
 	const onKeyUp = (event: KeyboardEvent) => {

@@ -53,10 +53,11 @@ exiting the custom crop first restores the original/native image and only then
 removes the generated attachment. Cleanup waits until the live scene no longer
 references the generated file ID, avoiding a renderer-versus-deletion race.
 
-The first double-click on a custom-cropped image removes the custom layer and
-restores the underlying native-cropped image. The next double-click reaches
-Excalidraw's normal crop editor. Native crop entry is blocked while the custom
-layer is active so the generated PNG is never edited directly.
+Alt+double-click on a custom-cropped image removes the custom layer and
+restores the underlying native-cropped image, matching Excalidraw's uncrop
+gesture. A plain double-click reaches Excalidraw's normal crop editor. Native
+crop entry through Enter is blocked while the custom layer is active so the
+generated PNG is never edited directly through that shortcut.
 
 The generated-image registration and cleanup contract is shared infrastructure,
 not a crop-specific decision. See the [Obsidian–Excalidraw generated-image

@@ -1537,9 +1537,9 @@ export function getViewportCropImageIds(leaf: WorkspaceLeaf | null, selectedOnly
  * plugin can restore in place — the targets for Alt+double-click.
  *
  * Deliberately narrower than "has a crop". Images with the custom viewport-crop
- * layer are excluded: plain double-click already owns those, and uncropImages
- * would take its viewport branch and peel off the custom layer instead of the
- * native crop, which is not what Alt+double-click promises. Rotated images are
+ * layer are excluded because Alt+double-click handles them first, and
+ * uncropImages would take its viewport branch and peel off the custom layer
+ * instead of the native crop. Rotated images are
  * included — uncropImages rotates the restore offset into scene space via
  * elementLocalToScene, so the axis-aligned math holds at any angle.
  */

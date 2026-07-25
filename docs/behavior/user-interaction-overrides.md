@@ -12,8 +12,8 @@ PureRef Popout unless noted otherwise.
 | **Alt-drag** | Moves normally; it does **not** duplicate elements. | Excalidraw's built-in Alt-drag duplication is disabled. |
 | **Alt+Shift-drag** with one or more images selected | Dominant left/right movement flips the selected images horizontally; dominant up/down movement flips them vertically. | Replaces the normal drag for that gesture. |
 | Hold **C** and drag with images selected | Crops the selected images to the dragged screen rectangle. | Replaces normal canvas drag while C is held. |
-| Double-click a custom-cropped image | Removes the plugin's custom viewport crop. A second double-click opens Excalidraw's native crop editor. | Adds an intermediate uncrop step for custom crops. |
-| **Alt+double-click** with natively cropped images selected | Removes Excalidraw's native crop, restoring each image to the full original in place. Rotated images and custom-cropped images are left alone, so Excalidraw's own double-click crop editor still opens for them. | Adds an uncrop step; plain double-click still peels the custom crop first. |
+| **Alt+double-click** with cropped images selected | Removes the plugin's custom viewport crop when present; otherwise removes Excalidraw's native crop, restoring each image in place. | Adds a consistent uncrop gesture for both crop layers. |
+| Double-click a custom-cropped image | Opens Excalidraw's native crop editor for the generated image. | No longer removes the plugin's custom viewport crop. |
 | Right-button drag in an editable PureRef Popout | Moves the Popout OS window. | Replaces the normal right-click drag only in the Popout. |
 
 All image crop and flip operations are one undoable Board change. A gesture with
