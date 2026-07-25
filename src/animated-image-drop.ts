@@ -104,20 +104,28 @@ interface ConversionApi {
 }
 
 interface ExcalidrawAutomateLike {
-	reset?(): void;
-	setView?(view?: unknown, show?: boolean): unknown;
 	addEmbeddable(topX: number, topY: number, width: number, height: number, url?: string, file?: unknown): string | null;
 	addElementsToView?(repositionToCursor?: boolean, save?: boolean, newElementsOnTop?: boolean): Promise<boolean>;
 	destroy?(): void;
 }
 
-function getExcalidrawAutomate(plugin: ExcalidrawPureRefPlugin): ExcalidrawAutomateLike | null {
-	const fromWindow = (window as unknown as { ExcalidrawAutomate?: ExcalidrawAutomateLike }).ExcalidrawAutomate;
-	if (fromWindow) return fromWindow;
+interface ExcalidrawAutomateFactory {
+	getAPI?(view?: unknown): ExcalidrawAutomateLike | null;
+}
+
+/**
+ * Creates a disposable EA for one conversion. `window.ExcalidrawAutomate` is
+ * the upstream plugin's long-lived factory, not an EA instance we own: calling
+ * `destroy()` on it clears its plugin reference and breaks upstream on-load
+ * scripts the next time a drawing is opened.
+ */
+function getExcalidrawAutomate(plugin: ExcalidrawPureRefPlugin, view: unknown): ExcalidrawAutomateLike | null {
+	const fromWindow = (window as unknown as { ExcalidrawAutomate?: ExcalidrawAutomateFactory }).ExcalidrawAutomate;
+	if (fromWindow?.getAPI) return fromWindow.getAPI(view);
 	const excalidrawPlugin = (
-		plugin.app as unknown as { plugins?: { plugins?: Record<string, { ea?: ExcalidrawAutomateLike }> } }
+		plugin.app as unknown as { plugins?: { plugins?: Record<string, { ea?: ExcalidrawAutomateFactory }> } }
 	).plugins?.plugins?.["obsidian-excalidraw-plugin"];
-	return excalidrawPlugin?.ea ?? null;
+	return excalidrawPlugin?.ea?.getAPI?.(view) ?? null;
 }
 
 /**
@@ -182,14 +190,12 @@ export function attachAnimatedImageEmbedConversion(plugin: ExcalidrawPureRefPlug
 		if (!el || el.type !== "image" || el.isDeleted || el.fileId !== fileId) return false;
 		const file = getSceneElementFile(leaf, fileId);
 		if (!file) return false;
-		const ea = getExcalidrawAutomate(plugin);
+		const ea = getExcalidrawAutomate(plugin, leaf.view);
 		if (!ea) {
 			console.error("[Excalidraw PureRef] ExcalidrawAutomate is unavailable — is the Excalidraw plugin enabled?");
 			return false;
 		}
 		try {
-			ea.reset?.();
-			ea.setView?.(leaf.view, false);
 			const embeddableId = ea.addEmbeddable(el.x ?? 0, el.y ?? 0, el.width ?? 500, el.height ?? 500, undefined, file);
 			if (!embeddableId) return false;
 			const added = await ea.addElementsToView?.(false, true, true);
