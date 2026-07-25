@@ -9,7 +9,7 @@ including why the two require opposite techniques). It applies to G/R/S (modal
 move/rotate/scale) and the Alt+R/Alt+S resets, all implemented in
 [transform-keys.ts](../../src/transform-keys.ts).
 
-This was verified against `excalidraw-pureref/reference/excalidraw-master`,
+This was verified against `reference/excalidraw-master`,
 **Excalidraw core version 0.18.0** — the version bundled by
 **obsidian-excalidraw-plugin 2.25.3**, the live plugin version at the time of
 writing. Excalidraw's shortcut wiring is not part of its public API. Re-verify
