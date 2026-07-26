@@ -65,6 +65,10 @@ setting globally, the normal Board view is affected for that interval too.
 - Newly inserted `.gif`, `.webp`, and `.apng` files are converted from static
   image elements into playing Excalidraw embeddables. Animated images already
   present in a saved Board are not changed.
+- Animated-image embeddables now stretch to fill their element box when
+  resized, matching video/pdf/markdown embeddables. This works around an
+  upstream Obsidian Canvas limitation; see
+  [Obsidian Canvas image-embed stretch fix](../integrations/obsidian-canvas-image-stretch-fix.md).
 - A multi-file media import is automatically arranged as a compact PureRef-style
   block. Only media created by that import moves; existing Board content stays
   in place. Packing occurs after Obsidian Excalidraw's native

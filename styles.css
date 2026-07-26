@@ -49,3 +49,28 @@ body.epr-popout-mode .view-content {
 .epr-normalize-menu:focus-within > .epr-normalize-submenu {
 	display: block;
 }
+
+/*
+ * Fix: animated-image embeddables (gif/webp/apng) don't stretch when their
+ * Excalidraw element is resized larger, unlike video/pdf/markdown embeddables.
+ * See docs/integrations/obsidian-canvas-image-stretch-fix.md.
+ *
+ * Root cause is upstream in Obsidian, not this plugin or the Excalidraw
+ * plugin: an embeddable that resolves to Obsidian's native "image" view type
+ * is mounted via a plain WorkspaceLeaf whose `.image-container` wrapper
+ * shrink-wraps to the image's *intrinsic* pixel size instead of filling its
+ * parent. Every other embeddable view type Obsidian's Canvas core plugin
+ * supports (video, pdf, markdown, ...) fills its box correctly; only the
+ * native image view has this gap. Reported upstream, unresolved as of
+ * 2026-07-26: https://forum.obsidian.md/t/canvas-images-are-not-enlarged-resized-beyond-their-base-resolution/112614
+ */
+.canvas-node .image-container {
+	width: 100% !important;
+	height: 100% !important;
+}
+.canvas-node .image-container img {
+	width: 100% !important;
+	height: 100% !important;
+	object-fit: cover !important;
+	display: block !important;
+}
