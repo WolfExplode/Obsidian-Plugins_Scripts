@@ -53,6 +53,8 @@ interface ExcalidrawViewState extends ExcalidrawViewport {
 interface SceneElement extends PackElement {
 	version?: number;
 	opacity?: number;
+	/** Nested Excalidraw group ids; the last id is the outermost group. */
+	groupIds?: readonly string[];
 }
 
 interface ExcalidrawApi {
@@ -68,6 +70,8 @@ interface ExcalidrawApi {
 		zenModeEnabled?: boolean;
 		boxSelectionMode?: "contain" | "overlap";
 		selectedElementIds?: Record<string, boolean>;
+		/** Non-null while Excalidraw is editing inside a group's constituents. */
+		editingGroupId?: string | null;
 	};
 	getSceneElements?(): readonly SceneElement[];
 	/** The scene's binary files, keyed by an image element's `fileId`. */
@@ -356,12 +360,64 @@ export function adjustSelectedElementsOpacity(leaf: WorkspaceLeaf | null, direct
 }
 
 /**
- * Shared plumbing for the PureRef arranges: read the selected, packable elements
- * (images/embeds/text — never drawings, shapes, arrows, or bound text), hand
- * them to a planner, and write the resulting moves back as one undoable history
- * entry. Positions only: nothing is resized or rotated. Returns false (a no-op)
- * when fewer than two packable elements are selected or the plan is empty, so the
- * caller can let Excalidraw's own key handling proceed instead.
+ * Turns the selected reference elements into packing units. An outer Excalidraw
+ * group is one unit whose box contains every live member (including labels and
+ * decorative shapes), and whose resulting translation is applied to every
+ * member. This prevents packing an image away from the rest of its group.
+ */
+function getPackUnits(
+	all: readonly SceneElement[],
+	selectedIds: Record<string, boolean>,
+	editingGroupId: string | null | undefined,
+): {
+	units: PackElement[];
+	memberIdsByUnit: Map<string, ReadonlySet<string>>;
+} {
+	const selectedPackable = all.filter((el) => selectedIds[el.id] && isPackable(el));
+	// Drilling into a group is Excalidraw's explicit signal that its constituents
+	// are being selected as independent elements. In that mode, do not collapse
+	// them back into one packing unit merely because every member is selected.
+	const selectedGroupIds = editingGroupId
+		? new Set<string>()
+		: new Set(selectedPackable.flatMap((el) => el.groupIds?.length ? [el.groupIds[el.groupIds.length - 1]] : []));
+	const units: PackElement[] = [];
+	const memberIdsByUnit = new Map<string, ReadonlySet<string>>();
+
+	for (const groupId of selectedGroupIds) {
+		const members = all.filter((el) => !el.isDeleted && el.groupIds?.[el.groupIds.length - 1] === groupId);
+		if (members.length === 0) continue;
+		const bounds = members.map((el) => {
+			const angle = el.angle ?? 0;
+			const cos = Math.abs(Math.cos(angle));
+			const sin = Math.abs(Math.sin(angle));
+			const halfWidth = (cos * el.width + sin * el.height) / 2;
+			const halfHeight = (sin * el.width + cos * el.height) / 2;
+			const centerX = el.x + el.width / 2;
+			const centerY = el.y + el.height / 2;
+			return { minX: centerX - halfWidth, minY: centerY - halfHeight, maxX: centerX + halfWidth, maxY: centerY + halfHeight };
+		});
+		const minX = Math.min(...bounds.map((box) => box.minX));
+		const minY = Math.min(...bounds.map((box) => box.minY));
+		const maxX = Math.max(...bounds.map((box) => box.maxX));
+		const maxY = Math.max(...bounds.map((box) => box.maxY));
+		const unitId = `group:${groupId}`;
+		units.push({ id: unitId, type: "image", x: minX, y: minY, width: maxX - minX, height: maxY - minY });
+		memberIdsByUnit.set(unitId, new Set(members.map((el) => el.id)));
+	}
+
+	for (const el of selectedPackable) {
+		if (el.groupIds?.length && selectedGroupIds.has(el.groupIds[el.groupIds.length - 1])) continue;
+		units.push(el);
+		memberIdsByUnit.set(el.id, new Set([el.id]));
+	}
+	return { units, memberIdsByUnit };
+}
+
+/**
+ * Shared plumbing for the PureRef arranges: read selected packable references,
+ * treating Excalidraw groups as indivisible units, then write the resulting
+ * translations as one undoable history entry. Returns false (a no-op) when fewer
+ * than two units are selected or the plan is empty.
  */
 function applyPack(
 	leaf: WorkspaceLeaf | null,
@@ -373,20 +429,26 @@ function applyPack(
 
 	let all: readonly SceneElement[];
 	let selectedIds: Record<string, boolean>;
+	let editingGroupId: string | null | undefined;
 	try {
 		all = api.getSceneElements();
-		selectedIds = api.getAppState().selectedElementIds ?? {};
+		const appState = api.getAppState();
+		selectedIds = appState.selectedElementIds ?? {};
+		editingGroupId = appState.editingGroupId;
 	} catch {
 		return false;
 	}
 
-	const selected = all.filter((el) => selectedIds[el.id] && isPackable(el));
-	if (selected.length < 2) return false;
+	const { units, memberIdsByUnit } = getPackUnits(all, selectedIds, editingGroupId);
+	if (units.length < 2) return false;
 
-	const moves = plan(selected as PackElement[]);
+	const moves = plan(units);
 	if (moves.length === 0) return false;
 
-	const moveById = new Map(moves.map((m) => [m.id, m]));
+	const moveById = new Map<string, PackMove>();
+	for (const move of moves) {
+		for (const memberId of memberIdsByUnit.get(move.id) ?? []) moveById.set(memberId, move);
+	}
 	const nextElements = all.map((el) => {
 		const move = moveById.get(el.id);
 		if (!move) return el;
