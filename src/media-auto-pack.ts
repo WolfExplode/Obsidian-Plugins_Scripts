@@ -1,7 +1,7 @@
 import type { EventRef, WorkspaceLeaf } from "obsidian";
 import type ExcalidrawPureRefPlugin from "../main";
 import { localLinkpath } from "./board-render";
-import { getSceneElementFile, isExcalidrawLeaf, optimalPackElementsById, readSceneElements } from "./excalidraw-view";
+import { getSceneElementFile, isExcalidrawLeaf, optimalPackElementsById, readSceneElements, resizeSceneElements } from "./excalidraw-view";
 
 const READY_RETRY_MS = 300;
 const READY_RETRY_MAX = 20;
@@ -11,6 +11,10 @@ interface MediaElement {
 	type?: string;
 	fileId?: string | null;
 	link?: string | null;
+	x?: number;
+	y?: number;
+	width?: number;
+	height?: number;
 	isDeleted?: boolean;
 }
 
@@ -144,6 +148,30 @@ function isComplete(transaction: Transaction): boolean {
 }
 
 /**
+ * Imported raster images arrive at Excalidraw's native default size. PureRef's
+ * references are more useful at half that footprint, so shrink only the image
+ * elements belonging to this import transaction, about their centres. Video and
+ * other embeddables retain their importer-defined sizes.
+ */
+function halveImportedImageSizes(leaf: WorkspaceLeaf, ids: ReadonlySet<string>): boolean {
+	const resizes = (readSceneElements(leaf) ?? []).flatMap((raw) => {
+		const el = raw as MediaElement;
+		if (el.type !== "image" || el.isDeleted || !el.id || !ids.has(el.id)) return [];
+		const width = el.width ?? 0;
+		const height = el.height ?? 0;
+		if (width <= 0 || height <= 0) return [];
+		return [{
+			id: el.id,
+			x: (el.x ?? 0) + width / 4,
+			y: (el.y ?? 0) + height / 4,
+			width: width / 2,
+			height: height / 2,
+		}];
+	});
+	return resizeSceneElements(leaf, resizes);
+}
+
+/**
  * Packs imported media only after every file in an observed import transaction
  * has produced its matching scene element. Drop/paste handlers provide the
  * transaction's expected files; scene changes provide the authoritative commit
@@ -224,8 +252,9 @@ export function attachMediaAutoPack(plugin: ExcalidrawPureRefPlugin): () => void
 				if (disposed) return;
 				for (const transaction of [...sub.transactions]) {
 					if (!transaction.readyToPack) continue;
+					const scaled = halveImportedImageSizes(leaf, transaction.mediaIds);
 					const packed = optimalPackElementsById(leaf, transaction.mediaIds);
-					debug("packed-after-board-sync", { ids: Array.from(transaction.mediaIds), packed });
+					debug("processed-after-board-sync", { ids: Array.from(transaction.mediaIds), scaled, packed });
 					sub.transactions = sub.transactions.filter((item) => item !== transaction);
 				}
 			});

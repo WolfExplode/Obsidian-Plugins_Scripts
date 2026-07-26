@@ -729,6 +729,8 @@ function makeNaturalSizeResolver(win: Window, files: Record<string, { dataURL?: 
 
 /** A size this close to the target is already reset — leave it alone. */
 const SCALE_RESET_EPSILON = 0.01;
+/** PureRef's default image footprint, relative to the source image's pixels. */
+const DEFAULT_IMAGE_IMPORT_SCALE = 0.5;
 
 /**
  * Clears every selected element's rotation (Blender's Alt+R). Excalidraw rotates
@@ -748,8 +750,8 @@ export function resetSelectedRotation(leaf: WorkspaceLeaf | null): boolean {
 }
 
 /**
- * Resets every selected image to 100% scale — its native pixel size (Blender's
- * Alt+S).
+ * Resets every selected image to PureRef's default 50% scale — half its native
+ * pixel size (Blender's Alt+S).
  *
  * A natively cropped image resets to its *visible* crop measured in natural
  * pixels, never the whole file, so the reset cannot re-expose cropped-away
@@ -785,17 +787,21 @@ export async function resetSelectedImageScale(leaf: WorkspaceLeaf | null): Promi
 	for (const el of targets) {
 		// A native crop already records its visible size in natural pixels, so only
 		// an uncropped image needs its file decoded.
-		const target = el.crop
+		const natural = el.crop
 			? { w: el.crop.width, h: el.crop.height }
 			: el.fileId
 				? await naturalSizeOf(el.fileId)
 				: null;
+		const target = natural && {
+			w: natural.w * DEFAULT_IMAGE_IMPORT_SCALE,
+			h: natural.h * DEFAULT_IMAGE_IMPORT_SCALE,
+		};
 		if (!target || target.w <= 0 || target.h <= 0) continue;
 		if (
 			Math.abs(el.width - target.w) <= SCALE_RESET_EPSILON * target.w &&
 			Math.abs(el.height - target.h) <= SCALE_RESET_EPSILON * target.h
 		) {
-			continue; // already at 100%
+			continue; // already at the default 50% scale
 		}
 		const cx = el.x + el.width / 2;
 		const cy = el.y + el.height / 2;
