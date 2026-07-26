@@ -32,16 +32,11 @@ import { isExcalidrawLeaf, readSceneElements, resizeSceneElements } from "./exca
  * subscribe are seeded as "seen" and never touched, so a video you deliberately
  * stretched is left alone.
  *
- * WHY TRACKING IS BY the linked file's vault path, NOT ELEMENT id: copying an
- * embeddable from one board to another gives it a brand-new element id but
- * keeps the same `link`/target file. If we tracked "seen" per element id, a
- * copy-paste would look like a fresh insert on the destination board and get
- * forcibly re-fit to the media's native aspect ratio, silently overriding
- * whatever box — fitted or deliberately stretched — it had on the source
- * board. Tracking resolved file paths in one Set shared across every leaf for
- * the plugin's lifetime means a given media file is auto-fit at most once,
- * ever; every later copy of an embeddable pointing at it keeps whatever size
- * the copy arrived with.
+ * TRACKING IS BY ELEMENT ID: each new insertion needs fitting, even if it
+ * points at a file already present on this board. This includes the “Use the
+ * file already in the Vault” choice. File-path tracking wrongly treated that
+ * valid insertion as a copy and left its 500×500 placeholder untouched. Only
+ * element IDs present as the board loaded are protected as pre-existing work.
  */
 
 /** Media extensions inserted as embeddables that we can measure and re-fit. */
@@ -146,32 +141,23 @@ function isStillLoading(leaf: WorkspaceLeaf): boolean {
  * file's *parsed, on-disk* scene — `view.excalidrawData.scene` — independent
  * of whatever the live imperative API currently holds.
  *
- * On a heavy board the live scene can take minutes to catch up to the saved file
- * (observed live via the Obsidian DevTools MCP — the same board kept
- * surfacing "new" embeddables in bursts minutes apart as the user scrolled).
- * The parsed on-disk scene is one synchronous `JSON.parse`, done up front,
- * so it reliably lists every embeddable that was actually saved — the true
- * "pre-existing" set — no matter how slowly the live API catches up.
+ * This must be captured once, after `justLoaded` clears. Although it begins as
+ * the parsed on-disk scene, Excalidraw updates `excalidrawData.scene` again as
+ * it synchronizes new canvas changes. Reading it during every `onChange` scan
+ * would therefore turn an element inserted by the just-confirmed modal action
+ * into an apparent pre-existing element before the corrector sees it.
  */
-function getPersistedEmbeddableSeed(
-	leaf: WorkspaceLeaf,
-	plugin: ExcalidrawPureRefPlugin,
-	boardPath: string,
-): { ids: Set<string>; paths: Set<string> } | null {
+function getPersistedEmbeddableSeed(leaf: WorkspaceLeaf): Set<string> | null {
 	const scene = (leaf.view as unknown as { excalidrawData?: { scene?: { elements?: readonly EmbeddableEl[] } } })
 		.excalidrawData?.scene;
 	const elements = scene?.elements;
 	if (!Array.isArray(elements)) return null;
 	const ids = new Set<string>();
-	const paths = new Set<string>();
 	for (const el of elements) {
 		if (el?.type !== "embeddable" || !el.id) continue;
 		ids.add(el.id);
-		const linkpath = localLinkpath(el.link);
-		const dest = linkpath ? plugin.app.metadataCache.getFirstLinkpathDest(linkpath, boardPath) : null;
-		if (dest) paths.add(dest.path);
 	}
-	return { ids, paths };
+	return ids;
 }
 
 /** Loads just enough of a media file to read its natural pixel dimensions. */
@@ -230,6 +216,8 @@ interface Subscription {
 	seen: Set<string>;
 	/** Media embeddables currently being probed (avoid double work). */
 	inflight: Set<string>;
+	/** Immutable snapshot of media present in the board when this listener attached. */
+	persisted: Set<string> | null;
 }
 
 /**
@@ -240,10 +228,6 @@ interface Subscription {
  */
 export function attachVideoAspectCorrector(plugin: ExcalidrawPureRefPlugin): () => void {
 	const subs = new Map<WorkspaceLeaf, Subscription>();
-	// Vault paths of media files already resolved (fitted or found already-correct)
-	// on ANY board. Shared across every leaf so a copy-pasted embeddable — same
-	// target file, new element id — is never re-fitted. See the note above.
-	const resolvedPaths = new Set<string>();
 	let disposed = false;
 	let retryTimer: number | null = null;
 	let retriesLeft = READY_RETRY_MAX;
@@ -256,11 +240,10 @@ export function attachVideoAspectCorrector(plugin: ExcalidrawPureRefPlugin): () 
 		const winLabel = winLabelOf(leaf);
 		const { seen, inflight } = sub;
 
-		// The live scene can still be catching up to the on-disk file (see the
-		// getPersistedEmbeddableSeed doc comment) — re-check on every scan, not
-		// just at attach, so embeddables that only just streamed into the parsed
-		// data get folded into `seen` instead of treated as imports.
-		const persisted = getPersistedEmbeddableSeed(leaf, plugin, boardPath);
+		// `excalidrawData.scene` is mutable after load. Use only the immutable
+		// attachment-time snapshot: a freshly inserted element may already have
+		// been synchronized into the live scene by the time this callback runs.
+		const persisted = sub.persisted;
 
 		for (const raw of readSceneElements(leaf) ?? []) {
 			const el = raw as EmbeddableEl;
@@ -275,10 +258,9 @@ export function attachVideoAspectCorrector(plugin: ExcalidrawPureRefPlugin): () 
 			}
 			const dest = plugin.app.metadataCache.getFirstLinkpathDest(linkpath, boardPath);
 
-			if (persisted?.ids.has(id) || (dest && persisted?.paths.has(dest.path))) {
+			if (persisted?.has(id)) {
 				// Present in the saved file — pre-existing, not an import.
 				seen.add(id);
-				if (dest) resolvedPaths.add(dest.path);
 				continue;
 			}
 
@@ -286,13 +268,6 @@ export function attachVideoAspectCorrector(plugin: ExcalidrawPureRefPlugin): () 
 			const kind = MEDIA_KIND_BY_EXT[dest.extension.toLowerCase()];
 			if (!kind) {
 				seen.add(id); // a non-media embed (PDF, etc.)
-				continue;
-			}
-
-			if (resolvedPaths.has(dest.path)) {
-				// Already resolved elsewhere (e.g. this is a copy of an embeddable
-				// from another board) — leave its box exactly as pasted.
-				seen.add(id);
 				continue;
 			}
 
@@ -305,12 +280,10 @@ export function attachVideoAspectCorrector(plugin: ExcalidrawPureRefPlugin): () 
 				seen.add(id);
 				continue;
 			}
-			const destPath = dest.path;
 			dbg(winLabel, "probing new media embed", id, kind);
 			void probeNaturalSize(win, url, kind).then((natural) => {
 				inflight.delete(id);
 				seen.add(id);
-				resolvedPaths.add(destPath);
 				if (disposed || !natural) {
 					dbg(winLabel, "probe failed", id, natural);
 					return;
@@ -349,9 +322,6 @@ export function attachVideoAspectCorrector(plugin: ExcalidrawPureRefPlugin): () 
 			for (const el of api.getSceneElements()) {
 				if (el.type === "embeddable" && el.id) {
 					seen.add(el.id);
-					const linkpath = boardPath ? localLinkpath((el as EmbeddableEl).link) : null;
-					const dest = linkpath ? plugin.app.metadataCache.getFirstLinkpathDest(linkpath, boardPath as string) : null;
-					if (dest) resolvedPaths.add(dest.path);
 				}
 			}
 		} catch (err) {
@@ -361,13 +331,17 @@ export function attachVideoAspectCorrector(plugin: ExcalidrawPureRefPlugin): () 
 		// Also seed from the parsed on-disk scene — see getPersistedEmbeddableSeed's
 		// doc comment for why the live canvas alone isn't a reliable snapshot.
 		if (boardPath) {
-			const persisted = getPersistedEmbeddableSeed(leaf, plugin, boardPath);
+			const persisted = getPersistedEmbeddableSeed(leaf);
 			if (persisted) {
-				for (const id of persisted.ids) seen.add(id);
-				for (const path of persisted.paths) resolvedPaths.add(path);
+				for (const id of persisted) seen.add(id);
 			}
 		}
-		const sub: Subscription = { unsub: () => {}, seen, inflight };
+		const sub: Subscription = {
+			unsub: () => {},
+			seen,
+			inflight,
+			persisted: boardPath ? getPersistedEmbeddableSeed(leaf) : null,
+		};
 		try {
 			sub.unsub = api.onChange(() => scanLeaf(leaf, sub));
 		} catch (err) {
@@ -433,8 +407,6 @@ export function attachVideoAspectCorrector(plugin: ExcalidrawPureRefPlugin): () 
 			verbose = v;
 		},
 		reconcile,
-		/** Media file paths resolved (fitted or already-correct) anywhere this session. */
-		resolvedPaths: () => resolvedPaths.size,
 		/** The leaves we're actively subscribed to. */
 		state: () =>
 			Array.from(subs.entries()).map(([leaf, sub]) => ({
