@@ -18,6 +18,7 @@ import { attachAltDragDuplicateBlocker } from "src/alt-drag";
 import { attachTransformKeydown } from "src/transform-keys";
 import { attachSnapKeyBlocker } from "src/snap-keys";
 import { attachAltRHotkey } from "src/alt-r";
+import { attachImageNormalize } from "src/image-normalize";
 import { installKeyRelay, removeKeyRelay, cleanupOrphanPrototypes } from "src/transparent-proto";
 
 export default class ExcalidrawPureRefPlugin extends Plugin {
@@ -81,6 +82,7 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 		this.register(attachFlipDrag(window, this.app));
 		this.register(attachAltDragDuplicateBlocker(window, this.app));
 		this.register(attachTransformKeydown(window, this.app));
+		this.register(attachImageNormalize(window, this.app));
 		// Drop Excalidraw's Alt+S "toggle object snap" shortcut inside a Board, since
 		// it also force-disables grid mode. Popouts get their own binding in
 		// PopoutManager. See attachSnapKeyBlocker.

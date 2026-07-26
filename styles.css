@@ -32,3 +32,20 @@ body.epr-popout-mode .workspace-leaf-content,
 body.epr-popout-mode .view-content {
 	inset: 0 !important;
 }
+.epr-normalize-menu {
+	position: relative;
+}
+
+.epr-normalize-submenu {
+	display: none;
+	position: absolute;
+	left: calc(100% - 4px);
+	top: 0;
+	min-width: 190px;
+	z-index: 1000;
+}
+
+.epr-normalize-menu:hover > .epr-normalize-submenu,
+.epr-normalize-menu:focus-within > .epr-normalize-submenu {
+	display: block;
+}

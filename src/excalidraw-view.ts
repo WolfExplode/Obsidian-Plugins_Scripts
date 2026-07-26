@@ -196,6 +196,41 @@ export function applyViewport(leaf: WorkspaceLeaf | null, vp: ExcalidrawViewport
 	}
 }
 
+/**
+ * Adjusts a viewport by `zoomDelta` while retaining the scene point below a
+ * client-space cursor. Kept here because Excalidraw's canvas offset and camera
+ * state are private to its imperative API.
+ */
+export function zoomAtClientPoint(
+	leaf: WorkspaceLeaf | null,
+	clientX: number,
+	clientY: number,
+	zoomDelta: number,
+): boolean {
+	const api = getExcalidrawApi(leaf);
+	if (!api || !Number.isFinite(zoomDelta)) return false;
+	try {
+		const state = api.getAppState();
+		const currentZoom = state.zoom?.value;
+		if (!currentZoom || !Number.isFinite(currentZoom)) return false;
+		// Excalidraw normalizes interactive zooms to six decimal places. Do the
+		// same so a long trackpad gesture cannot accumulate noisy camera values.
+		const nextZoom = Math.round(Math.max(0.1, Math.min(30, currentZoom + zoomDelta)) * 1_000_000) / 1_000_000;
+		if (nextZoom === currentZoom) return true;
+		const offsetX = state.offsetLeft ?? 0;
+		const offsetY = state.offsetTop ?? 0;
+		const sceneX = (clientX - offsetX) / currentZoom - state.scrollX;
+		const sceneY = (clientY - offsetY) / currentZoom - state.scrollY;
+		return updateExcalidrawScene(leaf, {
+			scrollX: (clientX - offsetX) / nextZoom - sceneX,
+			scrollY: (clientY - offsetY) / nextZoom - sceneY,
+			zoom: { value: nextZoom },
+		});
+	} catch {
+		return false;
+	}
+}
+
 /** Enables Excalidraw's own Zen Mode for a Popout view once its API is live. */
 export function enableZenMode(leaf: WorkspaceLeaf | null): boolean {
 	const api = getExcalidrawApi(leaf);

@@ -15,6 +15,7 @@ PureRef Popout unless noted otherwise.
 | **Alt+double-click** with cropped images selected | Removes the plugin's custom viewport crop when present; otherwise removes Excalidraw's native crop, restoring each image in place. | Adds a consistent uncrop gesture for both crop layers. |
 | Double-click a custom-cropped image | Opens Excalidraw's native crop editor for the generated image. | No longer removes the plugin's custom viewport crop. |
 | Right-button drag in an editable PureRef Popout | Moves the Popout OS window. | Replaces the normal right-click drag only in the Popout. |
+| **Ctrl/Cmd+wheel** or pinch zoom in an editable PureRef Popout | Changes zoom by Excalidraw's base linear wheel delta, anchored at the cursor. | Removes Excalidraw's additional logarithmic acceleration above 100% zoom. Normal Excalidraw views retain native zoom behavior. |
 
 All image crop and flip operations are one undoable Board change. A gesture with
 no selected image is left alone, except that plain Alt-drag is still normalized

@@ -233,6 +233,11 @@ export function attachTransformKeydown(win: Window, app: App): () => void {
 		// Always consume R so it cannot fall through to Excalidraw's Rectangle shortcut.
 		event.preventDefault();
 		event.stopImmediatePropagation();
+		// Switching operators is a cancel, not a commit. Restore the original
+		// scene before taking the new baseline so (for example) S → G drops the
+		// uncommitted scale preview and starts a fresh move from the pre-scale
+		// geometry.
+		if (active) cancel();
 		const baseline = getSelectedTransformElements(leaf);
 		if (baseline.length === 0) return;
 

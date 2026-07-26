@@ -42,6 +42,8 @@ import { attachFlipDrag } from "./flip-drag";
 import { attachAltDragDuplicateBlocker } from "./alt-drag";
 import { attachTransformKeydown } from "./transform-keys";
 import { attachSnapKeyBlocker } from "./snap-keys";
+import { attachImageNormalize } from "./image-normalize";
+import { attachLinearPopoutZoom } from "./linear-zoom";
 import { ExcalidrawRefitSuspender } from "./excalidraw-settings";
 import {
 	EXCALIDRAW_VIEW_TYPE,
@@ -94,7 +96,9 @@ interface OpenBoardPopout {
 	detachFlipDrag: (() => void) | null;
 	detachAltDragBlocker: (() => void) | null;
 	detachTransformKeys: (() => void) | null;
+	detachImageNormalize: (() => void) | null;
 	detachSnapKeys: (() => void) | null;
+	detachLinearZoom: (() => void) | null;
 }
 
 interface PendingOpen {
@@ -425,7 +429,9 @@ export class PopoutManager {
 			detachFlipDrag: null,
 			detachAltDragBlocker: null,
 			detachTransformKeys: null,
+			detachImageNormalize: null,
 			detachSnapKeys: null,
+			detachLinearZoom: null,
 		};
 		this.pending = {
 			filePath: file.path,
@@ -448,11 +454,20 @@ export class PopoutManager {
 		try {
 			const leaf = this.plugin.app.workspace.openPopoutLeaf();
 			entry.leaf = leaf;
+			// window-open is synchronous inside openPopoutLeaf(), so its setup ran
+			// before `entry.leaf` existed. Attach this leaf-bound handler here.
+			if (entry.doc?.defaultView) {
+				entry.detachLinearZoom = attachLinearPopoutZoom(entry.doc.defaultView, this.plugin.app, leaf);
+			}
 
 			// The nested window-open event normally supplies the document before
 			// openPopoutLeaf returns. Focus is still bounded and cancellable.
 			await this.waitForPopoutFocus(entry.doc, FOCUS_WAIT_MAX_MS, entry);
 			if (!this.isCurrent(file.path, entry)) return;
+			// Fallback for an unusual delayed window-open notification.
+			if (!entry.detachLinearZoom && entry.doc?.defaultView) {
+				entry.detachLinearZoom = attachLinearPopoutZoom(entry.doc.defaultView, this.plugin.app, leaf);
+			}
 
 			// Force the Excalidraw view type explicitly instead of leaf.openFile(),
 			// which lets Obsidian/Excalidraw choose the view. A Board file carrying
@@ -633,7 +648,9 @@ export class PopoutManager {
 		entry.detachFlipDrag?.();
 		entry.detachAltDragBlocker?.();
 		entry.detachTransformKeys?.();
+		entry.detachImageNormalize?.();
 		entry.detachSnapKeys?.();
+		entry.detachLinearZoom?.();
 		entry.detachWindowDrag = null;
 		entry.detachChromeHiding = null;
 		entry.detachDropBridge = null;
@@ -645,7 +662,9 @@ export class PopoutManager {
 		entry.detachFlipDrag = null;
 		entry.detachAltDragBlocker = null;
 		entry.detachTransformKeys = null;
+		entry.detachImageNormalize = null;
 		entry.detachSnapKeys = null;
+		entry.detachLinearZoom = null;
 		this.refitSuspender.resume();
 	}
 
@@ -806,7 +825,9 @@ export class PopoutManager {
 			entry.detachFlipDrag?.();
 			entry.detachAltDragBlocker?.();
 			entry.detachTransformKeys?.();
+			entry.detachImageNormalize?.();
 			entry.detachSnapKeys?.();
+			entry.detachLinearZoom?.();
 		}
 		this.openBoards.clear();
 		// If unload lands during setViewState/Excalidraw mount, detaching in the
@@ -885,6 +906,7 @@ export class PopoutManager {
 		if (doc.defaultView) entry.detachFlipDrag = attachFlipDrag(doc.defaultView, this.plugin.app);
 		if (doc.defaultView) entry.detachAltDragBlocker = attachAltDragDuplicateBlocker(doc.defaultView, this.plugin.app);
 		if (doc.defaultView) entry.detachTransformKeys = attachTransformKeydown(doc.defaultView, this.plugin.app);
+		if (doc.defaultView) entry.detachImageNormalize = attachImageNormalize(doc.defaultView, this.plugin.app);
 		if (doc.defaultView) entry.detachSnapKeys = attachSnapKeyBlocker(doc.defaultView, this.plugin.app);
 		entry.detachBoundsSaving = onWindowCloseById(newWindowId, () =>
 			this.persistWindowBounds(filePath, entry),
