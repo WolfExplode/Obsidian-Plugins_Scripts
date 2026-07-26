@@ -24,8 +24,24 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 	settings: ExcalidrawPureRefSettings = DEFAULT_SETTINGS;
 	geometry!: GeometryStore;
 	popouts!: PopoutManager;
+	private diagnosticEvents: Array<{ timestamp: number; type: string; data: unknown }> = [];
+
+	recordDiagnostic(type: string, data: unknown = {}): void {
+		this.diagnosticEvents.push({ timestamp: Date.now(), type, data });
+		if (this.diagnosticEvents.length > 2000) this.diagnosticEvents.splice(0, this.diagnosticEvents.length - 2000);
+	}
+
+	getDiagnostics(): unknown {
+		return {
+			pluginId: this.manifest.id,
+			loaded: true,
+			popouts: this.popouts?.getLifecycleDiagnostics() ?? null,
+			events: this.diagnosticEvents.slice(),
+		};
+	}
 
 	async onload(): Promise<void> {
+		this.recordDiagnostic("plugin-load");
 		this.geometry = new GeometryStore(this);
 		await this.geometry.load();
 
@@ -142,12 +158,14 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 
 		this.registerEvent(
 			this.app.workspace.on("window-open", (win: WorkspaceWindow) => {
+				this.recordDiagnostic("workspace-window-open", { hasDocument: !!win.doc });
 				this.popouts.handleWindowOpened(win);
 			}),
 		);
 
 		this.registerEvent(
 			this.app.workspace.on("window-close", (win: WorkspaceWindow) => {
+				this.recordDiagnostic("workspace-window-close", { hasDocument: !!win.doc });
 				void this.popouts.handleWindowClosed(win);
 			}),
 		);
@@ -173,6 +191,7 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 	}
 
 	onunload(): void {
+		this.recordDiagnostic("plugin-unload");
 		removeKeyRelay();
 		this.popouts?.dispose();
 	}

@@ -137,12 +137,41 @@ export class PopoutManager {
 		this.refitSuspender = new ExcalidrawRefitSuspender(plugin.app);
 	}
 
+	getDiagnostics(): unknown[] {
+		return Array.from(this.openBoards.entries()).map(([filePath, entry]) => ({
+			filePath,
+			phase: entry.phase,
+			windowId: entry.windowId,
+			hasDocument: !!entry.doc,
+			hasLeaf: !!entry.leaf,
+			viewType: entry.leaf?.view?.getViewType?.() ?? null,
+			hasExcalidrawApi: !!(entry.leaf?.view as { excalidrawAPI?: unknown } | undefined)?.excalidrawAPI,
+		}));
+	}
+
+	getLifecycleDiagnostics(): unknown {
+		return {
+			disposed: this.disposed,
+			pending: this.pending ? {
+				filePath: this.pending.filePath,
+				hasDocument: !!this.pending.doc,
+				existingWindowIds: Array.from(this.pending.existingWindowIds),
+			} : null,
+			readOnlyFilePath: this.readOnlyFilePath,
+			openBoards: this.getDiagnostics(),
+		};
+	}
+
 	private runTransition(label: string, task: () => Promise<void>): Promise<void> {
+		this.plugin.recordDiagnostic("transition-queued", { label });
 		const run = this.transitionQueue.then(async () => {
 			if (this.disposed) return;
+			this.plugin.recordDiagnostic("transition-start", { label });
 			await task();
+			this.plugin.recordDiagnostic("transition-complete", { label });
 		});
 		const handled = run.catch((error) => {
+			this.plugin.recordDiagnostic("transition-error", { label, error: String(error?.stack || error) });
 			console.error(`[Excalidraw PureRef] failed to ${label}.`, error);
 			new Notice(`Excalidraw PureRef could not ${label}. See the developer console for details.`);
 		});
@@ -407,6 +436,7 @@ export class PopoutManager {
 			entry,
 		};
 		this.openBoards.set(file.path, entry);
+		this.plugin.recordDiagnostic("popout-opening", { filePath: file.path });
 
 		// Suppress Excalidraw's global zoom-to-fit-on-resize for as long as a
 		// Popout is open, so RMB window-drag (which emits resize events on
@@ -475,6 +505,7 @@ export class PopoutManager {
 
 	/** Wired to app.workspace.on('window-open', ...) in main.ts. */
 	handleWindowOpened(win: WorkspaceWindow): void {
+		this.plugin.recordDiagnostic("popout-window-open-observed", { hasDocument: !!win.doc });
 		if (!this.pending) return;
 		// The synchronous event from openPopoutLeaf claims this pending open.
 		// Ignore unrelated windows that open while native id detection retries.
@@ -538,6 +569,7 @@ export class PopoutManager {
 
 	/** Wired to app.workspace.on('window-close', ...) in main.ts. */
 	async handleWindowClosed(win: WorkspaceWindow): Promise<void> {
+		this.plugin.recordDiagnostic("popout-window-close-observed", { hasDocument: !!win.doc });
 		const filePath = getPopupFilePath(win.doc);
 		if (!filePath) return;
 
@@ -545,6 +577,7 @@ export class PopoutManager {
 		// A late close from an older Popout for this Board must not remove a new
 		// entry that happens to have the same file path.
 		if (!entry || entry.doc !== win.doc) {
+			this.plugin.recordDiagnostic("stale-popout-close-ignored", { filePath });
 			clearPopupDocumentMarker(win.doc);
 			return;
 		}
@@ -564,6 +597,7 @@ export class PopoutManager {
 	): Promise<void> {
 		if (!this.isCurrent(filePath, entry)) return;
 		entry.phase = "closing";
+		this.plugin.recordDiagnostic("popout-closing", { filePath, windowId: entry.windowId });
 		// Both values must be captured before detach/close invalidates native and
 		// Excalidraw state.
 		const viewport = readViewport(entry.leaf);
@@ -581,6 +615,7 @@ export class PopoutManager {
 	}
 
 	private releaseEntry(filePath: string, entry: OpenBoardPopout, doc: Document | null): void {
+		this.plugin.recordDiagnostic("popout-released", { filePath, windowId: entry.windowId });
 		if (this.openBoards.get(filePath) === entry) this.openBoards.delete(filePath);
 		if (this.pending?.entry === entry) {
 			if (this.pending.timeoutId != null) window.clearTimeout(this.pending.timeoutId);
@@ -668,6 +703,7 @@ export class PopoutManager {
 
 		if (!this.isCurrent(filePath, entry)) return;
 		if (!isCanvasReady(entry.leaf)) {
+			this.plugin.recordDiagnostic("popout-canvas-timeout", { filePath, timeoutMs: CANVAS_READY_MAX_MS });
 			console.error("[Excalidraw PureRef] Excalidraw canvas did not initialize within the timeout.");
 			new Notice("Excalidraw did not finish initializing the PureRef popout. The incomplete popout was closed.");
 			this.abortOpen(filePath, entry);
@@ -690,6 +726,7 @@ export class PopoutManager {
 					enableOverlapSelection(entry.leaf);
 					this.applyStartupViewport(entry.leaf, filePath, sourceViewState);
 					entry.phase = "ready";
+					this.plugin.recordDiagnostic("popout-ready", { filePath, windowId: entry.windowId });
 					// Restore native focus after mounting and applying the camera so the
 					// user can keep working immediately.
 					if (entry.windowId != null) focusWindowById(entry.windowId);
