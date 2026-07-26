@@ -7,6 +7,7 @@ import {
 	type PackElement,
 	type PackMove,
 } from "./pack-elements";
+import { planOverlapAwareZOrderMove, type ZOrderDirection } from "./zorder";
 
 /**
  * The Excalidraw community plugin registers its view under this type id.
@@ -55,6 +56,7 @@ interface SceneElement extends PackElement {
 	opacity?: number;
 	/** Nested Excalidraw group ids; the last id is the outermost group. */
 	groupIds?: readonly string[];
+	frameId?: string | null;
 }
 
 interface ExcalidrawApi {
@@ -469,6 +471,49 @@ function applyPack(
 		// commitToHistory is the older equivalent — harmless on newer builds — so
 		// the move is a single Ctrl+Z step regardless of the bundled Excalidraw.
 		view.updateScene({ elements: nextElements, captureUpdate: "IMMEDIATELY", commitToHistory: true });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Overlap-aware Bring Forward / Send Backward for the current selection (see
+ * docs/behavior/overlap-aware-zorder.md and zorder.ts). Writes the reordered
+ * scene as one undoable history entry, mirroring applyPack's updateScene call.
+ *
+ * Returns false -- a deliberate no-op -- when there's no selection, nothing
+ * actually moves, or the selection touches a group/frame (editingGroupId, or
+ * any selected element with groupIds/frameId). Group/frame z-order has real
+ * dedicated semantics in Excalidraw's own zindex.ts that aren't reimplemented
+ * here; callers should let the native Ctrl+]/Ctrl+[ handler run instead.
+ */
+export function bringSelectionPastOverlap(leaf: WorkspaceLeaf | null, direction: ZOrderDirection): boolean {
+	const api = getExcalidrawApi(leaf);
+	const view = getExcalidrawView(leaf);
+	if (!api?.getSceneElements || !view?.updateScene) return false;
+
+	let all: readonly SceneElement[];
+	let selectedIds: Record<string, boolean>;
+	let editingGroupId: string | null | undefined;
+	try {
+		all = api.getSceneElements();
+		const appState = api.getAppState();
+		selectedIds = appState.selectedElementIds ?? {};
+		editingGroupId = appState.editingGroupId;
+	} catch {
+		return false;
+	}
+	if (editingGroupId) return false;
+
+	const ids = new Set(Object.keys(selectedIds).filter((id) => selectedIds[id]));
+	if (ids.size === 0) return false;
+
+	const next = planOverlapAwareZOrderMove(all, ids, direction);
+	if (!next) return false;
+
+	try {
+		view.updateScene({ elements: next, captureUpdate: "IMMEDIATELY", commitToHistory: true });
 		return true;
 	} catch {
 		return false;

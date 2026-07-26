@@ -40,7 +40,7 @@ export interface PackMove {
 }
 
 /** Axis-aligned bounding box in scene coordinates. */
-interface Rect {
+export interface Rect {
 	id: string;
 	minX: number;
 	minY: number;
@@ -82,7 +82,7 @@ export function isPackable(el: PackElement): boolean {
  * visual box keeps rotated references from overlapping. Translating x/y shifts
  * this box rigidly, so a delta computed here applies directly to x/y.
  */
-function elementAABB(el: PackElement): Rect {
+export function elementAABB(el: PackElement): Rect {
 	const cx = el.x + el.width / 2;
 	const cy = el.y + el.height / 2;
 	const a = el.angle ?? 0;

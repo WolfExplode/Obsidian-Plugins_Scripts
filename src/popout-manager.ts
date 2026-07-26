@@ -36,6 +36,7 @@ import { applyChromeHiding } from "./chrome-hider";
 import { attachPopoutDropBridge } from "./popout-drop-bridge";
 import { attachInsertModalAutoConfirm } from "./insert-modal-autoconfirm";
 import { attachPackKeydown } from "./pack-keys";
+import { attachZOrderKeydown } from "./zorder-keys";
 import { attachCropDrag } from "./crop-drag";
 import { attachOpacityKeydown } from "./opacity-keys";
 import { attachFlipDrag } from "./flip-drag";
@@ -91,6 +92,7 @@ interface OpenBoardPopout {
 	detachBoundsSaving: (() => void) | null;
 	detachPackKeys: (() => void) | null;
 	detachOpacityKeys: (() => void) | null;
+	detachZOrderKeys: (() => void) | null;
 	detachCropDrag: (() => void) | null;
 	detachFlipDrag: (() => void) | null;
 	detachAltDragBlocker: (() => void) | null;
@@ -423,6 +425,7 @@ export class PopoutManager {
 			detachBoundsSaving: null,
 			detachPackKeys: null,
 			detachOpacityKeys: null,
+			detachZOrderKeys: null,
 			detachCropDrag: null,
 			detachFlipDrag: null,
 			detachAltDragBlocker: null,
@@ -644,6 +647,7 @@ export class PopoutManager {
 		entry.detachBoundsSaving = null;
 		entry.detachPackKeys = null;
 		entry.detachOpacityKeys = null;
+		entry.detachZOrderKeys = null;
 		entry.detachCropDrag = null;
 		entry.detachFlipDrag = null;
 		entry.detachAltDragBlocker = null;
@@ -806,6 +810,7 @@ export class PopoutManager {
 			entry.detachBoundsSaving?.();
 			entry.detachPackKeys?.();
 			entry.detachOpacityKeys?.();
+			entry.detachZOrderKeys?.();
 			entry.detachCropDrag?.();
 			entry.detachFlipDrag?.();
 			entry.detachAltDragBlocker?.();
@@ -881,6 +886,7 @@ export class PopoutManager {
 		entry.detachDropBridge = attachPopoutDropBridge(doc);
 		entry.detachInsertModal = attachInsertModalAutoConfirm(doc);
 		if (doc.defaultView) entry.detachPackKeys = attachPackKeydown(doc.defaultView, this.plugin.app);
+		if (doc.defaultView) entry.detachZOrderKeys = attachZOrderKeydown(doc.defaultView, this.plugin.app);
 		if (doc.defaultView) {
 			entry.detachOpacityKeys = attachOpacityKeydown(doc.defaultView, this.plugin.app, {
 				onNoSelection: (direction) => this.adjustFocusedPopoutOpacity(direction),

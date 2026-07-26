@@ -13,6 +13,7 @@ import { attachVideoAspectCorrector } from "src/video-aspect";
 import { attachMediaAutoPack } from "src/media-auto-pack";
 import { attachCropDrag, installCropDebugHook } from "src/crop-drag";
 import { attachOpacityKeydown } from "src/opacity-keys";
+import { attachZOrderKeydown } from "src/zorder-keys";
 import { attachFlipDrag } from "src/flip-drag";
 import { attachAltDragDuplicateBlocker } from "src/alt-drag";
 import { attachTransformKeydown } from "src/transform-keys";
@@ -59,6 +60,7 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 		// it preempts Excalidraw's own arrow handling — see attachPackKeydown.
 		this.register(attachPackKeydown(window, this.app));
 		this.register(attachOpacityKeydown(window, this.app));
+		this.register(attachZOrderKeydown(window, this.app));
 
 		// Sanitize wikilink-unsafe characters out of dropped attachment filenames
 		// in the main window. Popout windows get their own bridge when they open
