@@ -1947,6 +1947,53 @@ export function optimalPackSelectedElements(leaf: WorkspaceLeaf | null): boolean
 }
 
 /**
+ * Lays out a specific group of newly-created reference elements as one compact,
+ * PureRef-style block. Unlike the keyboard command this deliberately does not
+ * depend on Excalidraw's selection state: an importer is free to clear or alter
+ * selection while it is adding files. Existing board elements are left exactly
+ * where they are.
+ */
+export function optimalPackElementsById(leaf: WorkspaceLeaf | null, ids: ReadonlySet<string>): boolean {
+	if (ids.size < 2) return false;
+	const api = getExcalidrawApi(leaf);
+	const view = getExcalidrawView(leaf);
+	if (!api?.getSceneElements || !view?.updateScene) return false;
+
+	let all: readonly SceneElement[];
+	try {
+		all = api.getSceneElements();
+	} catch {
+		return false;
+	}
+
+	const imported = all.filter((el) => ids.has(el.id) && isPackable(el));
+	if (imported.length < 2) return false;
+	const moves = planOptimalPack(imported as PackElement[], PACK_GAP);
+	if (moves.length === 0) return false;
+
+	const moveById = new Map(moves.map((move) => [move.id, move]));
+	const nextElements = all.map((el) => {
+		const move = moveById.get(el.id);
+		if (!move) return el;
+		return {
+			...el,
+			x: el.x + move.dx,
+			y: el.y + move.dy,
+			version: (el.version ?? 1) + 1,
+			versionNonce: randomVersionNonce(),
+			updated: Date.now(),
+		};
+	});
+
+	try {
+		view.updateScene({ elements: nextElements, captureUpdate: "IMMEDIATELY", commitToHistory: true });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
  * Finds the Excalidraw leaf a keyboard event belongs to. Prefers the leaf whose
  * container actually contains the event target (correct when several Excalidraw
  * views share the main window); falls back to the only Excalidraw view in the

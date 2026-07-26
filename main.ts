@@ -10,6 +10,7 @@ import { attachPopoutDropBridge } from "src/popout-drop-bridge";
 import { attachInsertModalAutoConfirm } from "src/insert-modal-autoconfirm";
 import { attachAnimatedImageEmbedConversion } from "src/animated-image-drop";
 import { attachVideoAspectCorrector } from "src/video-aspect";
+import { attachMediaAutoPack } from "src/media-auto-pack";
 import { attachCropDrag, installCropDebugHook } from "src/crop-drag";
 import { attachOpacityKeydown } from "src/opacity-keys";
 import { attachFlipDrag } from "src/flip-drag";
@@ -51,6 +52,9 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 		// aspect ratio across every Excalidraw view — main window and popouts. Hooks
 		// each view's scene changes, so it needs no drop listener.
 		this.register(attachVideoAspectCorrector(this));
+		// Keep a multi-file import compact, like PureRef. The observer only packs
+		// media newly created by an import; it seeds existing Board content first.
+		this.register(attachMediaAutoPack(this));
 		this.register(attachPopoutDropBridge(window.document, { alwaysBridge: false }));
 
 		// PureRef-style hold-C + drag to crop the selected images, in the main window.

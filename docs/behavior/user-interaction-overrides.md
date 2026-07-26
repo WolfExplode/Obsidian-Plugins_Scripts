@@ -54,6 +54,12 @@ mode switches.
   the plugin selects it automatically.
 - Inserted local videos and animated images are resized to their intrinsic aspect
   ratio after Excalidraw has added them.
+- A multi-file media import is automatically arranged as a compact PureRef-style
+  block. Only media created by that import moves; existing Board content stays
+  in place. Packing occurs after Obsidian Excalidraw's native
+  `synchronizeWithData()` import-sync promise resolves, rather than on a delay
+  or on the earlier vault-save event; this prevents the importer from restoring
+  its pre-pack scene snapshot over videos and other embeddables.
 
 These integrations are designed to be additive where possible. The explicit
 gesture and shortcut overrides above are the intentional exceptions.
