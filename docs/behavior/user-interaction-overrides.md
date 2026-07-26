@@ -69,6 +69,11 @@ setting globally, the normal Board view is affected for that interval too.
   resized, matching video/pdf/markdown embeddables. This works around an
   upstream Obsidian Canvas limitation; see
   [Obsidian Canvas image-embed stretch fix](../integrations/obsidian-canvas-image-stretch-fix.md).
+- **Known limitation, not fixed by this plugin:** embeddables (video, pdf,
+  markdown, animated images, web embeds) always render on top of ordinary
+  canvas-drawn elements, regardless of "Send to back" / "Bring to front".
+  This is an upstream Excalidraw core limitation; see
+  [Excalidraw embeddable z-order limitation](../integrations/excalidraw-embeddable-z-order-limitation.md).
 - A multi-file media import is automatically arranged as a compact PureRef-style
   block. Only media created by that import moves; existing Board content stays
   in place. Packing occurs after Obsidian Excalidraw's native
