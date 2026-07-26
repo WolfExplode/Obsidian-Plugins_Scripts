@@ -59,6 +59,9 @@ setting globally, the normal Board view is affected for that interval too.
 
 - The plugin sanitizes dropped attachment filenames that cannot safely appear in
   Obsidian wikilinks, then passes the drop through Excalidraw's normal importer.
+  This works around an Obsidian vault-naming limitation, not an Excalidraw
+  behavior; see
+  [Obsidian wikilink-unsafe attachment names](../integrations/obsidian-wikilink-attachment-names.md).
 - If Excalidraw's “Insert File From Vault” dialog presents exactly one choice,
   the plugin selects it automatically.
 - Inserted local videos and animated images are resized to their intrinsic aspect

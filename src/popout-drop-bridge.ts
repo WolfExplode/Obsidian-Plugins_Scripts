@@ -54,6 +54,19 @@ const WIKILINK_UNSAFE: Record<string, string> = {
 const sanitizeAttachmentName = (name: string): string =>
 	name.replace(/[#^[\]|]/g, (ch) => WIKILINK_UNSAFE[ch] ?? ch);
 
+const WIKILINK_UNSAFE_REVERSE: Record<string, string> = Object.fromEntries(
+	Object.entries(WIKILINK_UNSAFE).map(([ascii, wide]) => [wide, ascii]),
+);
+
+/**
+ * Inverse of {@link sanitizeAttachmentName}. Lets code that only ever sees the
+ * *original* dropped filename (e.g. media-auto-pack's import tracking) still
+ * recognize a vault file this bridge renamed, by folding both back to the same
+ * ASCII form before comparing.
+ */
+export const desanitizeAttachmentName = (name: string): string =>
+	name.replace(/[＃＾［］｜]/g, (ch) => WIKILINK_UNSAFE_REVERSE[ch] ?? ch);
+
 /**
  * @param alwaysBridge When true (a Popout), every trusted file drop is bridged —
  *   the cross-realm clone is mandatory there. When false (the main window, where

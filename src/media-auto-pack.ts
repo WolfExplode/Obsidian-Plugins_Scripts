@@ -2,6 +2,7 @@ import type { EventRef, WorkspaceLeaf } from "obsidian";
 import type ExcalidrawPureRefPlugin from "../main";
 import { localLinkpath } from "./board-render";
 import { getSceneElementFile, isExcalidrawLeaf, optimalPackElementsById, readSceneElements } from "./excalidraw-view";
+import { desanitizeAttachmentName } from "./popout-drop-bridge";
 
 const READY_RETRY_MS = 300;
 const READY_RETRY_MAX = 20;
@@ -69,13 +70,17 @@ function basename(path: string): string {
 }
 
 function normalizedName(name: string): string {
-	const base = basename(name).toLowerCase();
+	// The popout-drop-bridge rewrites wikilink-unsafe characters (# ^ [ ] |) to
+	// full-width look-alikes before Excalidraw ever writes the file, so the vault
+	// path and the originally-dropped filename can legitimately differ only in
+	// those characters. Fold both back to ASCII before comparing.
+	const base = desanitizeAttachmentName(basename(name)).toLowerCase();
 	return base.replace(/_(\d+)(\.[^.]+)$/i, "$2");
 }
 
 function namesMatch(source: string, targetPath: string): boolean {
-	const sourceBase = basename(source).toLowerCase();
-	const targetBase = basename(targetPath).toLowerCase();
+	const sourceBase = desanitizeAttachmentName(basename(source)).toLowerCase();
+	const targetBase = desanitizeAttachmentName(basename(targetPath)).toLowerCase();
 	return sourceBase === targetBase || normalizedName(source) === normalizedName(targetPath);
 }
 
@@ -97,7 +102,11 @@ function fileCandidates(transfer: DataTransfer | ClipboardEvent["clipboardData"]
 }
 
 function candidateSignature(files: Array<{ name: string; size: number }>): string {
-	return files.map((file) => `${file.name}\u0000${file.size}`).join("\u0001");
+	// Canonicalize names so the bridge's sanitized re-dispatch (see
+	// desanitizeAttachmentName) produces the same signature as the original
+	// trusted drop it echoes, letting the synthetic-duplicate check below
+	// recognize and suppress it instead of seeding a second transaction.
+	return files.map((file) => `${desanitizeAttachmentName(file.name)}\u0000${file.size}`).join("\u0001");
 }
 
 function scenePath(plugin: ExcalidrawPureRefPlugin, leaf: WorkspaceLeaf, el: MediaElement): string | null {
@@ -126,14 +135,37 @@ function addVaultPath(transaction: Transaction, path: string): void {
 	if (candidate) candidate.paths.add(path);
 }
 
-function matchElement(plugin: ExcalidrawPureRefPlugin, leaf: WorkspaceLeaf, transaction: Transaction, el: MediaElement): boolean {
+function matchElement(
+	plugin: ExcalidrawPureRefPlugin,
+	leaf: WorkspaceLeaf,
+	transaction: Transaction,
+	el: MediaElement,
+	debug: (kind: string, data?: Record<string, unknown>) => void,
+): boolean {
 	if (!el.id || transaction.baselineIds.has(el.id) || transaction.mediaIds.has(el.id)) return false;
 	const path = scenePath(plugin, leaf, el);
-	if (!path) return false;
+	if (!path) {
+		debug("no-scene-path", {
+			id: el.id,
+			type: el.type,
+			fileId: el.fileId ?? null,
+			link: el.link ?? null,
+			pendingCandidates: transaction.candidates.filter((c) => !c.matchedId).map((c) => c.name),
+		});
+		return false;
+	}
 	const candidate = transaction.candidates.find(
 		(item) => item.matchedId === null && (item.paths.has(path) || namesMatch(item.name, path)),
 	);
-	if (!candidate) return false;
+	if (!candidate) {
+		debug("no-candidate-for-path", {
+			id: el.id,
+			type: el.type,
+			path,
+			pendingCandidates: transaction.candidates.filter((c) => !c.matchedId).map((c) => ({ name: c.name, paths: Array.from(c.paths) })),
+		});
+		return false;
+	}
 	candidate.matchedId = el.id;
 	transaction.mediaIds.add(el.id);
 	return true;
@@ -168,7 +200,7 @@ export function attachMediaAutoPack(plugin: ExcalidrawPureRefPlugin): () => void
 			if (!isMedia(el) || !el.id || sub.known.has(el.id)) continue;
 			let matched = false;
 			for (const transaction of sub.transactions) {
-				if (matchElement(plugin, leaf, transaction, el)) {
+				if (matchElement(plugin, leaf, transaction, el, debug)) {
 					matched = true;
 					sub.known.add(el.id);
 					debug("matched", { id: el.id, type: el.type, remaining: transaction.candidates.filter((c) => !c.matchedId).map((c) => c.name) });
@@ -186,6 +218,7 @@ export function attachMediaAutoPack(plugin: ExcalidrawPureRefPlugin): () => void
 			// can publish the scene element before its image registry entry exists.
 			// Once no transaction is waiting, it is ordinary pre-existing content.
 			if (!matched && sub.transactions.length === 0) sub.known.add(el.id);
+			else if (!matched) debug("unmatched-no-transaction-accepted", { id: el.id, type: el.type });
 		}
 	};
 
@@ -222,6 +255,12 @@ export function attachMediaAutoPack(plugin: ExcalidrawPureRefPlugin): () => void
 			const result = original.apply(this, args);
 			void Promise.resolve(result).then(() => {
 				if (disposed) return;
+				debug("board-sync-resolved", {
+					transactions: sub.transactions.map((t) => ({
+						readyToPack: t.readyToPack,
+						pending: t.candidates.filter((c) => !c.matchedId).map((c) => c.name),
+					})),
+				});
 				for (const transaction of [...sub.transactions]) {
 					if (!transaction.readyToPack) continue;
 					const packed = optimalPackElementsById(leaf, transaction.mediaIds);
@@ -301,6 +340,14 @@ export function attachMediaAutoPack(plugin: ExcalidrawPureRefPlugin): () => void
 		for (const [leaf, sub] of subscriptions) {
 			const api = getApi(leaf);
 			if (isExcalidrawLeaf(leaf) && api && !apiDestroyed(api)) continue;
+			if (sub.transactions.length) {
+				debug("subscription-torn-down-with-pending-transactions", {
+					transactions: sub.transactions.map((t) => ({
+						readyToPack: t.readyToPack,
+						pending: t.candidates.filter((c) => !c.matchedId).map((c) => c.name),
+					})),
+				});
+			}
 			try {
 				sub.unsub();
 				sub.detachDocument();
