@@ -34,6 +34,9 @@ to a normal move so it cannot duplicate a newly clicked element.
 | **Alt+R** with selected elements | Resets rotation to 0, each element turning about its own center. | Normal view and editable Popout. |
 | **Alt+S** with selected images | Resets each image to 100% scale — its native pixel size — about its own center. A natively cropped image resets to its visible crop, never re-exposing cropped-away content. Rotation and flips are preserved. | Normal view and editable Popout. |
 | **Alt+S** otherwise | Does nothing. Excalidraw's "toggle object snap" shortcut is dropped because it also force-disables grid mode; toggle object snap from the canvas context menu instead. | Normal view and editable Popout. |
+| **X** | Deletes the selected elements. | Replaces Excalidraw's **X** shortcut for the free-draw tool. Normal Excalidraw deletion rules, including frames, bindings, and groups, still apply. |
+| **Ctrl+Alt+Left** / **Right** with two or more images selected | Resizes the selected images, centered in place, to their average displayed height / width. | Normal view and editable Popout. Also available from the canvas context menu: **Normalize → Height / Width**. |
+| **Ctrl+Alt+Up** / **Down** with two or more images selected | Resizes the selected images, centered in place, to their average displayed area / average native-image scale. | Normal view and editable Popout. Also available from the canvas context menu: **Normalize → Size / Scale**. |
 | **Alt+R** while an Excalidraw drawing is the active leaf | Never runs Templater's "Replace templates in the active file" (which errors on a drawing). Templater's Alt+R still works in every markdown context. | Excalidraw drawing (non-markdown) mode only. See [Obsidian hotkey interception](../integrations/obsidian-hotkey-interception.md). |
 | **F11** | Opens or closes the PureRef Popout for the active Board. | An Excalidraw Board. |
 | **F10** | Switches an existing editable Popout and its read-only transparent reference mode. | Only when one of those modes exists. |
@@ -45,7 +48,11 @@ Editable PureRef Popouts are always-on-top and hide Obsidian chrome. They also
 enable Excalidraw's **overlap** box-selection mode, so a marquee selects every
 element it touches rather than only elements fully enclosed by it. The plugin
 preserves a Popout's viewport and native window opacity across editable/read-only
-mode switches.
+mode switches. While at least one editable Popout is open, the plugin temporarily
+turns off Excalidraw's global **zoom to fit on view resize** setting. This keeps
+the canvas from refitting while the Popout is moved or resized, and restores the
+user's prior setting after the last Popout closes; because Excalidraw owns this
+setting globally, the normal Board view is affected for that interval too.
 
 ## Import and media behavior
 
@@ -55,6 +62,9 @@ mode switches.
   the plugin selects it automatically.
 - Inserted local videos and animated images are resized to their intrinsic aspect
   ratio after Excalidraw has added them.
+- Newly inserted `.gif`, `.webp`, and `.apng` files are converted from static
+  image elements into playing Excalidraw embeddables. Animated images already
+  present in a saved Board are not changed.
 - A multi-file media import is automatically arranged as a compact PureRef-style
   block. Only media created by that import moves; existing Board content stays
   in place. Packing occurs after Obsidian Excalidraw's native
