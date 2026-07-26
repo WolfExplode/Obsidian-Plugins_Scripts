@@ -25,6 +25,10 @@ interface ActiveTransform {
 	pivot: ScenePoint;
 	start: ScenePoint | null;
 	latest: TransformElement[];
+	/** Textual scale factor entered while the Scale operator is active. */
+	numericInput: string;
+	/** Whether a preview has been applied and therefore needs committing. */
+	hasPreview: boolean;
 	/** The document we painted the mode cursor on, so clear() can undo it. */
 	cursorDoc: Document | null;
 }
@@ -116,7 +120,15 @@ function transformElements(active: ActiveTransform, current: ScenePoint, shiftKe
 
 	const startDistance = Math.hypot(start.x - active.pivot.x, start.y - active.pivot.y);
 	const currentDistance = Math.hypot(current.x - active.pivot.x, current.y - active.pivot.y);
-	const factor = startDistance < 0.001 ? 1 : Math.max(0.01, currentDistance / startDistance);
+	const factor = startDistance < 0.001 ? 1 : currentDistance / startDistance;
+	return scaleElements(active, factor);
+}
+
+/** Uniformly scales the original selection around its center pivot. */
+function scaleElements(active: ActiveTransform, rawFactor: number): TransformElement[] {
+	// Excalidraw elements cannot have zero-sized bounds. Keep the same lower
+	// bound used by pointer-driven scaling, including for a typed `0`.
+	const factor = Math.max(0.01, rawFactor);
 	return active.baseline.map((element) => {
 		const center = {
 			x: active.pivot.x + (element.x + element.width / 2 - active.pivot.x) * factor,
@@ -157,7 +169,7 @@ export function attachTransformKeydown(win: Window, app: App): () => void {
 		clear();
 	};
 	const commit = () => {
-		if (active?.start) applySelectionTransform(active.leaf, active.latest, "IMMEDIATELY");
+		if (active?.hasPreview) applySelectionTransform(active.leaf, active.latest, "IMMEDIATELY");
 		clear();
 	};
 
@@ -173,6 +185,33 @@ export function attachTransformKeydown(win: Window, app: App): () => void {
 			event.stopImmediatePropagation();
 			commit();
 			return;
+		}
+		// Like Blender's Scale operator, numbers entered during S are absolute
+		// multipliers of the geometry at the start of this operation: `.5` is
+		// 50%, `2` is 200%. Once a number is being entered, the pointer no longer
+		// changes the preview, so it is safe to refine the number with Backspace.
+		if (active?.mode === "scale" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+			const isDigit = /^\d$/.test(event.key);
+			const isDecimalPoint = event.key === "." && !active.numericInput.includes(".");
+			if (isDigit || isDecimalPoint || event.key === "Backspace") {
+				event.preventDefault();
+				event.stopImmediatePropagation();
+				const next = event.key === "Backspace"
+					? active.numericInput.slice(0, -1)
+					: active.numericInput + event.key;
+				active.numericInput = next;
+				const factor = Number(next);
+				if (next !== "" && next !== "." && Number.isFinite(factor)) {
+					active.latest = scaleElements(active, factor);
+					active.hasPreview = true;
+					applySelectionTransform(active.leaf, active.latest, "EVENTUALLY");
+				} else if (next === "") {
+					active.latest = active.baseline;
+					active.hasPreview = false;
+					applySelectionTransform(active.leaf, active.baseline, "EVENTUALLY");
+				}
+				return;
+			}
 		}
 		// Blender-style resets, the counterpart to the modal R/S below: Alt+R clears
 		// rotation, Alt+S restores native pixel size. Both keys are already reserved
@@ -246,7 +285,7 @@ export function attachTransformKeydown(win: Window, app: App): () => void {
 		// instance's: a Popout keypress is delivered to the main window's handler,
 		// so `doc` here is often the wrong window entirely.
 		const cursorDoc = leafDocument(leaf);
-		active = { mode, leaf, baseline, pivot: selectionCenter(baseline), start: pointer, latest: baseline, cursorDoc };
+		active = { mode, leaf, baseline, pivot: selectionCenter(baseline), start: pointer, latest: baseline, numericInput: "", hasPreview: false, cursorDoc };
 		if (cursorDoc) {
 			cursorDoc.body.style.cursor = mode === "move" ? "move" : mode === "rotate" ? "crosshair" : "nwse-resize";
 		}
@@ -257,10 +296,16 @@ export function attachTransformKeydown(win: Window, app: App): () => void {
 		if (leaf) lastPointer = { leaf, x: event.clientX, y: event.clientY };
 		if (!active) return;
 		if (leaf !== active.leaf) return;
+		if (active.mode === "scale" && active.numericInput) {
+			event.preventDefault();
+			event.stopImmediatePropagation();
+			return;
+		}
 		const point = clientToSceneCoords(active.leaf, event.clientX, event.clientY);
 		if (!point) return;
 		if (!active.start) active.start = point;
 		active.latest = transformElements(active, point, event.shiftKey);
+		active.hasPreview = true;
 		// EVENTUALLY, not NEVER: Excalidraw's store advances its undo snapshot on
 		// BOTH "never" and "immediately" (only "eventually" leaves it untouched — see
 		// packages/element/src/store.ts processAction, verified against core version
