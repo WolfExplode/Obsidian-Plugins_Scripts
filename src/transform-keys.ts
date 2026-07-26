@@ -175,7 +175,7 @@ export function attachTransformKeydown(win: Window, app: App): () => void {
 			return;
 		}
 		// Blender-style resets, the counterpart to the modal R/S below: Alt+R clears
-		// rotation, Alt+S restores the 50%-native default image size. Both keys are already reserved
+		// rotation, Alt+S restores native pixel size. Both keys are already reserved
 		// inside a Board — Alt+S because Excalidraw's object-snap shortcut is dropped,
 		// Alt+R because it is held back from Templater — so consuming them here takes
 		// nothing away. Skipped while a modal transform is running, which owns the
