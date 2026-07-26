@@ -3,6 +3,7 @@ import {
 	applySelectionTransform,
 	clientToSceneCoords,
 	findExcalidrawLeafForNode,
+	getEffectiveGridSize,
 	getSelectedTransformElements,
 	resetSelectedImageScale,
 	resetSelectedRotation,
@@ -75,12 +76,23 @@ function rotate(point: ScenePoint, pivot: ScenePoint, radians: number): ScenePoi
 	return { x: pivot.x + dx * cos - dy * sin, y: pivot.y + dx * sin + dy * cos };
 }
 
-function transformElements(active: ActiveTransform, current: ScenePoint, snapRotation: boolean): TransformElement[] {
+function transformElements(active: ActiveTransform, current: ScenePoint, shiftKey: boolean): TransformElement[] {
 	const start = active.start;
 	if (!start) return active.baseline;
 	if (active.mode === "move") {
-		const dx = current.x - start.x;
-		const dy = current.y - start.y;
+		const gridSize = getEffectiveGridSize(active.leaf);
+		let dx = current.x - start.x;
+		let dy = current.y - start.y;
+		// Match Excalidraw's native selected-element drag: Shift preserves only
+		// the dominant movement axis, before the delta is snapped to the grid.
+		if (shiftKey) {
+			if (Math.abs(dx) < Math.abs(dy)) dx = 0;
+			else if (Math.abs(dx) > Math.abs(dy)) dy = 0;
+		}
+		if (gridSize) {
+			dx = Math.round(dx / gridSize) * gridSize;
+			dy = Math.round(dy / gridSize) * gridSize;
+		}
 		return active.baseline.map((element) => ({ ...element, x: element.x + dx, y: element.y + dy }));
 	}
 
@@ -88,7 +100,7 @@ function transformElements(active: ActiveTransform, current: ScenePoint, snapRot
 		const startAngle = Math.atan2(start.y - active.pivot.y, start.x - active.pivot.x);
 		const currentAngle = Math.atan2(current.y - active.pivot.y, current.x - active.pivot.x);
 		const rawRadians = currentAngle - startAngle;
-		const radians = snapRotation
+		const radians = shiftKey
 			? Math.round(rawRadians / ROTATION_SNAP_RADIANS) * ROTATION_SNAP_RADIANS
 			: rawRadians;
 		return active.baseline.map((element) => {
@@ -243,7 +255,7 @@ export function attachTransformKeydown(win: Window, app: App): () => void {
 		const point = clientToSceneCoords(active.leaf, event.clientX, event.clientY);
 		if (!point) return;
 		if (!active.start) active.start = point;
-		active.latest = transformElements(active, point, event.shiftKey && active.mode === "rotate");
+		active.latest = transformElements(active, point, event.shiftKey);
 		// EVENTUALLY, not NEVER: Excalidraw's store advances its undo snapshot on
 		// BOTH "never" and "immediately" (only "eventually" leaves it untouched — see
 		// packages/element/src/store.ts processAction, verified against core version

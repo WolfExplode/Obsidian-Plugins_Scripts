@@ -68,6 +68,8 @@ interface ExcalidrawApi {
 		offsetLeft?: number;
 		offsetTop?: number;
 		zenModeEnabled?: boolean;
+		gridModeEnabled?: boolean;
+		gridSize?: number;
 		boxSelectionMode?: "contain" | "overlap";
 		selectedElementIds?: Record<string, boolean>;
 		/** Non-null while Excalidraw is editing inside a group's constituents. */
@@ -1519,6 +1521,24 @@ export function clientToSceneCoords(leaf: WorkspaceLeaf | null, clientX: number,
 			x: (clientX - (s.offsetLeft ?? 0)) / zoom - s.scrollX,
 			y: (clientY - (s.offsetTop ?? 0)) / zoom - s.scrollY,
 		};
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Returns the active grid spacing, or null when grid snapping is disabled.
+ * This mirrors Excalidraw's `getEffectiveGridSize()`: a configured grid only
+ * affects element movement while grid mode itself is enabled.
+ */
+export function getEffectiveGridSize(leaf: WorkspaceLeaf | null): number | null {
+	const api = getExcalidrawApi(leaf);
+	if (!api) return null;
+	try {
+		const state = api.getAppState();
+		return state.gridModeEnabled && typeof state.gridSize === "number" && state.gridSize > 0
+			? state.gridSize
+			: null;
 	} catch {
 		return null;
 	}
