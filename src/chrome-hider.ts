@@ -42,8 +42,26 @@ export function applyChromeHiding(doc: Document): () => void {
 
 	hideAll();
 
-	const observer = new MutationObserver(() => hideAll());
+	// Excalidraw's React UI mutates the DOM continuously (toolbar state, cursor
+	// overlays, selection handles), and each of those mutations can trigger a
+	// separate observer callback within the same frame. Coalescing to one
+	// hideAll() per animation frame avoids re-running all 11 querySelectorAll
+	// scans once per mutation.
+	const win = doc.defaultView ?? window;
+	let rafId: number | null = null;
+	const scheduleHideAll = () => {
+		if (rafId != null) return;
+		rafId = win.requestAnimationFrame(() => {
+			rafId = null;
+			hideAll();
+		});
+	};
+
+	const observer = new MutationObserver(scheduleHideAll);
 	observer.observe(doc.body, { childList: true, subtree: true });
 
-	return () => observer.disconnect();
+	return () => {
+		observer.disconnect();
+		if (rafId != null) win.cancelAnimationFrame(rafId);
+	};
 }

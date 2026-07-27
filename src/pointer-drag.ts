@@ -44,27 +44,50 @@ export interface PointerDragHandle {
  * (modifier keys, a held key, button) and their drag-threshold semantics.
  */
 export function attachPointerDrag<TGesture>(win: Window, callbacks: PointerDragCallbacks<TGesture>): PointerDragHandle {
-	let active: { startX: number; startY: number; gesture: TGesture } | null = null;
+	let active: {
+		startX: number;
+		startY: number;
+		gesture: TGesture;
+		rafId: number | null;
+		pendingEvent: PointerEvent | null;
+	} | null = null;
+
+	const cancelPendingFrame = () => {
+		if (active?.rafId != null) win.cancelAnimationFrame(active.rafId);
+	};
 
 	const onPointerDown = (event: PointerEvent) => {
 		if (active) return;
 		const gesture = callbacks.onStart(event);
 		if (gesture === null) return;
-		active = { startX: event.clientX, startY: event.clientY, gesture };
+		active = { startX: event.clientX, startY: event.clientY, gesture, rafId: null, pendingEvent: null };
 		event.preventDefault();
 		event.stopImmediatePropagation();
 	};
 
+	// Coalesces onMove to one call per animation frame: only the latest
+	// pointermove's position matters (matching window-drag.ts's pendingDelta
+	// pattern), so a high-poll-rate mouse doesn't force a style recalc per event.
 	const onPointerMove = (event: PointerEvent) => {
 		if (!active) return;
-		callbacks.onMove?.(event, active.gesture);
 		event.preventDefault();
 		event.stopImmediatePropagation();
+		active.pendingEvent = event;
+		if (active.rafId == null) {
+			active.rafId = win.requestAnimationFrame(() => {
+				if (!active) return;
+				active.rafId = null;
+				const pending = active.pendingEvent;
+				active.pendingEvent = null;
+				if (pending) callbacks.onMove?.(pending, active.gesture);
+			});
+		}
 	};
 
 	const onPointerUp = (event: PointerEvent) => {
 		if (!active) return;
 		const { startX, startY, gesture } = active;
+		cancelPendingFrame();
 		active = null;
 		event.preventDefault();
 		event.stopImmediatePropagation();
@@ -77,6 +100,7 @@ export function attachPointerDrag<TGesture>(win: Window, callbacks: PointerDragC
 
 	return {
 		dispose() {
+			cancelPendingFrame();
 			active = null;
 			win.removeEventListener("pointerdown", onPointerDown, true);
 			win.removeEventListener("pointermove", onPointerMove, true);
@@ -84,6 +108,7 @@ export function attachPointerDrag<TGesture>(win: Window, callbacks: PointerDragC
 		},
 		isActive: () => active !== null,
 		cancel() {
+			cancelPendingFrame();
 			active = null;
 		},
 	};

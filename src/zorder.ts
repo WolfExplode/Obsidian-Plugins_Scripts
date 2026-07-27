@@ -83,9 +83,15 @@ export function planOverlapAwareZOrderMove(
 
 	for (const group of groups) {
 		// Re-resolve this run's current indices by id: an earlier run processed in
-		// this same call may have shifted everything ahead of (or behind) it.
+		// this same call may have shifted everything ahead of (or behind) it. A
+		// single id->index pass replaces one findIndex scan per id.
 		const ids = group.map((index) => allElements[index].id);
-		const indices = ids.map((id) => elements.findIndex((element) => element.id === id)).sort((a, b) => a - b);
+		const idSet = new Set(ids);
+		const indices: number[] = [];
+		elements.forEach((element, index) => {
+			if (idSet.has(element.id)) indices.push(index);
+		});
+		indices.sort((a, b) => a - b);
 		const runStart = indices[0];
 		const runEnd = indices[indices.length - 1];
 		const run = elements.slice(runStart, runEnd + 1);
