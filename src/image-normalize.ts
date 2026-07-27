@@ -42,8 +42,10 @@ export async function normalizeSelectedImages(leaf: WorkspaceLeaf | null, mode: 
 	let images: ImageElement[];
 	try {
 		const selected = api.getAppState().selectedElementIds ?? {};
+		// "scale" resets to native image pixel scale, which only applies to images with a fileId.
+		const isNormalizableType = mode === "scale" ? (type: string) => type === "image" : (type: string) => type === "image" || type === "embeddable";
 		images = api.getSceneElements().filter((element) =>
-			element.type === "image" && !element.isDeleted && !!selected[element.id] && element.width > 0 && element.height > 0,
+			isNormalizableType(element.type) && !element.isDeleted && !!selected[element.id] && element.width > 0 && element.height > 0,
 		);
 	} catch {
 		return false;
