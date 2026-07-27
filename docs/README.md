@@ -12,6 +12,7 @@ find the right context before changing code or investigating behavior.
 | Understand a durable architectural or product decision | [ADRs](adr/) | The ADR covering the decision |
 | Understand Popout ownership and lifecycle | [Popout lifecycle](popout-lifecycle.md) | [Window event listeners](integrations/obsidian-window-event-listeners.md) |
 | Work with vault images or an Excalidraw image element's `fileId` | [Generated-image lifecycle](integrations/obsidian-excalidraw-generated-images.md) | — |
+| Load a vault file into a `<video>`/`<img>` by URL | [Media URL schemes](integrations/obsidian-media-url-schemes.md) | — |
 | Check whether a rendering quirk is an accepted upstream limitation before investigating it as a bug | [Excalidraw embeddable z-order limitation](integrations/excalidraw-embeddable-z-order-limitation.md), [Obsidian Canvas image-embed stretch fix](integrations/obsidian-canvas-image-stretch-fix.md) | — |
 | Research a known problem, failed experiment, or paused direction | [Investigations](investigations/) | Treat findings as context, not an implementation plan |
 
@@ -34,6 +35,7 @@ find the right context before changing code or investigating behavior.
 | A shortcut owned by Obsidian or another plugin | [Obsidian hotkey interception](integrations/obsidian-hotkey-interception.md) |
 | Dropped/imported attachment filenames or wikilink-unsafe characters | [Obsidian wikilink-unsafe attachment names](integrations/obsidian-wikilink-attachment-names.md) |
 | Window-, Popout-, or DOM-level event listeners | [Obsidian window event listeners](integrations/obsidian-window-event-listeners.md) and [Popout lifecycle](popout-lifecycle.md) |
+| Local media loaded by URL in any window (`file://` vs `getResourcePath`) | [Media URL schemes](integrations/obsidian-media-url-schemes.md) |
 | Architecture, scope, or product-boundary changes | The relevant [ADR](adr/) before implementation |
 | Transparent Popouts or `Uncaught illegal access` | The relevant [investigation](investigations/) and its linked ADRs; do not treat experimental routes as current behavior |
 

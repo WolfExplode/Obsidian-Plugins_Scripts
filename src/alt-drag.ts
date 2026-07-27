@@ -1,5 +1,5 @@
 import type { App } from "obsidian";
-import { findExcalidrawLeafForNode } from "./excalidraw-view";
+import { findCanvasLeaf } from "./pointer-drag";
 
 const RELAYED_POINTER_EVENT = "__eprAltDragRelayed";
 
@@ -42,8 +42,7 @@ export function attachAltDragDuplicateBlocker(win: Window, app: App): () => void
 	const shouldRelayMove = (event: PointerEvent): boolean => {
 		if ((event as unknown as Record<string, unknown>)[RELAYED_POINTER_EVENT]) return false;
 		if (!event.altKey || event.shiftKey || event.ctrlKey || event.metaKey) return false;
-		const target = event.target as HTMLElement | null;
-		return !!target && target.tagName === "CANVAS" && !!findExcalidrawLeafForNode(app, target);
+		return !!findCanvasLeaf(app, event.target);
 	};
 
 	const onPointerMove = (event: PointerEvent) => {

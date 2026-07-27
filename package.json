@@ -7,7 +7,8 @@
 		"dev": "node esbuild.config.mjs",
 		"build": "tsc --noEmit --skipLibCheck && node esbuild.config.mjs production",
 		"check": "tsc --noEmit --skipLibCheck && node --check main.js",
-		"verify": "npm run build && node verify-build.mjs",
+		"test": "node tests/run.mjs",
+		"verify": "npm run build && node verify-build.mjs && npm test",
 		"version": "node version-bump.mjs && git add manifest.json versions.json"
 	},
 	"keywords": [],

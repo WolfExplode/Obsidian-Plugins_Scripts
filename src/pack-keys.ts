@@ -1,4 +1,5 @@
 import type { App } from "obsidian";
+import { isEditableTarget } from "./editable-target";
 import {
 	findExcalidrawLeafForNode,
 	optimalPackSelectedElements,
@@ -12,13 +13,6 @@ const KEY_TO_DIRECTION: Record<string, PackDirection> = {
 	ArrowLeft: "left",
 	ArrowRight: "right",
 };
-
-/** True while focus is in a field where arrows should type/navigate, not pack. */
-function isEditableTarget(target: EventTarget | null): boolean {
-	const el = target as HTMLElement | null;
-	if (!el || typeof el.tagName !== "string") return false;
-	return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable === true;
-}
 
 /**
  * Binds the PureRef arranges to a window (the main window or a Popout — each

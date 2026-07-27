@@ -1,0 +1,268 @@
+import type { EventRef, Events, WorkspaceLeaf } from "obsidian";
+import type ExcalidrawPureRefPlugin from "../main";
+import { isExcalidrawLeaf } from "./excalidraw-view";
+
+/**
+ * The shared lifecycle behind every per-view scene watcher: video-aspect.ts,
+ * animated-image-drop.ts, and media-auto-pack.ts.
+ *
+ * All three want the same thing — "run my scan whenever any Excalidraw view's
+ * scene changes, in the main window and every Popout, attaching to views as they
+ * mount and detaching as they close" — and each had grown its own copy of the
+ * attach/prune/reconcile/retry machinery. They differ only in what per-leaf state
+ * they seed and what they do on a change, which is what `setup` and `scan` are.
+ *
+ * Consolidating matters beyond deduplication: `isApiDestroyed` below encodes a
+ * bug that silently broke Popout support once already (see its comment), and
+ * three hand-maintained copies is three chances to get it wrong again.
+ */
+
+/** How long to keep retrying attachment while a view's API finishes mounting. */
+const READY_RETRY_MS = 300;
+const READY_RETRY_MAX = 20;
+
+/**
+ * The minimal Excalidraw element shape the seeding logic reads. Deliberately a
+ * permissive superset of what the three consumers need, so each can narrow it to
+ * its own element interface without the scanner knowing about images vs embeds.
+ */
+export interface ScannerElement {
+	id?: string;
+	type?: string;
+	fileId?: string | null;
+	link?: string | null;
+	isDeleted?: boolean;
+}
+
+/** The slice of the Excalidraw imperative API a per-view scanner needs. */
+export interface LeafScannerApi {
+	onChange(cb: () => void): () => void;
+	getSceneElements(): readonly ScannerElement[];
+	/**
+	 * In the bundled Excalidraw this is a boolean PROPERTY, not a method — some
+	 * builds may expose it as a getter/function, so callers must handle both.
+	 */
+	isDestroyed?: boolean | (() => boolean);
+}
+
+/**
+ * Whether a view's API reports itself torn down, tolerating property-or-method form.
+ *
+ * DO NOT collapse this to `api.isDestroyed?.()`. In the bundled Excalidraw
+ * `isDestroyed` is a boolean *property*, so `?.()` becomes `false.call(api)` and
+ * throws "d.call is not a function". That throw is silent and nasty: it fired
+ * inside `prune()`, which only iterates once a leaf is attached — so the first
+ * (empty) reconcile attached the main window fine, then every later reconcile
+ * threw before reaching the popout leaf. Net effect was the corrector working in
+ * the main window but never in popouts, with no error surfaced.
+ */
+export function isApiDestroyed(api: LeafScannerApi): boolean {
+	const destroyed = api.isDestroyed;
+	return typeof destroyed === "function" ? destroyed() === true : destroyed === true;
+}
+
+export function getLeafScannerApi(leaf: WorkspaceLeaf): LeafScannerApi | null {
+	const api = (leaf.view as unknown as { excalidrawAPI?: Partial<LeafScannerApi> }).excalidrawAPI;
+	if (!api || typeof api.onChange !== "function" || typeof api.getSceneElements !== "function") return null;
+	return api as LeafScannerApi;
+}
+
+/**
+ * Whether the Excalidraw view is still loading its saved scene into the API.
+ *
+ * The Excalidraw plugin sets `view.semaphores.justLoaded = true` before it
+ * populates the API with a file's persisted elements, clearing it again on the
+ * first `onChange` after that population completes. Without this, seeding "seen"
+ * the instant the API exists can race the persisted elements landing — every
+ * element already on a board opened for the first time then looks like a
+ * brand-new insert. Fails open (seeds immediately) if the property is absent.
+ */
+export function isLeafStillLoading(leaf: WorkspaceLeaf): boolean {
+	return (leaf.view as unknown as { semaphores?: { justLoaded?: boolean } }).semaphores?.justLoaded === true;
+}
+
+/** The document a leaf's view lives in, or null. */
+export function leafDocument(leaf: WorkspaceLeaf): Document | null {
+	return (leaf.view as unknown as { containerEl?: HTMLElement }).containerEl?.ownerDocument ?? null;
+}
+
+/** "MAIN" or "POPOUT" for a leaf, by which window its view lives in. */
+export function leafWindowLabel(leaf: WorkspaceLeaf): "MAIN" | "POPOUT" {
+	return leafDocument(leaf)?.defaultView === window ? "MAIN" : "POPOUT";
+}
+
+/** Live view onto the scanner, for event handlers and debug hooks. */
+export interface LeafScannerHandle<TState> {
+	/** Every currently-attached leaf with its state. */
+	entries(): Array<[WorkspaceLeaf, TState]>;
+	/** Re-run `scan` for one attached leaf. No-op if it isn't attached. */
+	rescan(leaf: WorkspaceLeaf): void;
+	/** Attach newly-mounted views and drop closed ones. */
+	reconcile(): void;
+	isDisposed(): boolean;
+}
+
+export interface LeafScannerOptions<TState> {
+	/**
+	 * Build this leaf's state once its API is mounted and its saved scene has
+	 * loaded. Return null to report "not ready yet" and be retried.
+	 */
+	setup(leaf: WorkspaceLeaf, api: LeafScannerApi, scanner: LeafScannerHandle<TState>): TState | null;
+	/** Runs on every scene change for an attached leaf. */
+	scan(leaf: WorkspaceLeaf, state: TState, scanner: LeafScannerHandle<TState>): void;
+	/** Extra per-leaf cleanup, beyond unsubscribing from onChange. */
+	teardown?(leaf: WorkspaceLeaf, state: TState): void;
+	/**
+	 * Extra listeners/hooks owned for the scanner's lifetime. Returns disposers
+	 * rather than EventRefs on purpose: an EventRef must be released through the
+	 * SAME emitter it was registered on, and `Vault` and `Workspace` are separate
+	 * `Events` instances. Passing a vault ref to `workspace.offref` silently does
+	 * nothing and leaks the listener across a plugin reload — which is exactly the
+	 * bug the previous hand-rolled copies of this loop had.
+	 */
+	extras?(scanner: LeafScannerHandle<TState>): Array<() => void>;
+}
+
+/** Registers an Obsidian event and returns a disposer bound to the right emitter. */
+export function onEvent(emitter: Events, register: () => EventRef): () => void {
+	const ref = register();
+	return () => emitter.offref(ref);
+}
+
+/**
+ * Installs a scene-change scanner across every Excalidraw view — main window and
+ * Popouts alike. Returns a dispose function.
+ *
+ * Path-independent by design: it reacts to scene changes rather than to drops or
+ * paste events, so it catches every way media can reach a board (drag-drop,
+ * paste, the "Insert File From Vault" modal) with no timing race.
+ */
+export function attachPerLeafScanner<TState>(
+	plugin: ExcalidrawPureRefPlugin,
+	options: LeafScannerOptions<TState>,
+): () => void {
+	const states = new Map<WorkspaceLeaf, TState>();
+	const unsubscribes = new Map<WorkspaceLeaf, () => void>();
+	let disposed = false;
+	let retryTimer: number | null = null;
+	let retriesLeft = READY_RETRY_MAX;
+
+	const release = (leaf: WorkspaceLeaf) => {
+		const state = states.get(leaf);
+		try {
+			unsubscribes.get(leaf)?.();
+		} catch {
+			/* view already torn down */
+		}
+		unsubscribes.delete(leaf);
+		states.delete(leaf);
+		if (state !== undefined) {
+			try {
+				options.teardown?.(leaf, state);
+			} catch {
+				/* view already torn down */
+			}
+		}
+	};
+
+	/** False means "an Excalidraw view exists but isn't ready" — retry shortly. */
+	const attach = (leaf: WorkspaceLeaf): boolean => {
+		if (states.has(leaf)) return true;
+		if (!isExcalidrawLeaf(leaf)) return true; // not our concern; treat as settled
+		const api = getLeafScannerApi(leaf);
+		if (!api) return false; // an Excalidraw view whose API hasn't mounted yet
+		// Wait for the persisted elements to land before seeding "already seen".
+		if (isLeafStillLoading(leaf)) return false;
+
+		let state: TState | null;
+		try {
+			state = options.setup(leaf, api, handle);
+		} catch {
+			return false;
+		}
+		if (state === null) return false;
+
+		states.set(leaf, state);
+		try {
+			unsubscribes.set(
+				leaf,
+				api.onChange(() => {
+					if (disposed) return;
+					options.scan(leaf, state as TState, handle);
+				}),
+			);
+		} catch {
+			states.delete(leaf);
+			try {
+				options.teardown?.(leaf, state);
+			} catch {
+				/* ignore */
+			}
+			return false;
+		}
+		return true;
+	};
+
+	/** Drops subscriptions for views that have closed or been destroyed. */
+	const prune = () => {
+		for (const leaf of Array.from(states.keys())) {
+			const api = getLeafScannerApi(leaf);
+			if (isExcalidrawLeaf(leaf) && api && !isApiDestroyed(api)) continue;
+			release(leaf);
+		}
+	};
+
+	const reconcile = () => {
+		if (disposed) return;
+		prune();
+		let allReady = true;
+		plugin.app.workspace.iterateAllLeaves((leaf) => {
+			if (!isExcalidrawLeaf(leaf)) return;
+			if (!attach(leaf)) allReady = false;
+		});
+		// A just-opened view's imperative API mounts a beat after the workspace
+		// event fires; keep retrying briefly until it's there.
+		if (!allReady && retriesLeft > 0 && retryTimer == null) {
+			retriesLeft--;
+			retryTimer = window.setTimeout(() => {
+				retryTimer = null;
+				reconcile();
+			}, READY_RETRY_MS);
+		} else if (allReady) {
+			retriesLeft = READY_RETRY_MAX;
+		}
+	};
+
+	const handle: LeafScannerHandle<TState> = {
+		entries: () => Array.from(states.entries()),
+		rescan: (leaf) => {
+			if (disposed) return;
+			const state = states.get(leaf);
+			if (state !== undefined) options.scan(leaf, state, handle);
+		},
+		reconcile,
+		isDisposed: () => disposed,
+	};
+
+	const workspace = plugin.app.workspace;
+	const disposers: Array<() => void> = [
+		onEvent(workspace, () => workspace.on("layout-change", reconcile)),
+		onEvent(workspace, () => workspace.on("active-leaf-change", reconcile)),
+		...(options.extras?.(handle) ?? []),
+	];
+
+	reconcile();
+
+	return () => {
+		disposed = true;
+		if (retryTimer != null) window.clearTimeout(retryTimer);
+		for (const dispose of disposers) {
+			try {
+				dispose();
+			} catch {
+				/* ignore */
+			}
+		}
+		for (const leaf of Array.from(states.keys())) release(leaf);
+	};
+}

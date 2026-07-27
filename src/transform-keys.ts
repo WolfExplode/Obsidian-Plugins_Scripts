@@ -1,4 +1,5 @@
 import type { App } from "obsidian";
+import { isEditableTarget } from "./editable-target";
 import {
 	applySelectionTransform,
 	clientToSceneCoords,
@@ -9,6 +10,7 @@ import {
 	resetSelectedRotation,
 	type TransformElement,
 } from "./excalidraw-view";
+import { leafDocument } from "./leaf-scanner";
 
 type TransformMode = "move" | "rotate" | "scale";
 const ROTATION_SNAP_RADIANS = 15 * Math.PI / 180;
@@ -53,15 +55,27 @@ let lastPointer: {
 	y: number;
 } | null = null;
 
-/** The document owning a leaf's view, where its mode cursor belongs. */
-function leafDocument(leaf: ActiveTransform["leaf"]): Document | null {
-	return (leaf.view as unknown as { containerEl?: HTMLElement }).containerEl?.ownerDocument ?? null;
-}
-
-function isEditableTarget(target: EventTarget | null): boolean {
-	const element = target as HTMLElement | null;
-	if (!element || typeof element.tagName !== "string") return false;
-	return element.tagName === "INPUT" || element.tagName === "TEXTAREA" || element.isContentEditable;
+/**
+ * Drops shared state pointing into a window that is going away.
+ *
+ * Both `active` and `lastPointer` hold a WorkspaceLeaf, and a leaf transitively
+ * retains its whole Excalidraw view and scene. `active` is cleared by the normal
+ * commit/cancel paths, but `lastPointer` is only ever overwritten — so without
+ * this a closed Popout's leaf stays reachable until the pointer next moves over a
+ * different one. Called from each window's disposer with that window's document.
+ * A leaf whose view no longer reports a document is treated as stale regardless
+ * of which disposer noticed it.
+ */
+function releaseStateForDocument(doc: Document): void {
+	const isStale = (leaf: ActiveTransform["leaf"]) => {
+		const owner = leafDocument(leaf);
+		return owner === doc || owner === null;
+	};
+	if (active && isStale(active.leaf)) {
+		active.cursorDoc?.body.style.removeProperty("cursor");
+		active = null;
+	}
+	if (lastPointer && isStale(lastPointer.leaf)) lastPointer = null;
 }
 
 function selectionCenter(elements: readonly TransformElement[]): ScenePoint {
@@ -215,9 +229,16 @@ export function attachTransformKeydown(win: Window, app: App): () => void {
 		}
 		// Blender-style resets, the counterpart to the modal R/S below: Alt+R clears
 		// rotation, Alt+S restores native pixel size. Both keys are already reserved
-		// inside a Board — Alt+S because Excalidraw's object-snap shortcut is dropped,
-		// Alt+R because it is held back from Templater — so consuming them here takes
-		// nothing away. Skipped while a modal transform is running, which owns the
+		// inside a Board — Alt+R because it is held back from Templater (see alt-r.ts)
+		// — so consuming them here takes nothing away. This also incidentally drops
+		// Excalidraw's own Alt+S "toggle object snap" shortcut, which is the point:
+		// that action force-disables grid mode unconditionally
+		// (actionToggleObjectsSnapMode.tsx), so an accidental Alt+S would silently
+		// turn the grid off. Consuming Alt+S here, unconditionally and before
+		// Excalidraw's own bubble-phase handler runs, is what prevents that — a
+		// separate snap-keys.ts module used to do this same consume but registered
+		// after this one, so it never actually ran; it was removed rather than kept
+		// as dead code. Skipped while a modal transform is running, which owns the
 		// keyboard until it commits or cancels.
 		if (
 			!active &&
@@ -365,7 +386,11 @@ export function attachTransformKeydown(win: Window, app: App): () => void {
 	win.addEventListener("contextmenu", onContextMenu, true);
 	win.addEventListener("blur", onBlur);
 	return () => {
+		// Restore the scene first if this window owns the in-flight transform, then
+		// drop any remaining shared references into this window (see
+		// releaseStateForDocument) so its leaf isn't retained after teardown.
 		if (ownsActive()) cancel();
+		releaseStateForDocument(doc);
 		win.removeEventListener("keydown", onKeyDown, true);
 		win.removeEventListener("pointermove", onPointerMove, true);
 		win.removeEventListener("pointerdown", onPointerDown, true);

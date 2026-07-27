@@ -35,15 +35,7 @@ import { attachWindowDrag } from "./window-drag";
 import { applyChromeHiding } from "./chrome-hider";
 import { attachPopoutDropBridge } from "./popout-drop-bridge";
 import { attachInsertModalAutoConfirm } from "./insert-modal-autoconfirm";
-import { attachPackKeydown } from "./pack-keys";
-import { attachZOrderKeydown } from "./zorder-keys";
-import { attachCropDrag } from "./crop-drag";
-import { attachOpacityKeydown } from "./opacity-keys";
-import { attachFlipDrag } from "./flip-drag";
-import { attachAltDragDuplicateBlocker } from "./alt-drag";
-import { attachTransformKeydown } from "./transform-keys";
-import { attachSnapKeyBlocker } from "./snap-keys";
-import { attachImageNormalize } from "./image-normalize";
+import { attachBoardGestures } from "./board-gestures";
 import { ExcalidrawRefitSuspender } from "./excalidraw-settings";
 import {
 	EXCALIDRAW_VIEW_TYPE,
@@ -90,15 +82,8 @@ interface OpenBoardPopout {
 	detachDropBridge: (() => void) | null;
 	detachInsertModal: (() => void) | null;
 	detachBoundsSaving: (() => void) | null;
-	detachPackKeys: (() => void) | null;
-	detachOpacityKeys: (() => void) | null;
-	detachZOrderKeys: (() => void) | null;
-	detachCropDrag: (() => void) | null;
-	detachFlipDrag: (() => void) | null;
-	detachAltDragBlocker: (() => void) | null;
-	detachTransformKeys: (() => void) | null;
-	detachImageNormalize: (() => void) | null;
-	detachSnapKeys: (() => void) | null;
+	/** Every PureRef Board gesture (pack, z-order, opacity, crop, flip, ...), torn down together. */
+	detachGestures: (() => void) | null;
 }
 
 interface PendingOpen {
@@ -423,15 +408,7 @@ export class PopoutManager {
 			detachDropBridge: null,
 			detachInsertModal: null,
 			detachBoundsSaving: null,
-			detachPackKeys: null,
-			detachOpacityKeys: null,
-			detachZOrderKeys: null,
-			detachCropDrag: null,
-			detachFlipDrag: null,
-			detachAltDragBlocker: null,
-			detachTransformKeys: null,
-			detachImageNormalize: null,
-			detachSnapKeys: null,
+			detachGestures: null,
 		};
 		this.pending = {
 			filePath: file.path,
@@ -632,28 +609,13 @@ export class PopoutManager {
 		entry.detachDropBridge?.();
 		entry.detachInsertModal?.();
 		entry.detachBoundsSaving?.();
-		entry.detachPackKeys?.();
-		entry.detachOpacityKeys?.();
-		entry.detachCropDrag?.();
-		entry.detachFlipDrag?.();
-		entry.detachAltDragBlocker?.();
-		entry.detachTransformKeys?.();
-		entry.detachImageNormalize?.();
-		entry.detachSnapKeys?.();
+		entry.detachGestures?.();
 		entry.detachWindowDrag = null;
 		entry.detachChromeHiding = null;
 		entry.detachDropBridge = null;
 		entry.detachInsertModal = null;
 		entry.detachBoundsSaving = null;
-		entry.detachPackKeys = null;
-		entry.detachOpacityKeys = null;
-		entry.detachZOrderKeys = null;
-		entry.detachCropDrag = null;
-		entry.detachFlipDrag = null;
-		entry.detachAltDragBlocker = null;
-		entry.detachTransformKeys = null;
-		entry.detachImageNormalize = null;
-		entry.detachSnapKeys = null;
+		entry.detachGestures = null;
 		this.refitSuspender.resume();
 	}
 
@@ -808,15 +770,7 @@ export class PopoutManager {
 			entry.detachDropBridge?.();
 			entry.detachInsertModal?.();
 			entry.detachBoundsSaving?.();
-			entry.detachPackKeys?.();
-			entry.detachOpacityKeys?.();
-			entry.detachZOrderKeys?.();
-			entry.detachCropDrag?.();
-			entry.detachFlipDrag?.();
-			entry.detachAltDragBlocker?.();
-			entry.detachTransformKeys?.();
-			entry.detachImageNormalize?.();
-			entry.detachSnapKeys?.();
+			entry.detachGestures?.();
 		}
 		this.openBoards.clear();
 		// If unload lands during setViewState/Excalidraw mount, detaching in the
@@ -885,19 +839,11 @@ export class PopoutManager {
 		entry.detachChromeHiding = applyChromeHiding(doc);
 		entry.detachDropBridge = attachPopoutDropBridge(doc);
 		entry.detachInsertModal = attachInsertModalAutoConfirm(doc);
-		if (doc.defaultView) entry.detachPackKeys = attachPackKeydown(doc.defaultView, this.plugin.app);
-		if (doc.defaultView) entry.detachZOrderKeys = attachZOrderKeydown(doc.defaultView, this.plugin.app);
 		if (doc.defaultView) {
-			entry.detachOpacityKeys = attachOpacityKeydown(doc.defaultView, this.plugin.app, {
-				onNoSelection: (direction) => this.adjustFocusedPopoutOpacity(direction),
+			entry.detachGestures = attachBoardGestures(doc.defaultView, this.plugin.app, {
+				opacity: { onNoSelection: (direction) => this.adjustFocusedPopoutOpacity(direction) },
 			});
 		}
-		if (doc.defaultView) entry.detachCropDrag = attachCropDrag(doc.defaultView, this.plugin.app);
-		if (doc.defaultView) entry.detachFlipDrag = attachFlipDrag(doc.defaultView, this.plugin.app);
-		if (doc.defaultView) entry.detachAltDragBlocker = attachAltDragDuplicateBlocker(doc.defaultView, this.plugin.app);
-		if (doc.defaultView) entry.detachTransformKeys = attachTransformKeydown(doc.defaultView, this.plugin.app);
-		if (doc.defaultView) entry.detachImageNormalize = attachImageNormalize(doc.defaultView, this.plugin.app);
-		if (doc.defaultView) entry.detachSnapKeys = attachSnapKeyBlocker(doc.defaultView, this.plugin.app);
 		entry.detachBoundsSaving = onWindowCloseById(newWindowId, () =>
 			this.persistWindowBounds(filePath, entry),
 		);

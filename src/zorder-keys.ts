@@ -1,12 +1,6 @@
 import type { App } from "obsidian";
+import { isEditableTarget } from "./editable-target";
 import { bringSelectionPastOverlap, findExcalidrawLeafForNode } from "./excalidraw-view";
-
-/** True while focus is in a field where brackets should type, not reorder. */
-function isEditableTarget(target: EventTarget | null): boolean {
-	const el = target as HTMLElement | null;
-	if (!el || typeof el.tagName !== "string") return false;
-	return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable === true;
-}
 
 /**
  * Overlap-aware Ctrl/Cmd+]/[ (Bring Forward / Send Backward) -- see

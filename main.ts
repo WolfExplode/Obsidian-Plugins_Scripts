@@ -2,28 +2,26 @@ import { Plugin, WorkspaceWindow } from "obsidian";
 import { GeometryStore } from "src/geometry-store";
 import { PopoutManager } from "src/popout-manager";
 import { ExcalidrawPureRefSettingTab } from "src/settings-tab";
-import { DEFAULT_SETTINGS, ExcalidrawPureRefSettings } from "src/settings";
 import { getActiveExcalidrawFile, getActiveExcalidrawLeaf } from "src/excalidraw-view";
 import { exportSelectedMedia } from "src/media-export";
-import { attachPackKeydown } from "src/pack-keys";
+import { attachBoardGestures } from "src/board-gestures";
 import { attachPopoutDropBridge } from "src/popout-drop-bridge";
 import { attachInsertModalAutoConfirm } from "src/insert-modal-autoconfirm";
 import { attachAnimatedImageEmbedConversion } from "src/animated-image-drop";
 import { attachVideoAspectCorrector } from "src/video-aspect";
 import { attachMediaAutoPack } from "src/media-auto-pack";
-import { attachCropDrag, installCropDebugHook } from "src/crop-drag";
-import { attachOpacityKeydown } from "src/opacity-keys";
-import { attachZOrderKeydown } from "src/zorder-keys";
-import { attachFlipDrag } from "src/flip-drag";
-import { attachAltDragDuplicateBlocker } from "src/alt-drag";
-import { attachTransformKeydown } from "src/transform-keys";
-import { attachSnapKeyBlocker } from "src/snap-keys";
+import { installCropDebugHook } from "src/crop-drag";
 import { attachAltRHotkey } from "src/alt-r";
-import { attachImageNormalize } from "src/image-normalize";
 import { installKeyRelay, removeKeyRelay, cleanupOrphanPrototypes } from "src/transparent-proto";
 
+/**
+ * There is deliberately no settings object. Per ADR 0005 v1 has no user-facing
+ * knobs: the hotkeys are configured through Obsidian's own Hotkeys page, and the
+ * only persisted state is per-Board window geometry, which GeometryStore owns.
+ * The settings TAB still exists (settings-tab.ts) as documentation plus the
+ * "forget remembered popout positions" action.
+ */
 export default class ExcalidrawPureRefPlugin extends Plugin {
-	settings: ExcalidrawPureRefSettings = DEFAULT_SETTINGS;
 	geometry!: GeometryStore;
 	popouts!: PopoutManager;
 	private diagnosticEvents: Array<{ timestamp: number; type: string; data: unknown }> = [];
@@ -55,12 +53,11 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 		cleanupOrphanPrototypes(this);
 		installKeyRelay((msg) => this.popouts.handleReadOnlyKey(msg));
 
-		// PureRef-style Ctrl+Arrow pack in the main window. Popout windows get
-		// their own binding when they open (see PopoutManager). Capture-phase, so
-		// it preempts Excalidraw's own arrow handling — see attachPackKeydown.
-		this.register(attachPackKeydown(window, this.app));
-		this.register(attachOpacityKeydown(window, this.app));
-		this.register(attachZOrderKeydown(window, this.app));
+		// Every PureRef Board gesture (pack, z-order, opacity, hold-C crop, flip,
+		// alt-drag blocking, modal transforms, Normalize) bound to the main window
+		// in one call. Popout windows get their own binding when they open — see
+		// PopoutManager, which calls the same attachBoardGestures.
+		this.register(attachBoardGestures(window, this.app));
 
 		// Sanitize wikilink-unsafe characters out of dropped attachment filenames
 		// in the main window. Popout windows get their own bridge when they open
@@ -76,25 +73,15 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 		this.register(attachMediaAutoPack(this));
 		this.register(attachPopoutDropBridge(window.document, { alwaysBridge: false }));
 
-		// PureRef-style hold-C + drag to crop the selected images, in the main window.
-		// Popouts get their own binding when they open (see PopoutManager), so the
-		// edit window inherits the feature. The console hook (window.__eprCropDebug)
-		// stays available to drive the same crop primitive without a pointer gesture.
-		this.register(attachCropDrag(window, this.app));
-		this.register(attachFlipDrag(window, this.app));
-		this.register(attachAltDragDuplicateBlocker(window, this.app));
-		this.register(attachTransformKeydown(window, this.app));
-		this.register(attachImageNormalize(window, this.app));
-		// Drop Excalidraw's Alt+S "toggle object snap" shortcut inside a Board, since
-		// it also force-disables grid mode. Popouts get their own binding in
-		// PopoutManager. See attachSnapKeyBlocker.
-		this.register(attachSnapKeyBlocker(window, this.app));
+		// The console hook (window.__eprCropDebug) stays available to drive the
+		// hold-C crop primitive (bound above via attachBoardGestures) without a
+		// pointer gesture.
+		this.register(installCropDebugHook(this.app));
 		// Claim Alt+R while a drawing is the active leaf so it stops triggering
 		// Templater (which errors with no markdown editor). Reserved for an upcoming
 		// feature. Rides Obsidian's global keymap, so one registration covers popouts
 		// too — see attachAltRHotkey.
 		this.register(attachAltRHotkey(this));
-		this.register(installCropDebugHook(this.app));
 
 		// Skip the Excalidraw "Insert File From Vault" popup when it offers only one
 		// option (e.g. a dropped video → "as Embeddable"). Popouts get their own

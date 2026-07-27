@@ -1,11 +1,19 @@
-import type { EventRef, WorkspaceLeaf } from "obsidian";
+import type { WorkspaceLeaf } from "obsidian";
 import type ExcalidrawPureRefPlugin from "../main";
 import { localLinkpath } from "./board-render";
 import { getSceneElementFile, isExcalidrawLeaf, optimalPackElementsById, readSceneElements } from "./excalidraw-view";
 import { desanitizeAttachmentName } from "./popout-drop-bridge";
+import { attachPerLeafScanner, onEvent, type LeafScannerApi, type LeafScannerHandle } from "./leaf-scanner";
 
-const READY_RETRY_MS = 300;
-const READY_RETRY_MAX = 20;
+/**
+ * Packs imported media only after every file in an observed import transaction
+ * has produced its matching scene element. Drop/paste handlers provide the
+ * transaction's expected files; scene changes provide the authoritative commit
+ * signal. No elapsed-time debounce is used.
+ *
+ * The attach/detach lifecycle across the main window and every Popout is shared
+ * with the other scene watchers — see leaf-scanner.ts.
+ */
 
 interface MediaElement {
 	id?: string;
@@ -13,12 +21,6 @@ interface MediaElement {
 	fileId?: string | null;
 	link?: string | null;
 	isDeleted?: boolean;
-}
-
-interface MediaPackApi {
-	onChange(cb: () => void): () => void;
-	getSceneElements(): readonly MediaElement[];
-	isDestroyed?: boolean | (() => boolean);
 }
 
 interface Candidate {
@@ -36,29 +38,14 @@ interface Transaction {
 	readyToPack: boolean;
 }
 
-interface Subscription {
-	unsub: () => void;
+/** Per-view state: the document/view hooks this leaf owns plus its import transactions. */
+interface PackState {
 	detachDocument: () => void;
 	detachBoardSync: () => void;
 	known: Set<string>;
 	transactions: Transaction[];
 	lastDropSignature: string | null;
 	lastDropWasTrusted: boolean;
-}
-
-function getApi(leaf: WorkspaceLeaf): MediaPackApi | null {
-	const api = (leaf.view as unknown as { excalidrawAPI?: Partial<MediaPackApi> }).excalidrawAPI;
-	if (!api || typeof api.onChange !== "function" || typeof api.getSceneElements !== "function") return null;
-	return api as MediaPackApi;
-}
-
-function apiDestroyed(api: MediaPackApi): boolean {
-	const destroyed = api.isDestroyed;
-	return typeof destroyed === "function" ? destroyed() === true : destroyed === true;
-}
-
-function isStillLoading(leaf: WorkspaceLeaf): boolean {
-	return (leaf.view as unknown as { semaphores?: { justLoaded?: boolean } }).semaphores?.justLoaded === true;
 }
 
 function isMedia(el: MediaElement): boolean {
@@ -135,74 +122,56 @@ function addVaultPath(transaction: Transaction, path: string): void {
 	if (candidate) candidate.paths.add(path);
 }
 
-function matchElement(
-	plugin: ExcalidrawPureRefPlugin,
-	leaf: WorkspaceLeaf,
-	transaction: Transaction,
-	el: MediaElement,
-	debug: (kind: string, data?: Record<string, unknown>) => void,
-): boolean {
-	if (!el.id || transaction.baselineIds.has(el.id) || transaction.mediaIds.has(el.id)) return false;
-	const path = scenePath(plugin, leaf, el);
-	if (!path) {
-		debug("no-scene-path", {
-			id: el.id,
-			type: el.type,
-			fileId: el.fileId ?? null,
-			link: el.link ?? null,
-			pendingCandidates: transaction.candidates.filter((c) => !c.matchedId).map((c) => c.name),
-		});
-		return false;
-	}
-	const candidate = transaction.candidates.find(
-		(item) => item.matchedId === null && (item.paths.has(path) || namesMatch(item.name, path)),
-	);
-	if (!candidate) {
-		debug("no-candidate-for-path", {
-			id: el.id,
-			type: el.type,
-			path,
-			pendingCandidates: transaction.candidates.filter((c) => !c.matchedId).map((c) => ({ name: c.name, paths: Array.from(c.paths) })),
-		});
-		return false;
-	}
-	candidate.matchedId = el.id;
-	transaction.mediaIds.add(el.id);
-	return true;
-}
-
 function isComplete(transaction: Transaction): boolean {
 	return transaction.candidates.length > 0 && transaction.candidates.every((candidate) => candidate.matchedId !== null);
 }
 
-/**
- * Packs imported media only after every file in an observed import transaction
- * has produced its matching scene element. Drop/paste handlers provide the
- * transaction's expected files; scene changes provide the authoritative commit
- * signal. No elapsed-time debounce is used.
- */
 export function attachMediaAutoPack(plugin: ExcalidrawPureRefPlugin): () => void {
-	const subscriptions = new Map<WorkspaceLeaf, Subscription>();
 	const debugEvents: Array<Record<string, unknown>> = [];
 	const debug = (kind: string, data: Record<string, unknown> = {}) => {
 		debugEvents.push({ at: Date.now(), kind, ...data });
 		if (debugEvents.length > 100) debugEvents.shift();
 	};
-	let disposed = false;
-	let retryTimer: number | null = null;
-	let retriesLeft = READY_RETRY_MAX;
 
-	const scan = (leaf: WorkspaceLeaf, sub: Subscription) => {
-		if (disposed) return;
-		const elements = readSceneElements(leaf) ?? [];
-		for (const raw of elements) {
+	const matchElement = (leaf: WorkspaceLeaf, transaction: Transaction, el: MediaElement): boolean => {
+		if (!el.id || transaction.baselineIds.has(el.id) || transaction.mediaIds.has(el.id)) return false;
+		const path = scenePath(plugin, leaf, el);
+		if (!path) {
+			debug("no-scene-path", {
+				id: el.id,
+				type: el.type,
+				fileId: el.fileId ?? null,
+				link: el.link ?? null,
+				pendingCandidates: transaction.candidates.filter((c) => !c.matchedId).map((c) => c.name),
+			});
+			return false;
+		}
+		const candidate = transaction.candidates.find(
+			(item) => item.matchedId === null && (item.paths.has(path) || namesMatch(item.name, path)),
+		);
+		if (!candidate) {
+			debug("no-candidate-for-path", {
+				id: el.id,
+				type: el.type,
+				path,
+				pendingCandidates: transaction.candidates.filter((c) => !c.matchedId).map((c) => ({ name: c.name, paths: Array.from(c.paths) })),
+			});
+			return false;
+		}
+		candidate.matchedId = el.id;
+		transaction.mediaIds.add(el.id);
+		return true;
+	};
+
+	const scan = (leaf: WorkspaceLeaf, state: PackState) => {
+		for (const raw of readSceneElements(leaf) ?? []) {
 			const el = raw as MediaElement;
-			if (!isMedia(el) || !el.id || sub.known.has(el.id)) continue;
+			if (!isMedia(el) || !el.id || state.known.has(el.id)) continue;
 			let matched = false;
-			for (const transaction of sub.transactions) {
-				if (matchElement(plugin, leaf, transaction, el, debug)) {
+			for (const transaction of state.transactions) {
+				if (matchElement(leaf, transaction, el)) {
 					matched = true;
-					sub.known.add(el.id);
+					state.known.add(el.id);
 					debug("matched", { id: el.id, type: el.type, remaining: transaction.candidates.filter((c) => !c.matchedId).map((c) => c.name) });
 					if (isComplete(transaction)) {
 						// Each importer branch eventually saves the Board after adding its
@@ -217,27 +186,26 @@ export function attachMediaAutoPack(plugin: ExcalidrawPureRefPlugin): () => void
 			// Keep an unresolved new element eligible for a later scan: Excalidraw
 			// can publish the scene element before its image registry entry exists.
 			// Once no transaction is waiting, it is ordinary pre-existing content.
-			if (!matched && sub.transactions.length === 0) sub.known.add(el.id);
+			if (!matched && state.transactions.length === 0) state.known.add(el.id);
 			else if (!matched) debug("unmatched-no-transaction-accepted", { id: el.id, type: el.type });
 		}
 	};
 
-	const begin = (leaf: WorkspaceLeaf, sub: Subscription, files: Array<{ name: string; size: number }>, trusted: boolean) => {
+	const begin = (leaf: WorkspaceLeaf, state: PackState, files: Array<{ name: string; size: number }>, trusted: boolean) => {
 		if (files.length === 0) return;
 		const signature = candidateSignature(files);
 		// The filename-sanitizing bridge re-dispatches the same drop as a synthetic
 		// event. The first event is trusted when this listener is installed before
 		// the bridge; suppress only that exact follow-up, never arbitrary drops.
-		if (!trusted && sub.lastDropWasTrusted && sub.lastDropSignature === signature) {
+		if (!trusted && state.lastDropWasTrusted && state.lastDropSignature === signature) {
 			debug("ignored-synthetic-duplicate", { files: files.map((file) => file.name) });
 			return;
 		}
-		sub.lastDropSignature = signature;
-		sub.lastDropWasTrusted = trusted;
-		sub.transactions.push(seedTransaction(plugin, leaf, files, sub.known));
+		state.lastDropSignature = signature;
+		state.lastDropWasTrusted = trusted;
+		state.transactions.push(seedTransaction(plugin, leaf, files, state.known));
 		debug("begin", { trusted, files: files.map((file) => file.name) });
 	};
-
 
 	/**
 	 * Obsidian Excalidraw imports each file, saves the Board, then asynchronously
@@ -245,7 +213,11 @@ export function attachMediaAutoPack(plugin: ExcalidrawPureRefPlugin): () => void
 	 * vault "modify" event races that final sync and is overwritten. The promise
 	 * resolving is the authoritative, timer-free "import scene is settled" signal.
 	 */
-	const attachAfterBoardSync = (leaf: WorkspaceLeaf, sub: Subscription): (() => void) => {
+	const attachAfterBoardSync = (
+		leaf: WorkspaceLeaf,
+		state: PackState,
+		scanner: LeafScannerHandle<PackState>,
+	): (() => void) => {
 		const view = leaf.view as unknown as {
 			synchronizeWithData?: (...args: unknown[]) => Promise<unknown>;
 		};
@@ -254,18 +226,18 @@ export function attachMediaAutoPack(plugin: ExcalidrawPureRefPlugin): () => void
 		const wrapped = function (this: unknown, ...args: unknown[]) {
 			const result = original.apply(this, args);
 			void Promise.resolve(result).then(() => {
-				if (disposed) return;
+				if (scanner.isDisposed()) return;
 				debug("board-sync-resolved", {
-					transactions: sub.transactions.map((t) => ({
+					transactions: state.transactions.map((t) => ({
 						readyToPack: t.readyToPack,
 						pending: t.candidates.filter((c) => !c.matchedId).map((c) => c.name),
 					})),
 				});
-				for (const transaction of [...sub.transactions]) {
+				for (const transaction of [...state.transactions]) {
 					if (!transaction.readyToPack) continue;
 					const packed = optimalPackElementsById(leaf, transaction.mediaIds);
 					debug("packed-after-board-sync", { ids: Array.from(transaction.mediaIds), packed });
-					sub.transactions = sub.transactions.filter((item) => item !== transaction);
+					state.transactions = state.transactions.filter((item) => item !== transaction);
 				}
 			});
 			return result;
@@ -276,17 +248,17 @@ export function attachMediaAutoPack(plugin: ExcalidrawPureRefPlugin): () => void
 		};
 	};
 
-	const attachDocument = (leaf: WorkspaceLeaf, sub: Subscription): (() => void) => {
+	const attachDocument = (leaf: WorkspaceLeaf, state: PackState): (() => void) => {
 		const doc = (leaf.view as unknown as { containerEl?: HTMLElement }).containerEl?.ownerDocument;
 		if (!doc) return () => {};
 		const onDrop = (event: DragEvent) => {
 			if (!event.dataTransfer) return;
 			if (getLeafForNode(plugin, event.target as Node | null, doc) !== leaf) return;
-			begin(leaf, sub, fileCandidates(event.dataTransfer), event.isTrusted);
+			begin(leaf, state, fileCandidates(event.dataTransfer), event.isTrusted);
 		};
 		const onPaste = (event: ClipboardEvent) => {
 			if (getLeafForNode(plugin, event.target as Node | null, doc) !== leaf || !event.clipboardData) return;
-			begin(leaf, sub, fileCandidates(event.clipboardData), event.isTrusted);
+			begin(leaf, state, fileCandidates(event.clipboardData), event.isTrusted);
 		};
 		doc.addEventListener("drop", onDrop, true);
 		doc.addEventListener("paste", onPaste, true);
@@ -296,19 +268,14 @@ export function attachMediaAutoPack(plugin: ExcalidrawPureRefPlugin): () => void
 		};
 	};
 
-	const attach = (leaf: WorkspaceLeaf): boolean => {
-		if (subscriptions.has(leaf)) return true;
-		if (!isExcalidrawLeaf(leaf)) return true;
-		const api = getApi(leaf);
-		if (!api || isStillLoading(leaf)) return false;
+	const setup = (leaf: WorkspaceLeaf, api: LeafScannerApi, scanner: LeafScannerHandle<PackState>): PackState | null => {
 		const known = new Set<string>();
 		try {
 			for (const el of api.getSceneElements()) if (el.id) known.add(el.id);
 		} catch {
-			return false;
+			return null;
 		}
-		const sub: Subscription = {
-			unsub: () => {},
+		const state: PackState = {
 			detachDocument: () => {},
 			detachBoardSync: () => {},
 			known,
@@ -316,110 +283,67 @@ export function attachMediaAutoPack(plugin: ExcalidrawPureRefPlugin): () => void
 			lastDropSignature: null,
 			lastDropWasTrusted: false,
 		};
-		sub.detachDocument = attachDocument(leaf, sub);
-		sub.detachBoardSync = attachAfterBoardSync(leaf, sub);
-		try {
-			sub.unsub = api.onChange(() => scan(leaf, sub));
-		} catch {
-			sub.detachDocument();
-			sub.detachBoardSync();
-			return false;
+		state.detachDocument = attachDocument(leaf, state);
+		state.detachBoardSync = attachAfterBoardSync(leaf, state, scanner);
+		return state;
+	};
+
+	const teardown = (_leaf: WorkspaceLeaf, state: PackState) => {
+		if (state.transactions.length) {
+			debug("subscription-torn-down-with-pending-transactions", {
+				transactions: state.transactions.map((t) => ({
+					readyToPack: t.readyToPack,
+					pending: t.candidates.filter((c) => !c.matchedId).map((c) => c.name),
+				})),
+			});
 		}
-		subscriptions.set(leaf, sub);
-		return true;
+		state.detachDocument();
+		state.detachBoardSync();
 	};
 
-	const onCreate = (file: { path: string }) => {
-		for (const [leaf, sub] of subscriptions) {
-			for (const transaction of sub.transactions) addVaultPath(transaction, file.path);
-			if (sub.transactions.length) scan(leaf, sub);
-		}
-	};
+	return attachPerLeafScanner<PackState>(plugin, {
+		setup,
+		scan,
+		teardown,
+		extras: (scanner) => {
+			// Released through the vault, NOT the workspace: an EventRef must be
+			// unregistered on the same Events instance it was registered on.
+			const vault = plugin.app.vault;
+			const detachCreate = onEvent(vault, () =>
+				vault.on("create", (file) => {
+					for (const [leaf, state] of scanner.entries()) {
+						for (const transaction of state.transactions) addVaultPath(transaction, file.path);
+						if (state.transactions.length) scanner.rescan(leaf);
+					}
+				}),
+			);
 
-	const prune = () => {
-		for (const [leaf, sub] of subscriptions) {
-			const api = getApi(leaf);
-			if (isExcalidrawLeaf(leaf) && api && !apiDestroyed(api)) continue;
-			if (sub.transactions.length) {
-				debug("subscription-torn-down-with-pending-transactions", {
-					transactions: sub.transactions.map((t) => ({
-						readyToPack: t.readyToPack,
-						pending: t.candidates.filter((c) => !c.matchedId).map((c) => c.name),
-					})),
-				});
-			}
-			try {
-				sub.unsub();
-				sub.detachDocument();
-				sub.detachBoardSync();
-			} catch {
-				/* view already torn down */
-			}
-			subscriptions.delete(leaf);
-		}
-	};
-
-	const reconcile = () => {
-		if (disposed) return;
-		prune();
-		let allReady = true;
-		plugin.app.workspace.iterateAllLeaves((leaf) => {
-			if (!isExcalidrawLeaf(leaf)) return;
-			if (!attach(leaf)) allReady = false;
-		});
-		if (!allReady && retriesLeft > 0 && retryTimer == null) {
-			retriesLeft--;
-			retryTimer = window.setTimeout(() => {
-				retryTimer = null;
-				reconcile();
-			}, READY_RETRY_MS);
-		} else if (allReady) retriesLeft = READY_RETRY_MAX;
-	};
-
-	const refs: EventRef[] = [
-		plugin.app.workspace.on("layout-change", reconcile),
-		plugin.app.workspace.on("active-leaf-change", reconcile),
-		plugin.app.vault.on("create", onCreate),
-	];
-	reconcile();
-
-	// Kept as a live diagnostic because imports may arrive through native drops,
-	// the filename-sanitizing bridge, or a modal long after the initial event.
-	// It is read-only and lets us inspect which transaction/file is still waiting.
-	(window as unknown as Record<string, unknown>).__eprMediaPackDebug = {
-		state: () =>
-			({
-				events: debugEvents,
-				subscriptions: Array.from(subscriptions.entries()).map(([leaf, sub]) => ({
-				file: (leaf.view as unknown as { file?: { path?: string } }).file?.path,
-				transactions: sub.transactions.map((transaction) =>
-					({
-						readyToPack: transaction.readyToPack,
-						candidates: transaction.candidates.map((candidate) => ({
-							name: candidate.name,
-							paths: Array.from(candidate.paths),
-							matchedId: candidate.matchedId,
+			// Kept as a live diagnostic because imports may arrive through native drops,
+			// the filename-sanitizing bridge, or a modal long after the initial event.
+			// It is read-only and lets us inspect which transaction/file is still waiting.
+			(window as unknown as Record<string, unknown>).__eprMediaPackDebug = {
+				state: () => ({
+					events: debugEvents,
+					subscriptions: scanner.entries().map(([leaf, state]) => ({
+						file: (leaf.view as unknown as { file?: { path?: string } }).file?.path,
+						transactions: state.transactions.map((transaction) => ({
+							readyToPack: transaction.readyToPack,
+							candidates: transaction.candidates.map((candidate) => ({
+								name: candidate.name,
+								paths: Array.from(candidate.paths),
+								matchedId: candidate.matchedId,
+							})),
 						})),
-					}),
-				),
-			})),
-			}),
-	};
+					})),
+				}),
+			};
 
-	return () => {
-		disposed = true;
-		if (retryTimer != null) window.clearTimeout(retryTimer);
-		for (const ref of refs) plugin.app.workspace.offref(ref);
-		for (const sub of subscriptions.values()) {
-			try {
-				sub.unsub();
-				sub.detachDocument();
-				sub.detachBoardSync();
-			} catch {
-				/* ignore */
-			}
-		}
-		subscriptions.clear();
-		delete (window as unknown as Record<string, unknown>).__eprMediaPackDebug;
-	};
+			return [
+				detachCreate,
+				() => {
+					delete (window as unknown as Record<string, unknown>).__eprMediaPackDebug;
+				},
+			];
+		},
+	});
 }
