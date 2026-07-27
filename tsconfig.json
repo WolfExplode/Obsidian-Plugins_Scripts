@@ -8,6 +8,9 @@
     "allowJs": true,
     "noImplicitAny": true,
     "moduleResolution": "node",
+    // Type-checking only (tsc runs with noEmit; esbuild does the emit and already
+    // handles this interop). Lets tests default-import node:assert/strict.
+    "allowSyntheticDefaultImports": true,
     "noEmit": true,
     "importHelpers": true,
     "isolatedModules": true,

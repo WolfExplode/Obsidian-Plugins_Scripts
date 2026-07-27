@@ -13,6 +13,7 @@ obsidian-devtools-mcp/
 # Build outputs
 dist/
 build/
+.test-build/
 *.map
 src/**/*.js
 
