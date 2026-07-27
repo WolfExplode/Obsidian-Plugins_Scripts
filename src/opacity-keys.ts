@@ -1,4 +1,5 @@
 import type { App } from "obsidian";
+import { isEditableTarget } from "./editable-target";
 import { adjustSelectedElementsOpacity, findExcalidrawLeafForNode } from "./excalidraw-view";
 
 /**
@@ -17,6 +18,10 @@ export interface OpacityKeydownOptions {
 export function attachOpacityKeydown(win: Window, app: App, options: OpacityKeydownOptions = {}): () => void {
 	const handler = (event: KeyboardEvent) => {
 		if (!event.ctrlKey || event.metaKey || event.altKey) return;
+		// The selected element (if any) stays selected while its text label is being
+		// edited, so without this guard typing "-" or "=" inside that editor would be
+		// eaten as an opacity change instead of reaching the textarea.
+		if (isEditableTarget(event.target)) return;
 
 		const direction = event.key === "-"
 			? -1

@@ -1,4 +1,5 @@
 import type { App } from "obsidian";
+import { isEditableTarget } from "./editable-target";
 import {
 	applySelectionTransform,
 	clientToSceneCoords,
@@ -79,12 +80,6 @@ function releaseStateForDocument(doc: Document): void {
 		active = null;
 	}
 	if (lastPointer && isStale(lastPointer.leaf)) lastPointer = null;
-}
-
-function isEditableTarget(target: EventTarget | null): boolean {
-	const element = target as HTMLElement | null;
-	if (!element || typeof element.tagName !== "string") return false;
-	return element.tagName === "INPUT" || element.tagName === "TEXTAREA" || element.isContentEditable;
 }
 
 function selectionCenter(elements: readonly TransformElement[]): ScenePoint {
@@ -238,9 +233,16 @@ export function attachTransformKeydown(win: Window, app: App): () => void {
 		}
 		// Blender-style resets, the counterpart to the modal R/S below: Alt+R clears
 		// rotation, Alt+S restores native pixel size. Both keys are already reserved
-		// inside a Board — Alt+S because Excalidraw's object-snap shortcut is dropped,
-		// Alt+R because it is held back from Templater — so consuming them here takes
-		// nothing away. Skipped while a modal transform is running, which owns the
+		// inside a Board — Alt+R because it is held back from Templater (see alt-r.ts)
+		// — so consuming them here takes nothing away. This also incidentally drops
+		// Excalidraw's own Alt+S "toggle object snap" shortcut, which is the point:
+		// that action force-disables grid mode unconditionally
+		// (actionToggleObjectsSnapMode.tsx), so an accidental Alt+S would silently
+		// turn the grid off. Consuming Alt+S here, unconditionally and before
+		// Excalidraw's own bubble-phase handler runs, is what prevents that — a
+		// separate snap-keys.ts module used to do this same consume but registered
+		// after this one, so it never actually ran; it was removed rather than kept
+		// as dead code. Skipped while a modal transform is running, which owns the
 		// keyboard until it commits or cancels.
 		if (
 			!active &&
