@@ -1,3 +1,4 @@
+import type { TFile } from "obsidian";
 import type ExcalidrawPureRefPlugin from "../main";
 import type { MediaOverlay } from "./transparent-proto";
 
@@ -191,6 +192,193 @@ export function collectMediaOverlays(
 				(skipped ? `, ${skipped} unresolved link(s) skipped` : ""),
 		);
 	}
+	return overlays;
+}
+
+/**
+ * Extensions this plugin will snapshot into a static image overlay by
+ * instantiating whatever component another plugin registered for that
+ * extension via `app.embedRegistry` (e.g. obsidian-extended-file-support's
+ * KRA/PUR/TIFF/HDR/... renderers). Excalidraw's own SVG export can't rasterize
+ * these embeddables (same reason as video/gif above), so without this they
+ * show as Excalidraw's plain placeholder link box in F10 mode.
+ *
+ * Deliberately an allowlist, not "any registered extension": these all
+ * resolve their `loadFile()` (plus, for image-tag-based ones, a `load` event)
+ * as a genuine one-shot completion signal — verified live against
+ * obsidian-extended-file-support. 3D formats (obj/fbx/glb/gltf/stl) render on
+ * a perpetual animation loop with no signal for "the model has loaded" at
+ * all, so they are left out and stay as Excalidraw's placeholder box.
+ */
+const SNAPSHOT_EXTENSIONS = new Set([
+	"tiff", "tif", "dds", "hdr", "exr", "tga", "psd", "ai", "jfif", "kra", "pur", "clip",
+]);
+
+/**
+ * Circuit breaker, not a timing heuristic: every extension in
+ * SNAPSHOT_EXTENSIONS resolves in well under a second in practice. This only
+ * stops a hung or broken embed (a future upstream regression, a corrupt file)
+ * from blocking the whole read-only render indefinitely.
+ */
+const SNAPSHOT_TIMEOUT_MS = 15000;
+
+interface EmbedContextLike {
+	app: unknown;
+	containerEl: HTMLElement;
+}
+
+interface EmbedComponentLike {
+	scene?: unknown;
+	load?(): void;
+	unload?(): void;
+	loadFile?(): Promise<void>;
+}
+
+type EmbedCreatorLike = (context: EmbedContextLike, file: TFile, subpath?: string) => EmbedComponentLike;
+
+interface EmbedRegistryLike {
+	getEmbedCreator?(file: TFile): EmbedCreatorLike | null;
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
+	return new Promise((resolve) => {
+		let settled = false;
+		const timer = window.setTimeout(() => {
+			if (!settled) {
+				settled = true;
+				resolve(null);
+			}
+		}, ms);
+		promise.then(
+			(value) => {
+				if (!settled) {
+					settled = true;
+					window.clearTimeout(timer);
+					resolve(value);
+				}
+			},
+			() => {
+				if (!settled) {
+					settled = true;
+					window.clearTimeout(timer);
+					resolve(null);
+				}
+			},
+		);
+	});
+}
+
+interface SnapshotCacheEntry {
+	mtime: number;
+	size: number;
+	dataURL: string;
+}
+
+/**
+ * Keyed by vault path. The underlying decoders (three.js loaders, pdf.js,
+ * webtoon/psd) run synchronously on the main thread, so redoing them on every
+ * F10 toggle is real, felt jank — not just wasted work. mtime+size catches an
+ * edit to the source file without needing a vault "modify" subscription.
+ */
+const snapshotCache = new Map<string, SnapshotCacheEntry>();
+
+/**
+ * Renders one snapshot-able embeddable's linked file into a `data:` URL PNG,
+ * by instantiating whatever component the owning plugin registered for its
+ * extension in a detached, off-screen container, then rasterizing whatever it
+ * painted. Runs in the main Obsidian window, where that plugin's own decode
+ * workers / three.js / pdf.js infrastructure already lives — only the
+ * resulting raster crosses into the transparent read-only window.
+ */
+async function snapshotEmbeddableFile(plugin: ExcalidrawPureRefPlugin, file: TFile): Promise<string | null> {
+	const cached = snapshotCache.get(file.path);
+	if (cached && cached.mtime === file.stat.mtime && cached.size === file.stat.size) {
+		return cached.dataURL;
+	}
+
+	const registry = (plugin.app as unknown as { embedRegistry?: EmbedRegistryLike }).embedRegistry;
+	const creator = registry?.getEmbedCreator?.(file);
+	if (!creator) return null;
+
+	const container = document.createElement("div");
+	container.style.cssText = "position:fixed;left:-99999px;top:-99999px;pointer-events:none;";
+	document.body.appendChild(container);
+
+	let embed: EmbedComponentLike | null = null;
+	try {
+		embed = creator({ app: plugin.app, containerEl: container }, file);
+		embed.load?.();
+		const ready = embed.loadFile ? embed.loadFile() : Promise.resolve();
+		const outcome = await withTimeout(ready, SNAPSHOT_TIMEOUT_MS);
+		if (outcome === null) {
+			console.error(`[Excalidraw PureRef] snapshot timed out for ${file.path}.`);
+			return null;
+		}
+
+		let dataURL: string | null = null;
+		const canvas = container.querySelector("canvas");
+		if (canvas) {
+			dataURL = canvas.toDataURL("image/png");
+		} else {
+			const img = container.querySelector("img");
+			if (img && img.complete && img.naturalWidth > 0) {
+				const out = document.createElement("canvas");
+				out.width = img.naturalWidth;
+				out.height = img.naturalHeight;
+				out.getContext("2d")?.drawImage(img, 0, 0);
+				dataURL = out.toDataURL("image/png");
+			}
+		}
+
+		if (dataURL) snapshotCache.set(file.path, { mtime: file.stat.mtime, size: file.stat.size, dataURL });
+		return dataURL;
+	} catch (error) {
+		console.error(`[Excalidraw PureRef] snapshot failed for ${file.path}.`, error);
+		return null;
+	} finally {
+		embed?.unload?.();
+		container.remove();
+	}
+}
+
+/**
+ * Snapshot-based overlays for `elements`: every embeddable whose link resolves
+ * to a local file in SNAPSHOT_EXTENSIONS, expressed in scene coordinates like
+ * collectMediaOverlays. Unlike that function these aren't live — the file is
+ * rendered once, right now, into a static raster.
+ */
+export async function collectExtensionOverlays(
+	plugin: ExcalidrawPureRefPlugin,
+	elements: readonly unknown[],
+	boardPath: string,
+): Promise<MediaOverlay[]> {
+	const overlays: MediaOverlay[] = [];
+	const tasks: Promise<void>[] = [];
+
+	for (const raw of elements) {
+		const el = raw as EmbeddableLike;
+		if (el.isDeleted || el.type !== "embeddable") continue;
+		const linkpath = localLinkpath(el.link);
+		if (!linkpath) continue;
+		const dest = plugin.app.metadataCache.getFirstLinkpathDest(linkpath, boardPath);
+		if (!dest) continue;
+		const ext = dest.extension.toLowerCase();
+		if (OVERLAY_KIND_BY_EXT[ext]) continue; // already handled live as video/gif
+		if (!SNAPSHOT_EXTENSIONS.has(ext)) continue;
+
+		const x = el.x ?? 0;
+		const y = el.y ?? 0;
+		const width = el.width ?? 0;
+		const height = el.height ?? 0;
+		const angle = el.angle ?? 0;
+		tasks.push(
+			snapshotEmbeddableFile(plugin, dest).then((src) => {
+				if (src) overlays.push({ kind: "image", src, x, y, width, height, angle });
+			}),
+		);
+	}
+
+	await Promise.all(tasks);
 	return overlays;
 }
 

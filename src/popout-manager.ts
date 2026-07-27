@@ -29,7 +29,7 @@ import {
 	setPrototypeContent,
 	type ReadOnlyKeyMessage,
 } from "./transparent-proto";
-import { renderBoardSvg, getSceneMin, collectMediaOverlays } from "./board-render";
+import { renderBoardSvg, getSceneMin, collectMediaOverlays, collectExtensionOverlays } from "./board-render";
 import { markPopupDocument, getPopupFilePath, clearPopupDocumentMarker } from "./document-marker";
 import { attachWindowDrag } from "./window-drag";
 import { applyChromeHiding } from "./chrome-hider";
@@ -327,6 +327,12 @@ export class PopoutManager {
 		// Local video/animated-media embeds export as empty regions in the SVG;
 		// collect them so the transparent window can overlay live <video>/<img>.
 		const media = elements ? collectMediaOverlays(this.plugin, elements, file.path) : [];
+		// Other plugins' file-type embeddables (e.g. obsidian-extended-file-support's
+		// KRA/PUR/TIFF/HDR/...) export as empty regions too; snapshot them into
+		// static image overlays. Run alongside the SVG render below, not before it.
+		const extensionMediaPromise = elements
+			? collectExtensionOverlays(this.plugin, elements, file.path)
+			: Promise.resolve([]);
 
 		this.readOnlyFilePath = file.path;
 		// Create and focus the replacement first. Closing the focused editable
@@ -343,14 +349,14 @@ export class PopoutManager {
 		// Render the board in Obsidian's context (via the Excalidraw plugin) and
 		// push it — with the scene offset and captured camera — into the
 		// transparent window; setContent waits for load.
-		const svg = await renderBoardSvg(this.plugin, file.path);
+		const [svg, extensionMedia] = await Promise.all([renderBoardSvg(this.plugin, file.path), extensionMediaPromise]);
 		if (svg && isPrototypeOpen() && this.readOnlyFilePath === file.path) {
 			setPrototypeContent({
 				svg,
 				minX: min?.minX ?? 0,
 				minY: min?.minY ?? 0,
 				view: sceneView,
-				media,
+				media: [...media, ...extensionMedia],
 			});
 		}
 		this.refocusReadOnlyWindowAfterClose();
