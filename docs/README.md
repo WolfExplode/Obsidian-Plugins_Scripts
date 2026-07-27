@@ -15,6 +15,7 @@ find the right context before changing code or investigating behavior.
 | Load a vault file into a `<video>`/`<img>` by URL | [Media URL schemes](integrations/obsidian-media-url-schemes.md) | — |
 | Check whether a rendering quirk is an accepted upstream limitation before investigating it as a bug | [Excalidraw embeddable z-order limitation](integrations/excalidraw-embeddable-z-order-limitation.md), [Obsidian Canvas image-embed stretch fix](integrations/obsidian-canvas-image-stretch-fix.md) | — |
 | Research a known problem, failed experiment, or paused direction | [Investigations](investigations/) | Treat findings as context, not an implementation plan |
+| Measure real interaction cost instead of guessing from reading code | [Performance profiling](perf-profiling.md) | — |
 
 ## Documentation map
 
