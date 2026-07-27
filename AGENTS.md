@@ -6,9 +6,40 @@ The Obsidian plugin executes the bundled `main.js`, compiled by esbuild from `sr
 
 The repository's `.claude/settings.json` has a Claude-specific post-edit build hook, but do not assume it applies to Codex. To apply a rebuilt plugin in a running Obsidian instance, disable and then enable the `excalidraw-pureref` plugin using the Obsidian DevTools connection.
 
-## Reference material (checked in — read before guessing about Excalidraw)
+## Tests
 
-`reference/` holds local copies of upstream sources so agents can look things up directly instead of relying on web search or memory:
+`npm test` (also run by `npm run verify`) bundles `tests/*.test.ts` with the
+esbuild that already builds the plugin, then runs them under `node --test`. No
+test framework is installed and none should be added — `tests/run.mjs` is the
+whole harness.
+
+**Only modules with no runtime `obsidian` import can be tested.** That is the
+reason `pack-elements.ts`, `zorder.ts`, and `crop-geometry.ts` are deliberately
+dependency-free: the geometry is the part worth testing, and keeping it importable
+in plain Node is what makes that possible. When adding logic that is pure
+arithmetic, put it in one of those modules (or a new sibling) rather than inside
+`excalidraw-view.ts`, where it can only be exercised by hand inside Obsidian.
+Anything that touches `Notice`, `Plugin`, a `WorkspaceLeaf`, or the Excalidraw
+imperative API is out of scope for this harness.
+
+The suite covers the PureRef gravity/optimal pack, overlap-aware z-order, the
+affine + polygon crop math, the wikilink filename sanitize/desanitize pair, and
+`mirrorViewport`. It has been mutation-checked: deliberately breaking the flip
+handling in `planImageCrop`, the pack gap, or the z-order overlap test each turn
+the suite red.
+
+## Reference material (local-only, NOT in git — read before guessing about Excalidraw)
+
+`reference/` holds local copies of upstream sources so agents can look things up
+directly instead of relying on web search or memory.
+
+**It is gitignored and will be absent from a fresh clone.** At ~765 MB of vendored
+upstream repositories it is deliberately not checked in. Before relying on anything
+below, confirm the directory exists (`ls reference/`); if it does not, you are on a
+machine that has never populated it, and these paths will not resolve. Re-clone the
+upstream repos into `reference/` under the directory names below to restore it.
+
+The contents:
 
 - `reference/excalidraw-master/` — the **full Excalidraw repo** (the `main`/master branch). Use this as ground truth for core Excalidraw behavior, appState fields, and internals. E.g. box-selection mode is `appState.boxSelectionMode: "contain" | "overlap"` (default `"contain"`; `"overlap"` = select-anything-the-box-touches, the PureRef-style behavior) — defined in `packages/excalidraw/appState.ts`. This feature is shipped on Excalidraw main and confirmed present in the user's Excalidraw.
 - `reference/obsidian-excalidraw-plugin-master/` — the **full Obsidian Excalidraw community plugin repo** (not core Excalidraw — the Obsidian integration layer: `ExcalidrawView.ts`, `ExcalidrawData.ts`, `EmbeddedFileLoader.ts`, etc.). Use this for anything about how the Obsidian plugin loads/saves/wraps a Board that isn't explained by core Excalidraw alone — e.g. `ExcalidrawView`'s `semaphores` (incl. `justLoaded`, set/cleared around `loadDrawing`/`onChange` to mark "just finished loading the saved scene"), or `ExcalidrawData.scene` (the parsed on-disk scene from `JSON.parse`, populated synchronously at load — independent of whatever the live imperative API currently holds, and the reliable way to tell "was this saved to the file" from "is this on screen right now"). This was essential to correctly root-causing the image/video native-size correctors' pre-existing-media bug (see image-scale.ts / video-aspect.ts `getPersistedImageSeed` / `getPersistedEmbeddableSeed`).

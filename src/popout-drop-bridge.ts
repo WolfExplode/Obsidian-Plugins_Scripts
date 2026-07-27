@@ -51,7 +51,7 @@ const WIKILINK_UNSAFE: Record<string, string> = {
 	"|": "｜", // ｜ FULLWIDTH VERTICAL LINE
 };
 
-const sanitizeAttachmentName = (name: string): string =>
+export const sanitizeAttachmentName = (name: string): string =>
 	name.replace(/[#^[\]|]/g, (ch) => WIKILINK_UNSAFE[ch] ?? ch);
 
 const WIKILINK_UNSAFE_REVERSE: Record<string, string> = Object.fromEntries(

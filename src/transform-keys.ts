@@ -58,6 +58,29 @@ function leafDocument(leaf: ActiveTransform["leaf"]): Document | null {
 	return (leaf.view as unknown as { containerEl?: HTMLElement }).containerEl?.ownerDocument ?? null;
 }
 
+/**
+ * Drops shared state pointing into a window that is going away.
+ *
+ * Both `active` and `lastPointer` hold a WorkspaceLeaf, and a leaf transitively
+ * retains its whole Excalidraw view and scene. `active` is cleared by the normal
+ * commit/cancel paths, but `lastPointer` is only ever overwritten — so without
+ * this a closed Popout's leaf stays reachable until the pointer next moves over a
+ * different one. Called from each window's disposer with that window's document.
+ * A leaf whose view no longer reports a document is treated as stale regardless
+ * of which disposer noticed it.
+ */
+function releaseStateForDocument(doc: Document): void {
+	const isStale = (leaf: ActiveTransform["leaf"]) => {
+		const owner = leafDocument(leaf);
+		return owner === doc || owner === null;
+	};
+	if (active && isStale(active.leaf)) {
+		active.cursorDoc?.body.style.removeProperty("cursor");
+		active = null;
+	}
+	if (lastPointer && isStale(lastPointer.leaf)) lastPointer = null;
+}
+
 function isEditableTarget(target: EventTarget | null): boolean {
 	const element = target as HTMLElement | null;
 	if (!element || typeof element.tagName !== "string") return false;
@@ -365,7 +388,11 @@ export function attachTransformKeydown(win: Window, app: App): () => void {
 	win.addEventListener("contextmenu", onContextMenu, true);
 	win.addEventListener("blur", onBlur);
 	return () => {
+		// Restore the scene first if this window owns the in-flight transform, then
+		// drop any remaining shared references into this window (see
+		// releaseStateForDocument) so its leaf isn't retained after teardown.
 		if (ownsActive()) cancel();
+		releaseStateForDocument(doc);
 		win.removeEventListener("keydown", onKeyDown, true);
 		win.removeEventListener("pointermove", onPointerMove, true);
 		win.removeEventListener("pointerdown", onPointerDown, true);

@@ -634,6 +634,7 @@ export class PopoutManager {
 		entry.detachBoundsSaving?.();
 		entry.detachPackKeys?.();
 		entry.detachOpacityKeys?.();
+		entry.detachZOrderKeys?.();
 		entry.detachCropDrag?.();
 		entry.detachFlipDrag?.();
 		entry.detachAltDragBlocker?.();
