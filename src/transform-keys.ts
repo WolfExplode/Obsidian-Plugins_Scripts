@@ -10,6 +10,7 @@ import {
 	resetSelectedRotation,
 	type TransformElement,
 } from "./excalidraw-view";
+import { leafDocument } from "./leaf-scanner";
 
 type TransformMode = "move" | "rotate" | "scale";
 const ROTATION_SNAP_RADIANS = 15 * Math.PI / 180;
@@ -53,11 +54,6 @@ let lastPointer: {
 	x: number;
 	y: number;
 } | null = null;
-
-/** The document owning a leaf's view, where its mode cursor belongs. */
-function leafDocument(leaf: ActiveTransform["leaf"]): Document | null {
-	return (leaf.view as unknown as { containerEl?: HTMLElement }).containerEl?.ownerDocument ?? null;
-}
 
 /**
  * Drops shared state pointing into a window that is going away.
