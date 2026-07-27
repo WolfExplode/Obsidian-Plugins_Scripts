@@ -102,6 +102,24 @@ console buffer, then ask the user to reproduce the problem through normal usage,
 and read the logs afterward. Reserve scripted evaluation for state inspection and
 for confirming a fix applied — not for producing the failure.
 
+## Watching Excalidraw scene changes
+
+Anything that needs to react to scene changes across the main window and every
+Popout goes through `attachPerLeafScanner` in `src/leaf-scanner.ts` — do not
+hand-roll another attach/prune/reconcile loop. Supply `setup` (build per-leaf
+state once the view's API is mounted and its saved scene has loaded) and `scan`
+(runs on every change); the shared module owns leaf discovery, the mount-retry,
+teardown, and the `isDestroyed` property-vs-method trap that silently broke
+Popout support once already. `video-aspect.ts`, `animated-image-drop.ts`, and
+`media-auto-pack.ts` are the three consumers.
+
+**Obsidian `EventRef`s must be released on the emitter they were registered on.**
+`Vault` and `Workspace` are separate `Events` instances, so `workspace.offref(vaultRef)`
+silently does nothing and leaks the listener on every plugin reload — verified
+live: the pre-consolidation code grew one orphaned vault `create` and `delete`
+handler per disable/enable cycle. Use the `onEvent(emitter, register)` helper,
+which returns a disposer bound to the right emitter.
+
 ## Tests
 
 `npm test` (also run by `npm run verify`) bundles `tests/*.test.ts` with the

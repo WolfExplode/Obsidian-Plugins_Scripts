@@ -2,7 +2,6 @@ import { Plugin, WorkspaceWindow } from "obsidian";
 import { GeometryStore } from "src/geometry-store";
 import { PopoutManager } from "src/popout-manager";
 import { ExcalidrawPureRefSettingTab } from "src/settings-tab";
-import { DEFAULT_SETTINGS, ExcalidrawPureRefSettings } from "src/settings";
 import { getActiveExcalidrawFile, getActiveExcalidrawLeaf } from "src/excalidraw-view";
 import { exportSelectedMedia } from "src/media-export";
 import { attachPackKeydown } from "src/pack-keys";
@@ -22,8 +21,14 @@ import { attachAltRHotkey } from "src/alt-r";
 import { attachImageNormalize } from "src/image-normalize";
 import { installKeyRelay, removeKeyRelay, cleanupOrphanPrototypes } from "src/transparent-proto";
 
+/**
+ * There is deliberately no settings object. Per ADR 0005 v1 has no user-facing
+ * knobs: the hotkeys are configured through Obsidian's own Hotkeys page, and the
+ * only persisted state is per-Board window geometry, which GeometryStore owns.
+ * The settings TAB still exists (settings-tab.ts) as documentation plus the
+ * "forget remembered popout positions" action.
+ */
 export default class ExcalidrawPureRefPlugin extends Plugin {
-	settings: ExcalidrawPureRefSettings = DEFAULT_SETTINGS;
 	geometry!: GeometryStore;
 	popouts!: PopoutManager;
 	private diagnosticEvents: Array<{ timestamp: number; type: string; data: unknown }> = [];
