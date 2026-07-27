@@ -1,4 +1,5 @@
 import type { App } from "obsidian";
+import { isEditableTarget } from "./editable-target";
 import {
 	clientToSceneCoords,
 	cropImagesToSceneRect,
@@ -12,6 +13,7 @@ import {
 	type CropResult,
 	type SceneRect,
 } from "./excalidraw-view";
+import { attachPointerDrag, findCanvasLeaf } from "./pointer-drag";
 
 /**
  * PureRef-style crop: hold **C** and drag a rectangle over the Board; on release
@@ -37,16 +39,9 @@ const MIN_DRAG_PX = 4;
 export function attachCropDrag(win: Window, app: App): () => void {
 	const doc = win.document;
 	let cHeld = false;
-	let dragging = false;
-	let startX = 0;
-	let startY = 0;
+	let dragStartX = 0;
+	let dragStartY = 0;
 	let overlay: HTMLDivElement | null = null;
-
-	const isEditableTarget = (target: EventTarget | null): boolean => {
-		const el = target as HTMLElement | null;
-		if (!el || typeof el.tagName !== "string") return false;
-		return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable === true;
-	};
 
 	const removeOverlay = () => {
 		overlay?.remove();
@@ -55,20 +50,63 @@ export function attachCropDrag(win: Window, app: App): () => void {
 
 	const updateOverlay = (curX: number, curY: number) => {
 		if (!overlay) return;
-		overlay.style.left = `${Math.min(startX, curX)}px`;
-		overlay.style.top = `${Math.min(startY, curY)}px`;
-		overlay.style.width = `${Math.abs(curX - startX)}px`;
-		overlay.style.height = `${Math.abs(curY - startY)}px`;
+		overlay.style.left = `${Math.min(dragStartX, curX)}px`;
+		overlay.style.top = `${Math.min(dragStartY, curY)}px`;
+		overlay.style.width = `${Math.abs(curX - dragStartX)}px`;
+		overlay.style.height = `${Math.abs(curY - dragStartY)}px`;
 	};
 
 	const endDrag = () => {
-		dragging = false;
 		removeOverlay();
 		doc.body.style.removeProperty("cursor");
 	};
 
+	const drag = attachPointerDrag<true>(win, {
+		onStart(event) {
+			if (!cHeld || event.button !== 0) return null;
+			// Only start over the drawing surface itself (a canvas), never
+			// Excalidraw's toolbars/menus — those share the view container.
+			if (!findCanvasLeaf(app, event.target)) return null;
+
+			dragStartX = event.clientX;
+			dragStartY = event.clientY;
+			overlay = doc.createElement("div");
+			overlay.style.cssText =
+				"position:fixed;z-index:99999;pointer-events:none;box-sizing:border-box;" +
+				"border:1px solid var(--interactive-accent,#38bdf8);background:rgba(56,189,248,0.12);";
+			updateOverlay(dragStartX, dragStartY);
+			doc.body.appendChild(overlay);
+			return true;
+		},
+		onMove(event) {
+			updateOverlay(event.clientX, event.clientY);
+		},
+		onRelease(event, _gesture, dx, dy) {
+			endDrag();
+			const wasDrag = Math.abs(dx) >= MIN_DRAG_PX && Math.abs(dy) >= MIN_DRAG_PX;
+			if (!wasDrag) return;
+
+			const leaf = findExcalidrawLeafForNode(app, event.target as Node | null);
+			const p1 = clientToSceneCoords(leaf, dragStartX, dragStartY);
+			const p2 = clientToSceneCoords(leaf, event.clientX, event.clientY);
+			if (!p1 || !p2) return;
+			const rect: SceneRect = {
+				x: Math.min(p1.x, p2.x),
+				y: Math.min(p1.y, p2.y),
+				width: Math.abs(p2.x - p1.x),
+				height: Math.abs(p2.y - p1.y),
+			};
+			// Crop only the images selected when the gesture completes. An empty
+			// selection must be a no-op; never fall back to all images on the board.
+			const selected = getImageIds(leaf, true);
+			if (selected.length === 0) return;
+			void cropImagesToSceneRect(app, leaf, rect, selected);
+		},
+	});
+
 	const onKeyDown = (event: KeyboardEvent) => {
-		if (event.key === "Escape" && dragging) {
+		if (event.key === "Escape" && drag.isActive()) {
+			drag.cancel();
 			endDrag();
 			return;
 		}
@@ -123,89 +161,26 @@ export function attachCropDrag(win: Window, app: App): () => void {
 	const onKeyUp = (event: KeyboardEvent) => {
 		if (event.key.toLowerCase() === "c") {
 			cHeld = false;
-			if (!dragging) doc.body.style.removeProperty("cursor");
+			if (!drag.isActive()) doc.body.style.removeProperty("cursor");
 		}
 	};
 
 	const onBlur = () => {
 		cHeld = false;
-		if (!dragging) doc.body.style.removeProperty("cursor");
-	};
-
-	const onPointerDown = (event: PointerEvent) => {
-		if (!cHeld || event.button !== 0 || dragging) return;
-		// Only start over the drawing surface itself (a canvas), never Excalidraw's
-		// toolbars/menus — those share the view container.
-		const target = event.target as HTMLElement | null;
-		if (!target || target.tagName !== "CANVAS") return;
-		if (!findExcalidrawLeafForNode(app, target)) return;
-
-		dragging = true;
-		startX = event.clientX;
-		startY = event.clientY;
-		overlay = doc.createElement("div");
-		overlay.style.cssText =
-			"position:fixed;z-index:99999;pointer-events:none;box-sizing:border-box;" +
-			"border:1px solid var(--interactive-accent,#38bdf8);background:rgba(56,189,248,0.12);";
-		updateOverlay(startX, startY);
-		doc.body.appendChild(overlay);
-
-		// Preempt Excalidraw's own pointer handling (which would start a selection
-		// box or drag the element and clear our selection).
-		event.preventDefault();
-		event.stopImmediatePropagation();
-	};
-
-	const onPointerMove = (event: PointerEvent) => {
-		if (!dragging) return;
-		updateOverlay(event.clientX, event.clientY);
-		event.preventDefault();
-		event.stopImmediatePropagation();
-	};
-
-	const onPointerUp = (event: PointerEvent) => {
-		if (!dragging) return;
-		const endX = event.clientX;
-		const endY = event.clientY;
-		const wasDrag = Math.abs(endX - startX) >= MIN_DRAG_PX && Math.abs(endY - startY) >= MIN_DRAG_PX;
-		endDrag();
-		event.preventDefault();
-		event.stopImmediatePropagation();
-		if (!wasDrag) return;
-
-		const leaf = findExcalidrawLeafForNode(app, event.target as Node | null);
-		const p1 = clientToSceneCoords(leaf, startX, startY);
-		const p2 = clientToSceneCoords(leaf, endX, endY);
-		if (!p1 || !p2) return;
-		const rect: SceneRect = {
-			x: Math.min(p1.x, p2.x),
-			y: Math.min(p1.y, p2.y),
-			width: Math.abs(p2.x - p1.x),
-			height: Math.abs(p2.y - p1.y),
-		};
-		// Crop only the images selected when the gesture completes. An empty
-		// selection must be a no-op; never fall back to all images on the board.
-		const selected = getImageIds(leaf, true);
-		if (selected.length === 0) return;
-		void cropImagesToSceneRect(app, leaf, rect, selected);
+		if (!drag.isActive()) doc.body.style.removeProperty("cursor");
 	};
 
 	win.addEventListener("keydown", onKeyDown, true);
 	win.addEventListener("keyup", onKeyUp, true);
 	win.addEventListener("blur", onBlur, true);
-	win.addEventListener("pointerdown", onPointerDown, true);
-	win.addEventListener("pointermove", onPointerMove, true);
-	win.addEventListener("pointerup", onPointerUp, true);
 	win.addEventListener("dblclick", onDoubleClick, true);
 
 	return () => {
+		drag.dispose();
 		endDrag();
 		win.removeEventListener("keydown", onKeyDown, true);
 		win.removeEventListener("keyup", onKeyUp, true);
 		win.removeEventListener("blur", onBlur, true);
-		win.removeEventListener("pointerdown", onPointerDown, true);
-		win.removeEventListener("pointermove", onPointerMove, true);
-		win.removeEventListener("pointerup", onPointerUp, true);
 		win.removeEventListener("dblclick", onDoubleClick, true);
 	};
 }
