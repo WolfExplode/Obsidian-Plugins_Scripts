@@ -2,17 +2,19 @@ import type { App } from "obsidian";
 import { isEditableTarget } from "./editable-target";
 import {
 	clientToSceneCoords,
-	cropImagesToSceneRect,
 	findExcalidrawLeafForNode,
 	getActiveExcalidrawLeaf,
 	getImageIds,
-	getNativeCropImageIds,
-	getViewportCropImageIds,
 	getSelectedImageSceneBBox,
-	uncropImages,
-	type CropResult,
 	type SceneRect,
 } from "./excalidraw-view";
+import {
+	cropImagesToSceneRect,
+	getNativeCropImageIds,
+	getViewportCropImageIds,
+	uncropImages,
+	type CropResult,
+} from "./crop-orchestrator";
 import { attachPointerDrag, findCanvasLeaf } from "./pointer-drag";
 
 /**
