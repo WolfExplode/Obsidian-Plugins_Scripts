@@ -9,7 +9,10 @@ import { attachPerLeafScanner, onEvent, type LeafScannerApi, type LeafScannerHan
  * Packs imported media only after every file in an observed import transaction
  * has produced its matching scene element. Drop/paste handlers provide the
  * transaction's expected files; scene changes provide the authoritative commit
- * signal. No elapsed-time debounce is used.
+ * signal — packing waits for the importer's own `synchronizeWithData` call to
+ * resolve, not a debounce timer. FALLBACK_PACK_MS below is the one deliberate
+ * exception, for import paths that never call synchronizeWithData at all; see
+ * its comment for why a timer is unavoidable there.
  *
  * The attach/detach lifecycle across the main window and every Popout is shared
  * with the other scene watchers — see leaf-scanner.ts.
@@ -36,7 +39,50 @@ interface Transaction {
 	mediaIds: Set<string>;
 	/** All expected elements exist; wait for the importer's following board save. */
 	readyToPack: boolean;
+	/**
+	 * Safety-net timer for import paths that never call `synchronizeWithData`
+	 * (see FALLBACK_PACK_MS below). Cleared whenever the primary signal packs
+	 * the transaction first, or the transaction is invalidated.
+	 */
+	fallbackTimer: number | null;
 }
+
+/**
+ * Some import paths never re-trigger `view.synchronizeWithData` at all — e.g.
+ * confirming the "Insert File From Vault" modal for a PDF calls
+ * `ea.addElementsToView()` -> `view.addElements({save: true})` ->
+ * `view.save()` directly, and nothing ever calls synchronizeWithData for that
+ * insert. A transaction can then sit at readyToPack forever with no signal to
+ * pack it.
+ *
+ * `view.save()` was considered as a tighter trigger here (traced into the
+ * Excalidraw plugin's bundled source: addElements only awaits `this.save()`
+ * when its `save` param is true). It was rejected: instrumenting a live save
+ * showed `view.save()` firing *twice* for a single PDF insert — once from
+ * addElements, once more shortly after from the embeddable's own async resize
+ * once its rendered size is measured — so a save resolving does not reliably
+ * mean "nothing more is coming." The normal drag-drop path likely calls save()
+ * per file too, while still following up with the real synchronizeWithData
+ * reload the rest of this module is built around. Using save() to shorten the
+ * wait risks packing early on that path and then having the later
+ * synchronizeWithData reload silently revert it — the exact race this module's
+ * synchronizeWithData-only design exists to avoid.
+ *
+ * There is no way to positively detect "no synchronizeWithData is ever
+ * coming" — only bound how long we wait for one. This is that bound: long
+ * enough that every observed synchronizeWithData-driven pack in this codebase
+ * finished well within it, so it should never race a real one; hit only when
+ * synchronizeWithData is confirmed to never fire, as measured for this
+ * PDF-via-modal path.
+ *
+ * Note: Excalidraw's own bundle reaches for the identical tool for a
+ * structurally identical gap — `ExcalidrawView.setPreventReload()` arms its
+ * self-reload guard with a plain `window.setTimeout(..., 2000)` because
+ * there's no event for "it is now safe to reload" either. Same shape of
+ * problem, same shape of fix, from the plugin whose internals we don't
+ * control — not a workaround to keep trying to eliminate.
+ */
+const FALLBACK_PACK_MS = 1000;
 
 /** Per-view state: the document/view hooks this leaf owns plus its import transactions. */
 interface PackState {
@@ -114,7 +160,7 @@ function seedTransaction(plugin: ExcalidrawPureRefPlugin, leaf: WorkspaceLeaf, f
 		}
 		return { name: file.name, size: file.size, paths, matchedId: null };
 	});
-	return { candidates, baselineIds: new Set(known), mediaIds: new Set(), readyToPack: false };
+	return { candidates, baselineIds: new Set(known), mediaIds: new Set(), readyToPack: false, fallbackTimer: null };
 }
 
 function addVaultPath(transaction: Transaction, path: string): void {
@@ -131,6 +177,27 @@ export function attachMediaAutoPack(plugin: ExcalidrawPureRefPlugin): () => void
 	const debug = (kind: string, data: Record<string, unknown> = {}) => {
 		debugEvents.push({ at: Date.now(), kind, ...data });
 		if (debugEvents.length > 100) debugEvents.shift();
+	};
+
+	/** Packs one transaction and removes it from state, wherever the trigger came from. */
+	const packTransaction = (leaf: WorkspaceLeaf, state: PackState, transaction: Transaction, source: string) => {
+		if (!state.transactions.includes(transaction)) return;
+		if (transaction.fallbackTimer != null) {
+			window.clearTimeout(transaction.fallbackTimer);
+			transaction.fallbackTimer = null;
+		}
+		const packed = optimalPackElementsById(leaf, transaction.mediaIds);
+		debug("packed", { source, ids: Array.from(transaction.mediaIds), packed });
+		state.transactions = state.transactions.filter((item) => item !== transaction);
+	};
+
+	/** (Re)schedules a transaction's fallback pack after `delayMs`, replacing any pending one. */
+	const scheduleFallback = (leaf: WorkspaceLeaf, state: PackState, transaction: Transaction, delayMs: number) => {
+		if (transaction.fallbackTimer != null) window.clearTimeout(transaction.fallbackTimer);
+		transaction.fallbackTimer = window.setTimeout(() => {
+			transaction.fallbackTimer = null;
+			packTransaction(leaf, state, transaction, "fallback-timer");
+		}, delayMs);
 	};
 
 	const matchElement = (leaf: WorkspaceLeaf, transaction: Transaction, el: MediaElement): boolean => {
@@ -164,7 +231,31 @@ export function attachMediaAutoPack(plugin: ExcalidrawPureRefPlugin): () => void
 	};
 
 	const scan = (leaf: WorkspaceLeaf, state: PackState) => {
-		for (const raw of readSceneElements(leaf) ?? []) {
+		const elements = readSceneElements(leaf) ?? [];
+
+		// animated-image-drop.ts imports a gif as a static `image` element, then
+		// asynchronously swaps it for a playing `embeddable` at the same file
+		// (add the embeddable, delete the image). If a candidate already matched
+		// the now-deleted image, its slot must be freed so the replacement
+		// embeddable — which shares the same vault path but a different id — can
+		// bind instead of being permanently orphaned.
+		const currentIds = new Set(elements.map((raw) => (raw as MediaElement).id).filter((id): id is string => !!id));
+		for (const transaction of state.transactions) {
+			for (const candidate of transaction.candidates) {
+				if (!candidate.matchedId || currentIds.has(candidate.matchedId)) continue;
+				const staleId = candidate.matchedId;
+				transaction.mediaIds.delete(staleId);
+				candidate.matchedId = null;
+				transaction.readyToPack = false;
+				if (transaction.fallbackTimer != null) {
+					window.clearTimeout(transaction.fallbackTimer);
+					transaction.fallbackTimer = null;
+				}
+				debug("candidate-freed-element-deleted", { name: candidate.name, staleId });
+			}
+		}
+
+		for (const raw of elements) {
 			const el = raw as MediaElement;
 			if (!isMedia(el) || !el.id || state.known.has(el.id)) continue;
 			let matched = false;
@@ -179,6 +270,7 @@ export function attachMediaAutoPack(plugin: ExcalidrawPureRefPlugin): () => void
 						// embeddable write can subsequently restore an older scene snapshot.
 						transaction.readyToPack = true;
 						debug("ready-for-board-save", { ids: Array.from(transaction.mediaIds) });
+						scheduleFallback(leaf, state, transaction, FALLBACK_PACK_MS);
 					}
 					break;
 				}
@@ -235,9 +327,7 @@ export function attachMediaAutoPack(plugin: ExcalidrawPureRefPlugin): () => void
 				});
 				for (const transaction of [...state.transactions]) {
 					if (!transaction.readyToPack) continue;
-					const packed = optimalPackElementsById(leaf, transaction.mediaIds);
-					debug("packed-after-board-sync", { ids: Array.from(transaction.mediaIds), packed });
-					state.transactions = state.transactions.filter((item) => item !== transaction);
+					packTransaction(leaf, state, transaction, "board-sync");
 				}
 			});
 			return result;
@@ -289,6 +379,9 @@ export function attachMediaAutoPack(plugin: ExcalidrawPureRefPlugin): () => void
 	};
 
 	const teardown = (_leaf: WorkspaceLeaf, state: PackState) => {
+		for (const transaction of state.transactions) {
+			if (transaction.fallbackTimer != null) window.clearTimeout(transaction.fallbackTimer);
+		}
 		if (state.transactions.length) {
 			debug("subscription-torn-down-with-pending-transactions", {
 				transactions: state.transactions.map((t) => ({
