@@ -45,6 +45,9 @@ import {
 	readMainWindowViewportForFile,
 	readContainerSize,
 	isCanvasReady,
+	hasLoadingOverlay,
+	hasUnloadedFiles,
+	setContainerVeiled,
 	isExcalidrawPluginAvailable,
 	enableOverlapSelection,
 	mirrorViewport,
@@ -454,6 +457,10 @@ export class PopoutManager {
 				active: true,
 			});
 			if (!this.isCurrent(file.path, entry)) return;
+			// Veiled immediately once the container exists, before its first paint
+			// of Excalidraw's default (pre-startup-camera) view — cleared once
+			// finalizeCanvasWhenReady has applied the real one. See setContainerVeiled.
+			setContainerVeiled(entry.leaf, true);
 
 			// Focus is grabbed here — after Excalidraw's view has mounted —
 			// rather than during the pre-mount window-open handling. See the
@@ -464,14 +471,16 @@ export class PopoutManager {
 			}
 
 			// Nudge the canvas to its final size and set the startup camera — but
-			// only once Excalidraw's API is actually live. setViewState resolves
-			// well before that (mount + scene/image load runs on for a few hundred
-			// ms more), so poking Excalidraw here directly would fire a resize and
-			// updateScene INTO a half-loaded scene — a suspected cause of the
-			// occasional "stuck on loading scene". finalizeCanvasWhenReady defers
-			// both until the interface responds. This is part of the serialized open
-			// transition: a queued close must not detach the leaf while Excalidraw is
-			// still mounting.
+			// only once Excalidraw's API is live AND its own "Loading scene…"
+			// overlay has cleared. The API can report a measured container well
+			// before Excalidraw finishes decoding embedded images on a heavy Board;
+			// poking updateScene/resize while that overlay is still up has been
+			// confirmed (via a live repro) to orphan Excalidraw's own file-load
+			// promise chain, leaving the overlay stuck forever even though the
+			// scene's elements loaded fine. finalizeCanvasWhenReady gates on both
+			// isCanvasReady() and hasLoadingOverlay(). This is part of the
+			// serialized open transition: a queued close must not detach the leaf
+			// while Excalidraw is still mounting.
 			await this.finalizeCanvasWhenReady(entry, file.path, sourceViewState);
 		} catch (error) {
 			console.error("Excalidraw PureRef: failed to open board in popout.", error);
@@ -655,6 +664,30 @@ export class PopoutManager {
 	 * Doing this before the API is ready is both useless (our calls no-op) and
 	 * harmful (poking a mid-load scene), so we gate on readiness. Bails out if the
 	 * Popout is closed before the canvas ever comes up.
+	 *
+	 * "Ready" (`isReady()` below) is three conditions, all live data reads, no
+	 * timer: `isCanvasReady` (API mounted, container measured), `!hasLoadingOverlay`
+	 * (Excalidraw's own "Loading scene…" element is gone), and `!hasUnloadedFiles`
+	 * (every element's `fileId` has a matching entry in `getFiles()`). The last one
+	 * is load-bearing, not decorative — confirmed via a live repro (2026-07-29) that
+	 * firing resize/updateScene while a heavy Board's images are still decoding
+	 * orphans Excalidraw's own file-load promise chain, leaving the overlay stuck
+	 * forever even though the scene's elements loaded fine and the plugin's own
+	 * `isLoaded` bookkeeping falsely reports done. `hasLoadingOverlay` alone isn't
+	 * enough to catch this: right after mount there's a gap before Excalidraw has
+	 * even decided to show the overlay, so a lone overlay check can read "clear"
+	 * a beat before the real decode work starts. `hasUnloadedFiles` closes that gap
+	 * with an actual data comparison instead of a wait — a settle-time debounce
+	 * was tried first and discarded: a live probe showed elements are always fully
+	 * populated the instant the API exists (nothing to debounce for), so the
+	 * timer was pure guesswork riding on top of a real, checkable condition. Prefer
+	 * that pattern generally: if a fix's correctness depends on a wall-clock
+	 * duration rather than on data you can query, look harder for the actual
+	 * condition first (see AGENTS.md, "Avoid timers as bug fixes").
+	 *
+	 * The container stays veiled (`setContainerVeiled`, called by the caller
+	 * around `setViewState`/here) for the same span this waits on, so the
+	 * mount-at-default-view-then-snap-to-saved-viewport transition isn't visible.
 	 */
 	private async finalizeCanvasWhenReady(
 		entry: OpenBoardPopout,
@@ -670,18 +703,22 @@ export class PopoutManager {
 			return;
 		}
 
+		const isReady = () =>
+			isCanvasReady(entry.leaf) && !hasLoadingOverlay(entry.leaf) && !hasUnloadedFiles(entry.leaf);
+
 		const start = performance.now();
 		while (this.isCurrent(filePath, entry)) {
-			if (isCanvasReady(entry.leaf)) break;
+			if (isReady()) break;
 			if (performance.now() - start > CANVAS_READY_MAX_MS) break;
 			await new Promise((r) => window.setTimeout(r, CANVAS_READY_POLL_MS));
 		}
 
 		if (!this.isCurrent(filePath, entry)) return;
-		if (!isCanvasReady(entry.leaf)) {
+		if (!isReady()) {
 			this.plugin.recordDiagnostic("popout-canvas-timeout", { filePath, timeoutMs: CANVAS_READY_MAX_MS });
 			console.error("[Excalidraw PureRef] Excalidraw canvas did not initialize within the timeout.");
 			new Notice("Excalidraw did not finish initializing the PureRef popout. The incomplete popout was closed.");
+			setContainerVeiled(entry.leaf, false);
 			this.abortOpen(filePath, entry);
 			return;
 		}
@@ -701,6 +738,7 @@ export class PopoutManager {
 					// touches rather than requiring it to fully enclose the element.
 					enableOverlapSelection(entry.leaf);
 					this.applyStartupViewport(entry.leaf, filePath, sourceViewState);
+					setContainerVeiled(entry.leaf, false);
 					entry.phase = "ready";
 					this.plugin.recordDiagnostic("popout-ready", { filePath, windowId: entry.windowId });
 					// Restore native focus after mounting and applying the camera so the

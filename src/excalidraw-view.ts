@@ -282,6 +282,63 @@ export function isCanvasReady(leaf: WorkspaceLeaf | null): boolean {
 }
 
 /**
+ * Excalidraw's own "Loading scene…" overlay (rendered as a `.LoadingMessage`
+ * element while it decodes embedded files) is still up. The API can be live
+ * and reporting a measured container well before this clears on a heavy Board
+ * — poking updateScene/resize while it's still visible has been observed to
+ * orphan Excalidraw's own file-load promise chain and leave the overlay
+ * stuck forever, even though the elements themselves loaded fine. Callers
+ * must wait for this to go false, not just for isCanvasReady().
+ */
+export function hasLoadingOverlay(leaf: WorkspaceLeaf | null): boolean {
+	const view = getExcalidrawView(leaf);
+	return !!view?.containerEl?.querySelector(".LoadingMessage");
+}
+
+/**
+ * True while any non-deleted element that references a binary file (images;
+ * embeddables carry their own iframe content and don't count) has no matching
+ * entry in getFiles() yet. hasLoadingOverlay() alone is racy: right after
+ * mount, Excalidraw hasn't decided to show the overlay yet, so a lone overlay
+ * check can pass a beat before the real file-decode work — and the resulting
+ * resize/updateScene call is what was observed to orphan that decode, leaving
+ * the overlay stuck forever once it does appear. This checks the actual data
+ * Excalidraw is waiting on instead of its transient UI state.
+ */
+export function hasUnloadedFiles(leaf: WorkspaceLeaf | null): boolean {
+	const api = getExcalidrawApi(leaf);
+	if (!api?.getSceneElements || !api?.getFiles) return false;
+	try {
+		const files = api.getFiles();
+		return (api.getSceneElements() as readonly ImageSceneElement[]).some(
+			(el) => !el.isDeleted && el.fileId && !files[el.fileId],
+		);
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Hides (or reveals) a Popout's Excalidraw container while its startup camera
+ * and zen mode are still being applied, so the "mounts at Excalidraw's default
+ * view, then visibly snaps to the saved viewport" transition isn't visible.
+ *
+ * Deliberately an inline style on the container element itself, not a CSS
+ * class on the window's <body> (see the identical lesson already documented
+ * in chrome-hider.ts: Obsidian resets custom classes it doesn't own on a
+ * popout's <body> shortly after the window opens, silently discarding
+ * anything added that way). The container element itself isn't subject to
+ * that reset and isn't recreated by Excalidraw's own re-renders, so a plain
+ * inline style here doesn't need chrome-hider's MutationObserver reapply.
+ */
+export function setContainerVeiled(leaf: WorkspaceLeaf | null, veiled: boolean): void {
+	const container = getExcalidrawView(leaf)?.containerEl;
+	if (!container) return;
+	if (veiled) container.style.setProperty("visibility", "hidden", "important");
+	else container.style.removeProperty("visibility");
+}
+
+/**
  * A size-independent camera: the scene coordinate at the center of the view,
  * plus zoom. This is the interchange used to keep the editable popout and the
  * read-only transparent window framed identically across a mode switch — each

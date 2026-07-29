@@ -102,6 +102,30 @@ console buffer, then ask the user to reproduce the problem through normal usage,
 and read the logs afterward. Reserve scripted evaluation for state inspection and
 for confirming a fix applied — not for producing the failure.
 
+## Avoid timers as bug fixes
+
+Don't fix a race by adding a wall-clock wait (a debounce, a settle delay, a
+retry backoff tuned by feel). A timer papers over an assumption about timing
+you haven't actually verified, and a value picked to work on one machine's
+observed timing is not a proof it holds elsewhere — it just moves the race
+somewhere less frequent and harder to reproduce.
+
+Before reaching for a timer, find the actual data condition the fix depends
+on and poll or check *that* instead. Concrete case: the Popout "stuck loading
+scene" fix (`finalizeCanvasWhenReady` in `src/popout-manager.ts`) first shipped
+with a 300ms settle window before trusting a "canvas ready" reading, on the
+assumption that Excalidraw's scene elements might populate a beat after its
+API does. A live repro (2026-07-29, MCP-attached listener per the section
+above) disproved that assumption — elements were fully populated the instant
+the API existed, every time — so the 300ms was pure guesswork riding on top of
+a condition that was already checkable directly. It was replaced with
+`hasUnloadedFiles()`, a direct comparison between scene elements and
+`getFiles()`, and the timer was deleted outright rather than kept as a
+belt-and-suspenders margin.
+
+If a timer still seems unavoidable after that search, say so and explain what
+data condition isn't observable — don't add one silently as the default move.
+
 ## Watching Excalidraw scene changes
 
 Anything that needs to react to scene changes across the main window and every
