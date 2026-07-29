@@ -249,7 +249,7 @@ export function attachDuplicateFinder(win: Window, app: App): () => void {
 				// the canvas until the file is reopened) -- the exact failure mode
 				// documented in context-menu-trim.ts for this same native menu.
 				const popover = menu.parentElement as HTMLElement | null;
-				if (popover) popover.style.display = "none";
+				if (popover) popover.setCssStyles({ display: "none" });
 				runDuplicateSearch(leaf);
 			});
 			menu.append(item);

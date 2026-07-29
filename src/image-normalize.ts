@@ -148,7 +148,17 @@ export function attachImageNormalize(win: Window, app: App): () => void {
 		built.style.top = `${rect.top}px`;
 		for (const [mode, label, shortcut] of MENU_ITEMS) {
 			const child = win.document.createElement("li");
-			child.innerHTML = `<button type="button" class="context-menu-item"><div class="context-menu-item__label">${label}</div><kbd class="context-menu-item__shortcut">${shortcut}</kbd></button>`;
+			const childButton = win.document.createElement("button");
+			childButton.type = "button";
+			childButton.className = "context-menu-item";
+			const childLabel = win.document.createElement("div");
+			childLabel.className = "context-menu-item__label";
+			childLabel.textContent = label;
+			const childShortcut = win.document.createElement("kbd");
+			childShortcut.className = "context-menu-item__shortcut";
+			childShortcut.textContent = shortcut;
+			childButton.append(childLabel, childShortcut);
+			child.append(childButton);
 			child.addEventListener("click", (click) => { click.stopPropagation(); void normalizeSelectedImages(leaf, mode); menu.parentElement?.remove(); removeSubmenu(); });
 			built.append(child);
 		}

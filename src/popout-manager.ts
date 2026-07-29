@@ -16,7 +16,6 @@ import {
 	getWindowPhysicalBoundsById,
 	setWindowPhysicalBoundsById,
 	onWindowCloseById,
-	type ElectronBounds,
 } from "./electron";
 import {
 	isPrototypeOpen,

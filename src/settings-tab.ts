@@ -26,7 +26,7 @@ export class ExcalidrawPureRefSettingTab extends PluginSettingTab {
 				}),
 			);
 
-		containerEl.createEl("h3", { text: "Other hotkeys" });
+		new Setting(containerEl).setName("Other hotkeys").setHeading();
 		containerEl.createEl("p", {
 			text:
 				"These are fixed and not rebindable from Settings → Hotkeys. Most of them intercept or " +
@@ -57,7 +57,8 @@ export class ExcalidrawPureRefSettingTab extends PluginSettingTab {
 			.addButton((button) =>
 				button
 					.setButtonText("Forget all")
-					.setWarning()
+					.setDestructive()
+					.setCta()
 					.onClick(async () => {
 						await this.plugin.geometry.clearAll();
 					}),

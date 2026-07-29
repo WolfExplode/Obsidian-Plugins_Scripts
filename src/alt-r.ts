@@ -68,7 +68,7 @@ export function attachAltRHotkey(
 		id: COMMAND_SUBID,
 		name: "PureRef Alt+R action (drawing mode)",
 		callback: () => {
-			const leaf = app.workspace.activeLeaf;
+			const leaf = app.workspace.getMostRecentLeaf();
 			// Defensive: the hotkey is only assigned in drawing mode, but guard anyway.
 			if (isExcalidrawLeaf(leaf)) onAltR?.(leaf as WorkspaceLeaf);
 		},
@@ -78,7 +78,7 @@ export function attachAltRHotkey(
 	const sync = () => {
 		const hm = hotkeyManager(app);
 		if (!hm) return;
-		const drawing = isExcalidrawLeaf(app.workspace.activeLeaf);
+		const drawing = isExcalidrawLeaf(app.workspace.getMostRecentLeaf());
 		if (drawing && !assigned) {
 			try {
 				hm.setHotkeys(fullId, [{ modifiers: ["Alt"], key: "r" }]);

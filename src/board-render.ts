@@ -301,7 +301,7 @@ async function snapshotEmbeddableFile(plugin: ExcalidrawPureRefPlugin, file: TFi
 	if (!creator) return null;
 
 	const container = document.createElement("div");
-	container.style.cssText = "position:fixed;left:-99999px;top:-99999px;pointer-events:none;";
+	container.setCssStyles({ position: "fixed", left: "-99999px", top: "-99999px", pointerEvents: "none" });
 	document.body.appendChild(container);
 
 	let embed: EmbedComponentLike | null = null;

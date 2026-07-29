@@ -30,11 +30,14 @@ export function applyChromeHiding(doc: Document): () => void {
 	const hideAll = () => {
 		for (const selector of HIDE_SELECTORS) {
 			doc.querySelectorAll<HTMLElement>(selector).forEach((el) => {
+				// eslint-disable-next-line obsidianmd/no-static-styles-assignment -- must be an
+				// inline !important style, not a CSS class; see the file docblock above for why.
 				el.style.setProperty("display", "none", "important");
 			});
 		}
 		for (const selector of FILL_SELECTORS) {
 			doc.querySelectorAll<HTMLElement>(selector).forEach((el) => {
+				// eslint-disable-next-line obsidianmd/no-static-styles-assignment -- see above.
 				el.style.setProperty("inset", "0", "important");
 			});
 		}

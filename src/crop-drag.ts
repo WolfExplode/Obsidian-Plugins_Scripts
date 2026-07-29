@@ -128,7 +128,7 @@ export function attachCropDrag(win: Window, app: App): () => void {
 			cHeld = true;
 			// Signal crop mode; Excalidraw may override the cursor over its canvas,
 			// which is harmless — the definitive crosshair is the overlay while dragging.
-			doc.body.style.cursor = "crosshair";
+			doc.body.setCssStyles({ cursor: "crosshair" });
 		}
 	};
 

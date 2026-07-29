@@ -33,7 +33,7 @@ export function attachContextMenuTrim(win: Window, app: App): () => void {
 			if (!menu) return;
 			for (const testid of HIDDEN_TESTIDS) {
 				const item = menu.querySelector<HTMLElement>(`[data-testid="${testid}"]`);
-				if (item) item.style.display = "none";
+				if (item) item.setCssStyles({ display: "none" });
 			}
 		}, 0);
 	};

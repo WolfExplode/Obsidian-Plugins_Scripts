@@ -30,7 +30,7 @@ export function getExcalidrawFileForLeaf(leaf: WorkspaceLeaf | null): TFile | nu
 
 /** Returns the active Board's file if the currently focused leaf is an Excalidraw view. */
 export function getActiveExcalidrawFile(app: App): TFile | null {
-	return getExcalidrawFileForLeaf(app.workspace.activeLeaf);
+	return getExcalidrawFileForLeaf(app.workspace.getMostRecentLeaf());
 }
 
 /** The persisted slice of an Excalidraw view's camera: where it's scrolled and how zoomed. */
@@ -334,8 +334,13 @@ export function hasUnloadedFiles(leaf: WorkspaceLeaf | null): boolean {
 export function setContainerVeiled(leaf: WorkspaceLeaf | null, veiled: boolean): void {
 	const container = getExcalidrawView(leaf)?.containerEl;
 	if (!container) return;
-	if (veiled) container.style.setProperty("visibility", "hidden", "important");
-	else container.style.removeProperty("visibility");
+	if (veiled) {
+		// eslint-disable-next-line obsidianmd/no-static-styles-assignment -- must be an inline
+		// style on this specific element, not a CSS class; see the docblock above for why.
+		container.style.setProperty("visibility", "hidden", "important");
+	} else {
+		container.style.removeProperty("visibility");
+	}
 }
 
 /**
@@ -910,7 +915,8 @@ export function getSceneElementFile(leaf: WorkspaceLeaf | null, fileId: string):
  * command/debug entry points that don't have an event target to locate from.
  */
 export function getActiveExcalidrawLeaf(app: App): WorkspaceLeaf | null {
-	if (isExcalidrawLeaf(app.workspace.activeLeaf)) return app.workspace.activeLeaf;
+	const recent = app.workspace.getMostRecentLeaf();
+	if (isExcalidrawLeaf(recent)) return recent;
 	let first: WorkspaceLeaf | null = null;
 	app.workspace.iterateAllLeaves((leaf) => {
 		if (!first && isExcalidrawLeaf(leaf)) first = leaf;
