@@ -10,20 +10,12 @@ export class ExcalidrawPureRefSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
-		containerEl.createEl("h2", { text: "Excalidraw PureRef" });
-		containerEl.createEl("p", {
-			text: "With image elements selected, hold Alt+Shift and drag left/right to flip horizontally or up/down to flip vertically. Alt-drag duplication is disabled while this plugin is active; Alt-drag moves normally.",
-		});
-		containerEl.createEl("p", {
-			text:
-				"Press F11 while an Excalidraw board is focused to open (or close) a chrome-free, " +
-				"always-on-top PureRef-style popout of that board. There is no in-canvas UI for this " +
-				"feature by design — everything is hotkey/mouse-driven inside the popout, and configured here.",
-		});
-
 		new Setting(containerEl)
 			.setName("F11 hotkey")
-			.setDesc("Rebind the popout toggle from Settings → Hotkeys → \"Excalidraw PureRef: Toggle PureRef popout\".")
+			.setDesc(
+				"Press F11 on an open Excalidraw board to toggle open/close PureRef-style popout. " +
+					"Rebind it from Settings → Hotkeys → \"Excalidraw PureRef: Toggle PureRef popout\".",
+			)
 			.addButton((button) =>
 				button.setButtonText("Open Hotkeys settings").onClick(() => {
 					const appWithSetting = this.app as unknown as {
@@ -34,9 +26,30 @@ export class ExcalidrawPureRefSettingTab extends PluginSettingTab {
 				}),
 			);
 
-		new Setting(containerEl)
-			.setName("Popout opacity")
-			.setDesc("Use Ctrl+- or Ctrl+plus on selected Excalidraw elements to change their opacity by 10%. With no selection in a focused Popout, the same keys change the whole window by 5%. Opacity carries across read-only/edit mode switches.");
+		containerEl.createEl("h3", { text: "Other hotkeys" });
+		containerEl.createEl("p", {
+			text:
+				"These are fixed and not rebindable from Settings → Hotkeys. Most of them intercept or " +
+				"override native Excalidraw/Obsidian keys, which only works by claiming a specific key " +
+				"combination directly.",
+		});
+
+		const hotkeyList = containerEl.createEl("ul");
+		const addHotkey = (combo: string, desc: string) => {
+			const li = hotkeyList.createEl("li");
+			li.createEl("strong", { text: combo });
+			li.appendText(" - " + desc);
+		};
+		addHotkey("F10", "inside an open Popout, switch between the editable popout and the read-only always-on-top transparent window.");
+		addHotkey("G / R / S", "with elements selected, start a Blender-style modal move / rotate / scale. Move with the mouse, type digits during Scale to enter an exact factor, Enter to confirm, Escape to cancel.");
+		addHotkey("C (hold) + drag", "crop the selected image(s) to the dragged rectangle. Alt+double-click an image to remove a custom crop (or its native crop, if any).");
+		addHotkey("Alt+Shift + drag", "with image elements selected, flip horizontally (left/right drag) or vertically (up/down drag). Alt-drag duplication is disabled; Alt-drag just moves.");
+		addHotkey("Ctrl/Cmd + Arrow", "gravity-pack the selected elements toward that edge.");
+		addHotkey("Ctrl/Cmd+Shift+P", "\"Optimal\" compact-arrange the selected elements.");
+		addHotkey("Ctrl/Cmd + ] / [", "overlap-aware Bring Forward / Send Backward (steps past the whole run of overlapping elements instead of one at a time).");
+		addHotkey("Ctrl/Cmd+F", "with exactly one element selected, find and select its duplicates on the board.");
+		addHotkey("Ctrl+Alt + Arrow", "with images selected, normalize them: Left = match height, Right = match width, Up = match size, Down = match scale.");
+		addHotkey("Ctrl/Cmd + - / +", "with elements selected, change their opacity by 10%. With no selection in a focused Popout, changes the whole window's opacity by 5% instead. Opacity carries across read-only/edit mode switches.");
 
 		new Setting(containerEl)
 			.setName("Forget remembered popout positions")
