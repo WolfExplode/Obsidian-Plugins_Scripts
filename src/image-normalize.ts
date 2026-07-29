@@ -32,6 +32,30 @@ function average(values: readonly number[]): number {
 }
 
 /**
+ * Whether the leaf's current selection has enough eligible elements (image or
+ * embeddable, the loosest of the four modes' requirements) for at least one
+ * Normalize mode to apply. Used to decide whether to show the context-menu
+ * entry at all — Normalize is a no-op below two elements.
+ */
+function hasNormalizableSelection(leaf: WorkspaceLeaf | null): boolean {
+	const view = leaf?.view as unknown as ImageView | undefined;
+	const api = view?.excalidrawAPI;
+	if (!api) return false;
+	try {
+		const selected = api.getAppState().selectedElementIds ?? {};
+		let count = 0;
+		for (const element of api.getSceneElements()) {
+			if ((element.type === "image" || element.type === "embeddable") && !element.isDeleted && selected[element.id] && element.width > 0 && element.height > 0) {
+				if (++count >= 2) return true;
+			}
+		}
+		return false;
+	} catch {
+		return false;
+	}
+}
+
+/**
  * Matches selected images to the selection's average height, width, displayed
  * area, or native-image scale. Every resize is centred on the original image.
  */
@@ -149,6 +173,7 @@ export function attachImageNormalize(win: Window, app: App): () => void {
 		win.setTimeout(() => {
 			const menu = win.document.querySelector(".context-menu");
 			if (!menu || menu.querySelector(".epr-normalize-menu")) return;
+			if (!hasNormalizableSelection(leaf)) return;
 			const item = win.document.createElement("li");
 			item.className = "epr-normalize-menu";
 			item.innerHTML = '<button type="button" class="context-menu-item"><div class="context-menu-item__label">Normalize</div><kbd class="context-menu-item__shortcut">›</kbd></button>';

@@ -43,6 +43,19 @@ to a normal move so it cannot duplicate a newly clicked element.
 | **F10** | Switches an existing editable Popout and its read-only transparent reference mode. | Only when one of those modes exists. |
 | **Ctrl+Shift+E** | Exports every selected image/video/embed to a folder chosen via the native OS dialog. A natively cropped image is rendered to a fresh PNG holding only its visible crop (flips included); an uncropped image or any other local media file is copied byte-for-byte. | Normal view and editable Popout, when a Board is the active leaf. |
 
+## Canvas context menu
+
+- **Cut / Copy / Paste are removed** from Excalidraw's native right-click
+  context menu. There, they operate on Excalidraw's own element clipboard
+  (selected elements only), not the OS clipboard, which read as a bug to
+  users expecting ordinary system copy/paste of an image. The **Ctrl+X** /
+  **Ctrl+C** / **Ctrl+V** keyboard shortcuts still work exactly as before —
+  only the confusing menu entries are gone.
+- **Crop image is removed** from the context menu. It's redundant with the
+  plugin's own hold-**C**-and-drag crop gesture and with double-clicking a
+  custom-cropped image to open the native crop editor (see the pointer
+  gestures table above).
+
 ## Popout defaults
 
 Editable PureRef Popouts are always-on-top and hide Obsidian chrome. They also
