@@ -316,7 +316,7 @@ export function attachMediaAutoPack(plugin: ExcalidrawPureRefPlugin): () => void
 		const original = view.synchronizeWithData;
 		if (typeof original !== "function") return () => {};
 		const wrapped = function (this: unknown, ...args: unknown[]) {
-			const result = original.call(this, ...args) as Promise<unknown>;
+			const result = original.call(this, ...args);
 			void Promise.resolve(result).then(() => {
 				if (scanner.isDisposed()) return;
 				debug("board-sync-resolved", {

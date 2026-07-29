@@ -188,6 +188,10 @@ export function attachPerLeafScanner<TState>(
 				leaf,
 				api.onChange(() => {
 					if (disposed) return;
+					// TState is narrowed to non-null above, but this project's pinned TS 4.7.4
+					// doesn't carry that narrowing for a generic `let` across a closure boundary
+					// (removing the assertion breaks `tsc`, even though newer TS versions accept it).
+					// eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- verified with tsc: the assertion is load-bearing on this project's pinned TypeScript version
 					options.scan(leaf, state as TState, handle);
 				}),
 			);
