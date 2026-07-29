@@ -47,7 +47,13 @@ interface ViewportCropState {
 	generatedPath: string;
 }
 
-const VIEWPORT_CROP_KEY = "excalidrawPureRefViewportCrop";
+/**
+ * customData key for the PureRef-style crop layer. Exported so callers that
+ * only need to recognize/read a custom crop (e.g. duplicate-finder.ts, to
+ * trace a materialized crop back to its source file) don't need their own
+ * copy of this string.
+ */
+export const VIEWPORT_CROP_KEY = "excalidrawPureRefViewportCrop";
 
 function getViewportCropState(el: ImageSceneElement): ViewportCropState | null {
 	const value = el.customData?.[VIEWPORT_CROP_KEY];

@@ -55,6 +55,18 @@ to a normal move so it cannot duplicate a newly clicked element.
   plugin's own hold-**C**-and-drag crop gesture and with double-clicking a
   custom-cropped image to open the native crop editor (see the pointer
   gestures table above).
+- **Find Duplicates is added** to the context menu when exactly one element is
+  selected. It searches the whole board for other elements with matching
+  content — for images, the same underlying file (by default, any crop of it
+  counts too, including this plugin's own hold-C custom crop — see
+  `TREAT_CROPS_AS_DUPLICATES` in
+  [duplicate-finder.ts](../../src/duplicate-finder.ts)); for embeddables
+  (video, PDF, web embeds), the same link/vault file; for other element types,
+  matching geometry, style, and (for text) content — and selects every match
+  found alongside the original, or shows a Notice if none exist. **Ctrl/Cmd+F**
+  also runs Find Duplicates instead of Excalidraw's native "Find text on
+  canvas" whenever exactly one element is selected; with nothing selected (or
+  more than one element), Ctrl/Cmd+F still opens the native Find as usual.
 
 ## Popout defaults
 
