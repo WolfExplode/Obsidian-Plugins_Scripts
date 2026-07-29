@@ -95,8 +95,54 @@ const MENU_ITEMS: Array<[ImageNormalizeMode, string, string]> = [
 	["scale", "Scale", "Ctrl+Alt+Down"],
 ];
 
-/** Adds PureRef's Normalize submenu to Excalidraw's native canvas context menu. */
+/**
+ * Adds PureRef's Normalize submenu to Excalidraw's native canvas context menu.
+ *
+ * The submenu is appended to `document.body` (not nested inside the Normalize
+ * `<li>`) and positioned with `position: fixed`, because Excalidraw's
+ * `.context-menu-popover` wrapper has `overflow: auto` — an absolutely
+ * positioned child extending past its bounds gets silently clipped.
+ */
 export function attachImageNormalize(win: Window, app: App): () => void {
+	let submenu: HTMLUListElement | null = null;
+	let hideTimeout: number | null = null;
+
+	const removeSubmenu = () => {
+		if (hideTimeout !== null) { win.clearTimeout(hideTimeout); hideTimeout = null; }
+		submenu?.remove();
+		submenu = null;
+	};
+	const cancelHide = () => { if (hideTimeout !== null) { win.clearTimeout(hideTimeout); hideTimeout = null; } };
+	const scheduleHide = () => { cancelHide(); hideTimeout = win.setTimeout(removeSubmenu, 200); };
+
+	const showSubmenu = (item: HTMLLIElement, leaf: WorkspaceLeaf, menu: Element) => {
+		removeSubmenu();
+		const rect = item.getBoundingClientRect();
+		const built = win.document.createElement("ul");
+		built.className = "epr-normalize-submenu is-open context-menu";
+		built.style.left = `${rect.right - 4}px`;
+		built.style.top = `${rect.top}px`;
+		for (const [mode, label, shortcut] of MENU_ITEMS) {
+			const child = win.document.createElement("li");
+			child.innerHTML = `<button type="button" class="context-menu-item"><div class="context-menu-item__label">${label}</div><kbd class="context-menu-item__shortcut">${shortcut}</kbd></button>`;
+			child.addEventListener("click", (click) => { click.stopPropagation(); void normalizeSelectedImages(leaf, mode); menu.parentElement?.remove(); removeSubmenu(); });
+			built.append(child);
+		}
+		built.addEventListener("mouseenter", cancelHide);
+		built.addEventListener("mouseleave", scheduleHide);
+		win.document.body.append(built);
+		submenu = built;
+	};
+
+	const menuCloseObserver = new MutationObserver((mutations) => {
+		for (const mutation of mutations) {
+			for (const removed of Array.from(mutation.removedNodes)) {
+				if (removed instanceof HTMLElement && removed.querySelector?.(".context-menu")) removeSubmenu();
+			}
+		}
+	});
+	menuCloseObserver.observe(win.document.body, { childList: true });
+
 	const onContextMenu = (event: MouseEvent) => {
 		const leaf = findExcalidrawLeafForNode(app, event.target as Node | null);
 		if (!leaf) return;
@@ -106,15 +152,8 @@ export function attachImageNormalize(win: Window, app: App): () => void {
 			const item = win.document.createElement("li");
 			item.className = "epr-normalize-menu";
 			item.innerHTML = '<button type="button" class="context-menu-item"><div class="context-menu-item__label">Normalize</div><kbd class="context-menu-item__shortcut">›</kbd></button>';
-			const submenu = win.document.createElement("ul");
-			submenu.className = "epr-normalize-submenu context-menu";
-			for (const [mode, label, shortcut] of MENU_ITEMS) {
-				const child = win.document.createElement("li");
-				child.innerHTML = `<button type="button" class="context-menu-item"><div class="context-menu-item__label">${label}</div><kbd class="context-menu-item__shortcut">${shortcut}</kbd></button>`;
-				child.addEventListener("click", (click) => { click.stopPropagation(); void normalizeSelectedImages(leaf, mode); menu.parentElement?.remove(); });
-				submenu.append(child);
-			}
-			item.append(submenu);
+			item.addEventListener("mouseenter", () => showSubmenu(item, leaf, menu));
+			item.addEventListener("mouseleave", scheduleHide);
 			menu.append(item);
 		}, 0);
 	};
@@ -130,5 +169,10 @@ export function attachImageNormalize(win: Window, app: App): () => void {
 	};
 	win.addEventListener("contextmenu", onContextMenu, true);
 	win.addEventListener("keydown", onKeyDown, true);
-	return () => { win.removeEventListener("contextmenu", onContextMenu, true); win.removeEventListener("keydown", onKeyDown, true); };
+	return () => {
+		win.removeEventListener("contextmenu", onContextMenu, true);
+		win.removeEventListener("keydown", onKeyDown, true);
+		menuCloseObserver.disconnect();
+		removeSubmenu();
+	};
 }

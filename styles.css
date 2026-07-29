@@ -32,22 +32,19 @@ body.epr-popout-mode .workspace-leaf-content,
 body.epr-popout-mode .view-content {
 	inset: 0 !important;
 }
-.epr-normalize-menu {
-	position: relative;
-}
-
+/*
+ * The Normalize submenu is appended to document.body (not nested inside this
+ * <li>) and positioned with `fixed`, because Excalidraw's
+ * `.context-menu-popover` wrapper has `overflow: auto`, which clips any
+ * absolutely-positioned child that extends past its bounds. Visibility is
+ * toggled in JS (src/image-normalize.ts) by adding/removing the element
+ * itself, not by a CSS :hover rule, since the submenu is no longer a
+ * descendant of the item that triggers it.
+ */
 .epr-normalize-submenu {
-	display: none;
-	position: absolute;
-	left: calc(100% - 4px);
-	top: 0;
+	position: fixed;
 	min-width: 190px;
 	z-index: 1000;
-}
-
-.epr-normalize-menu:hover > .epr-normalize-submenu,
-.epr-normalize-menu:focus-within > .epr-normalize-submenu {
-	display: block;
 }
 
 /*
