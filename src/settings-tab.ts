@@ -1,5 +1,6 @@
-import { App, type ButtonComponent, type Modifier, PluginSettingTab, Setting } from "obsidian";
+import { App, type ButtonComponent, type Modifier, Notice, PluginSettingTab, Setting } from "obsidian";
 import type ExcalidrawPureRefPlugin from "../main";
+import { findGlobalConflicts, type GlobalConflict } from "./hotkey-conflicts";
 import { currentModifiers, describeBindings } from "./hotkey-match";
 import { HOTKEY_ACTIONS, type HotkeyActionDef, type HotkeyBinding } from "./hotkey-registry";
 
@@ -15,6 +16,10 @@ function normalizeRecordedKey(event: KeyboardEvent): string {
 	return event.key;
 }
 
+function describeGlobalConflicts(conflicts: readonly GlobalConflict[]): string {
+	return conflicts.map((conflict) => `"${conflict.name}"`).join(", ");
+}
+
 export class ExcalidrawPureRefSettingTab extends PluginSettingTab {
 	constructor(app: App, private readonly plugin: ExcalidrawPureRefPlugin) {
 		super(app, plugin);
@@ -25,12 +30,6 @@ export class ExcalidrawPureRefSettingTab extends PluginSettingTab {
 		containerEl.empty();
 
 		new Setting(containerEl).setName("Hotkeys").setHeading();
-		containerEl.createEl("p", {
-			text:
-				"Every plugin hotkey lives here, including the ones also visible in Settings → Hotkeys " +
-				"(this list is the source of truth for those too). Click Record, then press the combo you " +
-				"want; Escape cancels without changing anything.",
-		});
 
 		const conflicts = this.plugin.hotkeys.findConflicts();
 		if (conflicts.size > 0) {
@@ -69,6 +68,7 @@ export class ExcalidrawPureRefSettingTab extends PluginSettingTab {
 	private renderAction(containerEl: HTMLElement, action: HotkeyActionDef, hasConflict: boolean): void {
 		const store = this.plugin.hotkeys;
 		const bindings = store.get(action.id);
+		const globalConflicts = bindings.flatMap((binding) => findGlobalConflicts(this.app, this.plugin.manifest.id, binding));
 
 		const setting = new Setting(containerEl).setName(action.name).setDesc(action.desc);
 
@@ -76,7 +76,7 @@ export class ExcalidrawPureRefSettingTab extends PluginSettingTab {
 		chip.setCssStyles({
 			marginRight: "0.5em",
 			fontFamily: "var(--font-monospace)",
-			color: hasConflict ? "var(--text-error)" : "",
+			color: hasConflict || globalConflicts.length > 0 ? "var(--text-error)" : "",
 		});
 
 		setting.addButton((button) => {
@@ -92,6 +92,11 @@ export class ExcalidrawPureRefSettingTab extends PluginSettingTab {
 					this.display();
 				}),
 		);
+
+		if (globalConflicts.length > 0) {
+			const warning = containerEl.createEl("p", { text: `Already bound to ${describeGlobalConflicts(globalConflicts)}.` });
+			warning.setCssStyles({ color: "var(--text-error)", fontSize: "var(--font-ui-smaller)", marginTop: "-0.5em", marginBottom: "0.5em" });
+		}
 	}
 
 	private startRecording(action: HotkeyActionDef, button: ButtonComponent): void {
@@ -116,7 +121,12 @@ export class ExcalidrawPureRefSettingTab extends PluginSettingTab {
 		};
 		const finish = (bindings: HotkeyBinding[] | null) => {
 			cleanup();
-			if (bindings) void store.set(action.id, bindings).then(() => this.display());
+			if (!bindings) return;
+			const conflicts = bindings.flatMap((binding) => findGlobalConflicts(this.app, this.plugin.manifest.id, binding));
+			if (conflicts.length > 0) {
+				new Notice(`"${action.name}" is already bound to ${describeGlobalConflicts(conflicts)}. Saved anyway — you can Reset if that's not what you wanted.`, 8000);
+			}
+			void store.set(action.id, bindings).then(() => this.display());
 		};
 
 		const onKeyDown = (event: KeyboardEvent) => {

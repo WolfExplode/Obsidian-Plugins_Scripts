@@ -20,10 +20,9 @@ function modifiersMatch(event: ModifierEvent, modifiers: readonly Modifier[]): b
 /**
  * Matches a configured key label against the event. Letters/digits compare
  * via event.code (layout-independent); "[" / "]" map to the bracket codes
- * Excalidraw/Obsidian also use for z-order; "=" additionally accepts the
- * event.key a Shift+= keypress reports on most layouts ("+"), matching the
- * plugin's pre-existing Ctrl+Shift+= opacity-increase alias. Anything else
- * (F-keys, "-") falls back to a case-insensitive event.key compare.
+ * Excalidraw/Obsidian also use for z-order; "=" additionally accepts "+" since
+ * some layouts report that for the same physical key even without Shift.
+ * Anything else (F-keys, "-") falls back to a case-insensitive event.key compare.
  */
 function keyMatches(event: KeyboardEvent, key: string): boolean {
 	if (/^[A-Za-z0-9]$/.test(key)) return event.code === `Key${key.toUpperCase()}` || event.code === `Digit${key}`;

@@ -64,7 +64,7 @@ export const HOTKEY_ACTIONS: readonly HotkeyActionDef[] = [
 		desc: "With elements selected, increase their opacity by 10%. With no selection in a focused popout, increases the whole window's opacity by 5% instead.",
 		kind: "key",
 		commandId: "increase-pureref-popout-opacity",
-		default: [{ modifiers: ["Ctrl"], key: "=" }, { modifiers: ["Ctrl", "Shift"], key: "=" }],
+		default: [{ modifiers: ["Ctrl"], key: "=" }],
 	},
 	{
 		id: "export-media",
