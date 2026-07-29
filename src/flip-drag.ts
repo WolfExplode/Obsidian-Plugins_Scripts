@@ -1,5 +1,7 @@
 import type { App } from "obsidian";
 import { flipImageElements, getImageIds, type ImageFlipAxis } from "./excalidraw-view";
+import { chordMatches } from "./hotkey-match";
+import type { HotkeyStore } from "./hotkey-store";
 import { attachPointerDrag, findCanvasLeaf } from "./pointer-drag";
 
 /** Ignore a small pointer wobble so Alt+Shift-click remains a no-op. */
@@ -15,10 +17,10 @@ interface FlipGesture {
  * horizontally; drag up/down flips them vertically. The gesture is captured
  * before Excalidraw can move the selection.
  */
-export function attachFlipDrag(win: Window, app: App): () => void {
+export function attachFlipDrag(win: Window, app: App, hotkeys: HotkeyStore): () => void {
 	const drag = attachPointerDrag<FlipGesture>(win, {
 		onStart(event) {
-			if (!event.altKey || !event.shiftKey || event.ctrlKey || event.metaKey || event.button !== 0) return null;
+			if (event.button !== 0 || !chordMatches(event, hotkeys.get("flip-drag-modifier"))) return null;
 			const leaf = findCanvasLeaf(app, event.target);
 			if (!leaf) return null;
 			const ids = getImageIds(leaf, true);

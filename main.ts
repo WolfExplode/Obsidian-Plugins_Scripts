@@ -13,17 +13,22 @@ import { attachMediaAutoPack } from "src/media-auto-pack";
 import { installCropDebugHook } from "src/crop-drag";
 import { attachAltRHotkey } from "src/alt-r";
 import { installKeyRelay, removeKeyRelay, cleanupOrphanPrototypes } from "src/transparent-proto";
+import { HotkeyStore } from "src/hotkey-store";
+import { syncObsidianHotkeys } from "src/hotkey-sync";
 
 /**
- * There is deliberately no settings object. Per ADR 0005 v1 has no user-facing
- * knobs: the hotkeys are configured through Obsidian's own Hotkeys page, and the
- * only persisted state is per-Board window geometry, which GeometryStore owns.
- * The settings TAB still exists (settings-tab.ts) as documentation plus the
- * "forget remembered popout positions" action.
+ * The only persisted state is per-Board window geometry (GeometryStore) and
+ * user hotkey overrides (HotkeyStore, src/hotkey-store.ts). Every plugin
+ * hotkey — including the ones backed by a real Obsidian command — is
+ * configurable from the plugin's own Settings tab (settings-tab.ts), which is
+ * the single place to see and rebind all of them; syncObsidianHotkeys keeps
+ * Obsidian's own command hotkeys in lockstep with that store instead of
+ * relying on Settings → Hotkeys.
  */
 export default class ExcalidrawPureRefPlugin extends Plugin {
 	geometry!: GeometryStore;
 	popouts!: PopoutManager;
+	hotkeys!: HotkeyStore;
 	private diagnosticEvents: Array<{ timestamp: number; type: string; data: unknown }> = [];
 
 	recordDiagnostic(type: string, data: unknown = {}): void {
@@ -45,6 +50,9 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 		this.geometry = new GeometryStore(this);
 		await this.geometry.load();
 
+		this.hotkeys = new HotkeyStore(this);
+		await this.hotkeys.load();
+
 		this.popouts = new PopoutManager(this);
 
 		// Close any transparent windows orphaned by a previous session (e.g. an
@@ -57,7 +65,7 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 		// alt-drag blocking, modal transforms, Normalize) bound to the main window
 		// in one call. Popout windows get their own binding when they open — see
 		// PopoutManager, which calls the same attachBoardGestures.
-		this.register(attachBoardGestures(window, this.app));
+		this.register(attachBoardGestures(window, this.app, { hotkeys: this.hotkeys }));
 
 		// Sanitize wikilink-unsafe characters out of dropped attachment filenames
 		// in the main window. Popout windows get their own bridge when they open
@@ -97,7 +105,6 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 		this.addCommand({
 			id: "toggle-pureref-popout",
 			name: "Toggle PureRef popout",
-			hotkeys: [{ modifiers: [], key: "F11" }],
 			checkCallback: (checking) => {
 				const file = getActiveExcalidrawFile(this.app);
 				// Also available while read-only mode is up, so F11 can close it even
@@ -112,7 +119,6 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 		this.addCommand({
 			id: "toggle-readonly-transparent-prototype",
 			name: "Toggle transparent reference mode",
-			hotkeys: [{ modifiers: [], key: "F10" }],
 			checkCallback: (checking) => {
 				const file = getActiveExcalidrawFile(this.app);
 				if (!this.popouts.canToggleReadOnlyPrototype(file)) return false;
@@ -125,7 +131,6 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 		this.addCommand({
 			id: "decrease-pureref-popout-opacity",
 			name: "Decrease PureRef popout opacity",
-			hotkeys: [{ modifiers: ["Ctrl"], key: "-" }],
 			checkCallback: (checking) => {
 				if (checking) return this.popouts.canAdjustFocusedPopoutOpacity();
 				this.popouts.adjustFocusedPopoutOpacity(-1);
@@ -136,10 +141,6 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 		this.addCommand({
 			id: "increase-pureref-popout-opacity",
 			name: "Increase PureRef popout opacity",
-			hotkeys: [
-				{ modifiers: ["Ctrl"], key: "=" },
-				{ modifiers: ["Ctrl", "Shift"], key: "=" },
-			],
 			checkCallback: (checking) => {
 				if (checking) return this.popouts.canAdjustFocusedPopoutOpacity();
 				this.popouts.adjustFocusedPopoutOpacity(1);
@@ -168,7 +169,6 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 		this.addCommand({
 			id: "export-selected-media",
 			name: "Export selected media to folder",
-			hotkeys: [{ modifiers: ["Ctrl", "Shift"], key: "E" }],
 			checkCallback: (checking) => {
 				const leaf = getActiveExcalidrawLeaf(this.app);
 				if (!leaf) return false;
@@ -177,6 +177,13 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 				return true;
 			},
 		});
+
+		// The 5 commands above are registered with no static hotkey: their
+		// binding is driven entirely by HotkeyStore/settings-tab.ts, applied here
+		// and re-applied on every settings change so the plugin's own hotkey UI
+		// is the single source of truth instead of Settings → Hotkeys.
+		syncObsidianHotkeys(this, this.hotkeys);
+		this.register(this.hotkeys.onChange(() => syncObsidianHotkeys(this, this.hotkeys)));
 
 		this.addSettingTab(new ExcalidrawPureRefSettingTab(this.app, this));
 	}

@@ -886,6 +886,7 @@ export class PopoutManager {
 		if (doc.defaultView) {
 			entry.detachGestures = attachBoardGestures(doc.defaultView, this.plugin.app, {
 				opacity: { onNoSelection: (direction) => this.adjustFocusedPopoutOpacity(direction) },
+				hotkeys: this.plugin.hotkeys,
 			});
 		}
 		entry.detachBoundsSaving = onWindowCloseById(newWindowId, () =>

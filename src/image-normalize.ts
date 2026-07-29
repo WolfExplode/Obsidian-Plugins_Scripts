@@ -1,5 +1,7 @@
 import type { App, WorkspaceLeaf } from "obsidian";
 import { applySelectionTransform, findExcalidrawLeafForNode, type TransformElement } from "./excalidraw-view";
+import { chordMatches, describeBinding } from "./hotkey-match";
+import type { HotkeyStore } from "./hotkey-store";
 
 export type ImageNormalizeMode = "height" | "width" | "size" | "scale";
 
@@ -113,10 +115,10 @@ export async function normalizeSelectedImages(leaf: WorkspaceLeaf | null, mode: 
 }
 
 const MENU_ITEMS: Array<[ImageNormalizeMode, string, string]> = [
-	["height", "Height", "Ctrl+Alt+Left"],
-	["width", "Width", "Ctrl+Alt+Right"],
-	["size", "Size", "Ctrl+Alt+Up"],
-	["scale", "Scale", "Ctrl+Alt+Down"],
+	["height", "Height", "Left"],
+	["width", "Width", "Right"],
+	["size", "Size", "Up"],
+	["scale", "Scale", "Down"],
 ];
 
 /**
@@ -127,7 +129,7 @@ const MENU_ITEMS: Array<[ImageNormalizeMode, string, string]> = [
  * `.context-menu-popover` wrapper has `overflow: auto` — an absolutely
  * positioned child extending past its bounds gets silently clipped.
  */
-export function attachImageNormalize(win: Window, app: App): () => void {
+export function attachImageNormalize(win: Window, app: App, hotkeys: HotkeyStore): () => void {
 	let submenu: HTMLUListElement | null = null;
 	let hideTimeout: number | null = null;
 
@@ -145,11 +147,13 @@ export function attachImageNormalize(win: Window, app: App): () => void {
 		const built = win.document.body.createEl("ul", { cls: "epr-normalize-submenu is-open context-menu" });
 		built.style.left = `${rect.right - 4}px`;
 		built.style.top = `${rect.top}px`;
-		for (const [mode, label, shortcut] of MENU_ITEMS) {
+		const modifierBinding = hotkeys.get("normalize-modifier")[0];
+		const modifierLabel = modifierBinding ? describeBinding(modifierBinding) : "";
+		for (const [mode, label, arrow] of MENU_ITEMS) {
 			const child = built.createEl("li");
 			const childButton = child.createEl("button", { cls: "context-menu-item", attr: { type: "button" } });
 			childButton.createDiv({ cls: "context-menu-item__label", text: label });
-			childButton.createEl("kbd", { cls: "context-menu-item__shortcut", text: shortcut });
+			childButton.createEl("kbd", { cls: "context-menu-item__shortcut", text: modifierLabel ? `${modifierLabel} + ${arrow}` : arrow });
 			child.addEventListener("click", (click) => { click.stopPropagation(); void normalizeSelectedImages(leaf, mode); menu.parentElement?.remove(); removeSubmenu(); });
 		}
 		built.addEventListener("mouseenter", cancelHide);
@@ -182,7 +186,7 @@ export function attachImageNormalize(win: Window, app: App): () => void {
 		}, 0);
 	};
 	const onKeyDown = (event: KeyboardEvent) => {
-		if (!event.ctrlKey || !event.altKey || event.metaKey || event.shiftKey || event.repeat) return;
+		if (event.repeat || !chordMatches(event, hotkeys.get("normalize-modifier"))) return;
 		const mode = event.code === "ArrowLeft" ? "height" : event.code === "ArrowRight" ? "width" : event.code === "ArrowUp" ? "size" : event.code === "ArrowDown" ? "scale" : null;
 		if (!mode) return;
 		const leaf = findExcalidrawLeafForNode(app, event.target as Node | null);

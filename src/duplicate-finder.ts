@@ -2,6 +2,8 @@ import { Notice, type App, type WorkspaceLeaf } from "obsidian";
 import { VIEWPORT_CROP_KEY } from "./crop-orchestrator";
 import { isEditableTarget } from "./editable-target";
 import { findExcalidrawLeafForNode, getExcalidrawApi, getExcalidrawView, type SceneElement } from "./excalidraw-view";
+import { eventMatchesAnyBinding } from "./hotkey-match";
+import type { HotkeyStore } from "./hotkey-store";
 
 /** The scene-element fields any type's duplicate signature might read. */
 interface DuplicateCandidateElement extends SceneElement {
@@ -218,10 +220,9 @@ function runDuplicateSearch(leaf: WorkspaceLeaf | null): void {
  * With nothing selected (or more than one element), Ctrl/Cmd+F is left alone
  * so Excalidraw's native "Find text on canvas" still opens as usual.
  */
-export function attachDuplicateFinder(win: Window, app: App): () => void {
+export function attachDuplicateFinder(win: Window, app: App, hotkeys: HotkeyStore): () => void {
 	const onKeyDown = (event: KeyboardEvent) => {
-		if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey || event.repeat) return;
-		if (event.code !== "KeyF") return;
+		if (event.repeat || !eventMatchesAnyBinding(event, hotkeys.get("duplicate-finder"))) return;
 		if (isEditableTarget(event.target)) return;
 		const leaf = findExcalidrawLeafForNode(app, event.target as Node | null);
 		if (!leaf || !hasSingleElementSelected(leaf)) return;

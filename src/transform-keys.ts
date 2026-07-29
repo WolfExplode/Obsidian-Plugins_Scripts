@@ -10,6 +10,8 @@ import {
 	resetSelectedRotation,
 	type TransformElement,
 } from "./excalidraw-view";
+import { eventMatchesAnyBinding } from "./hotkey-match";
+import type { HotkeyStore } from "./hotkey-store";
 import { leafDocument } from "./leaf-scanner";
 
 type TransformMode = "move" | "rotate" | "scale";
@@ -167,7 +169,7 @@ function scaleElements(active: ActiveTransform, rawFactor: number): TransformEle
  * see docs/integrations/excalidraw-shortcut-interception.md for the full
  * mechanism and exact diff targets before re-deriving it from scratch.
  */
-export function attachTransformKeydown(win: Window, app: App): () => void {
+export function attachTransformKeydown(win: Window, app: App, hotkeys: HotkeyStore): () => void {
 	const doc = win.document;
 	let suppressNextContextMenu = false;
 
@@ -285,8 +287,14 @@ export function attachTransformKeydown(win: Window, app: App): () => void {
 			);
 			return;
 		}
-		if (event.repeat || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || isEditableTarget(event.target)) return;
-		const mode: TransformMode | null = event.code === "KeyG" ? "move" : event.code === "KeyR" ? "rotate" : event.code === "KeyS" ? "scale" : null;
+		if (event.repeat || isEditableTarget(event.target)) return;
+		const mode: TransformMode | null = eventMatchesAnyBinding(event, hotkeys.get("transform-move"))
+			? "move"
+			: eventMatchesAnyBinding(event, hotkeys.get("transform-rotate"))
+				? "rotate"
+				: eventMatchesAnyBinding(event, hotkeys.get("transform-scale"))
+					? "scale"
+					: null;
 		if (!mode) return;
 		const leaf = findExcalidrawLeafForNode(app, event.target as Node | null);
 		if (!leaf) return;

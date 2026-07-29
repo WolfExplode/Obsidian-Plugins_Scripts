@@ -4,6 +4,7 @@ import { attachContextMenuTrim } from "./context-menu-trim";
 import { attachCropDrag } from "./crop-drag";
 import { attachDuplicateFinder } from "./duplicate-finder";
 import { attachFlipDrag } from "./flip-drag";
+import type { HotkeyStore } from "./hotkey-store";
 import { attachImageNormalize } from "./image-normalize";
 import { attachOpacityKeydown, type OpacityKeydownOptions } from "./opacity-keys";
 import { attachPackKeydown } from "./pack-keys";
@@ -14,6 +15,8 @@ export { isEditableTarget } from "./editable-target";
 
 export interface BoardGestureOptions {
 	opacity?: OpacityKeydownOptions;
+	/** Required in practice — every gesture below reads its trigger binding from this store. */
+	hotkeys: HotkeyStore;
 }
 
 /**
@@ -29,17 +32,18 @@ export interface BoardGestureOptions {
  *
  * Returns a single disposer that tears down all of them.
  */
-export function attachBoardGestures(win: Window, app: App, options: BoardGestureOptions = {}): () => void {
+export function attachBoardGestures(win: Window, app: App, options: BoardGestureOptions): () => void {
+	const { hotkeys } = options;
 	const detachers = [
-		attachPackKeydown(win, app),
-		attachOpacityKeydown(win, app, options.opacity),
-		attachZOrderKeydown(win, app),
-		attachCropDrag(win, app),
-		attachFlipDrag(win, app),
+		attachPackKeydown(win, app, hotkeys),
+		attachOpacityKeydown(win, app, hotkeys, options.opacity),
+		attachZOrderKeydown(win, app, hotkeys),
+		attachCropDrag(win, app, hotkeys),
+		attachFlipDrag(win, app, hotkeys),
 		attachAltDragDuplicateBlocker(win, app),
-		attachTransformKeydown(win, app),
-		attachImageNormalize(win, app),
-		attachDuplicateFinder(win, app),
+		attachTransformKeydown(win, app, hotkeys),
+		attachImageNormalize(win, app, hotkeys),
+		attachDuplicateFinder(win, app, hotkeys),
 		attachContextMenuTrim(win, app),
 	];
 	return () => {

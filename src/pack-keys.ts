@@ -5,6 +5,8 @@ import {
 	optimalPackSelectedElements,
 	packSelectedElements,
 } from "./excalidraw-view";
+import { chordMatches, eventMatchesAnyBinding } from "./hotkey-match";
+import type { HotkeyStore } from "./hotkey-store";
 import type { PackDirection } from "./pack-elements";
 
 const KEY_TO_DIRECTION: Record<string, PackDirection> = {
@@ -29,20 +31,18 @@ const KEY_TO_DIRECTION: Record<string, PackDirection> = {
  *
  * Returns a disposer that removes the listener.
  */
-export function attachPackKeydown(win: Window, app: App): () => void {
+export function attachPackKeydown(win: Window, app: App, hotkeys: HotkeyStore): () => void {
 	const handler = (event: KeyboardEvent) => {
-		// Ctrl (or Cmd) is required for every arrange; Alt never is.
-		if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
 		if (isEditableTarget(event.target)) return;
 
 		const run = (): boolean => {
-			// Optimal arrange: Ctrl/Cmd+Shift+P (KeyP is layout-independent).
-			if (event.shiftKey) {
-				if (event.code !== "KeyP") return false;
+			// Optimal arrange: a full key binding (default Ctrl/Cmd+Shift+P, KeyP is layout-independent).
+			if (eventMatchesAnyBinding(event, hotkeys.get("pack-optimal"))) {
 				const leaf = findExcalidrawLeafForNode(app, event.target as Node | null);
 				return !!leaf && optimalPackSelectedElements(leaf);
 			}
-			// Gravity pack: Ctrl/Cmd+Arrow (no Shift).
+			// Gravity pack: configurable modifier (default Ctrl/Cmd) + a fixed Arrow key.
+			if (!chordMatches(event, hotkeys.get("pack-gravity-modifier"))) return false;
 			const direction = KEY_TO_DIRECTION[event.key];
 			if (!direction) return false;
 			const leaf = findExcalidrawLeafForNode(app, event.target as Node | null);

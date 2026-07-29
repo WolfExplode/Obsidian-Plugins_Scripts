@@ -1,28 +1,20 @@
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { App, type ButtonComponent, type Modifier, PluginSettingTab, Setting } from "obsidian";
 import type ExcalidrawPureRefPlugin from "../main";
+import { currentModifiers, describeBindings } from "./hotkey-match";
+import { HOTKEY_ACTIONS, type HotkeyActionDef, type HotkeyBinding } from "./hotkey-registry";
 
-const FIXED_HOTKEYS: ReadonlyArray<readonly [string, string]> = [
-	["F10", "inside an open Popout, switch between the editable popout and the read-only always-on-top transparent window."],
-	["G / R / S", "with elements selected, start a Blender-style modal move / rotate / scale. Move with the mouse, type digits during Scale to enter an exact factor, Enter to confirm, Escape to cancel."],
-	["C (hold) + drag", "crop the selected image(s) to the dragged rectangle. Alt+double-click an image to remove a custom crop (or its native crop, if any)."],
-	["Alt+Shift + drag", "with image elements selected, flip horizontally (left/right drag) or vertically (up/down drag). Alt-drag duplication is disabled; Alt-drag just moves."],
-	["Ctrl/Cmd + Arrow", "gravity-pack the selected elements toward that edge."],
-	["Ctrl/Cmd+Shift+P", "\"Optimal\" compact-arrange the selected elements."],
-	["Ctrl/Cmd + ] / [", "overlap-aware Bring Forward / Send Backward (steps past the whole run of overlapping elements instead of one at a time)."],
-	["Ctrl/Cmd+F", "with exactly one element selected, find and select its duplicates on the board."],
-	["Ctrl+Alt + Arrow", "with images selected, normalize them: Left = match height, Right = match width, Up = match size, Down = match scale."],
-	["Ctrl/Cmd + - / +", "with elements selected, change their opacity by 10%. With no selection in a focused Popout, changes the whole window's opacity by 5% instead. Opacity carries across read-only/edit mode switches."],
-];
+/** Names KeyboardEvent.key reports for a bare modifier press, before a "real" key follows. */
+const MODIFIER_KEY_NAMES = new Set(["Control", "Alt", "Shift", "Meta"]);
 
-/**
- * Uses the imperative `display()` API, not the declarative
- * `getSettingDefinitions()` one: the installed "obsidian" npm package's
- * .d.ts documents getSettingDefinitions() as available since 1.13.0, but no
- * released Obsidian build (the dev vault here runs 1.9.12) implements it —
- * Settings.openTab() still calls tab.display() directly and throws
- * "e.display is not a function" if it's missing. Revisit if/when 1.13.0
- * actually ships.
- */
+/** Maps a recorded keydown to the Obsidian-style key label the registry/matcher use (see hotkey-match.ts). */
+function normalizeRecordedKey(event: KeyboardEvent): string {
+	if (/^Key[A-Z]$/.test(event.code)) return event.code.slice(3);
+	if (/^Digit\d$/.test(event.code)) return event.code.slice(5);
+	if (event.code === "BracketLeft") return "[";
+	if (event.code === "BracketRight") return "]";
+	return event.key;
+}
+
 export class ExcalidrawPureRefSettingTab extends PluginSettingTab {
 	constructor(app: App, private readonly plugin: ExcalidrawPureRefPlugin) {
 		super(app, plugin);
@@ -32,40 +24,37 @@ export class ExcalidrawPureRefSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
-		new Setting(containerEl)
-			.setName("F11 hotkey")
-			.setDesc(
-				"Press F11 on an open Excalidraw board to toggle open/close PureRef-style popout. " +
-					"Rebind it from Settings → Hotkeys → \"Excalidraw PureRef: Toggle PureRef popout\".",
-			)
-			.addButton((button) =>
-				button.setButtonText("Open hotkeys settings").onClick(() => {
-					const appWithSetting = this.app as unknown as {
-						setting: { open(): void; openTabById(id: string): void };
-					};
-					appWithSetting.setting.open();
-					appWithSetting.setting.openTabById("hotkeys");
-				}),
-			);
-
-		new Setting(containerEl).setName("Other hotkeys").setHeading();
+		new Setting(containerEl).setName("Hotkeys").setHeading();
 		containerEl.createEl("p", {
 			text:
-				"These are fixed and not rebindable from Settings → Hotkeys. Most of them intercept or " +
-				"override native Excalidraw/Obsidian keys, which only works by claiming a specific key " +
-				"combination directly.",
+				"Every plugin hotkey lives here, including the ones also visible in Settings → Hotkeys " +
+				"(this list is the source of truth for those too). Click Record, then press the combo you " +
+				"want; Escape cancels without changing anything.",
 		});
 
-		const hotkeyList = containerEl.createEl("ul");
-		for (const [combo, desc] of FIXED_HOTKEYS) {
-			const li = hotkeyList.createEl("li");
-			li.createEl("strong", { text: combo });
-			li.appendText(" - " + desc);
+		const conflicts = this.plugin.hotkeys.findConflicts();
+		if (conflicts.size > 0) {
+			const banner = containerEl.createEl("p");
+			banner.setCssStyles({ color: "var(--text-error)" });
+			banner.setText(
+				"Two or more actions below resolve to the same binding — only one of them will actually " +
+					"trigger. Conflicting entries are highlighted.",
+			);
+		}
+
+		const conflictingActionIds = new Set<string>();
+		for (const ids of conflicts.values()) for (const id of ids) conflictingActionIds.add(id);
+
+		for (const action of HOTKEY_ACTIONS) {
+			this.renderAction(containerEl, action, conflictingActionIds.has(action.id));
 		}
 
 		new Setting(containerEl)
 			.setName("Forget remembered popout positions")
-			.setDesc("Clears every Board's saved popout window position/size (per CONTEXT.md's geometry-persistence contract). Popouts will reopen at Obsidian's default position next time.")
+			.setDesc(
+				"Clears every Board's saved popout window position/size (per CONTEXT.md's geometry-persistence " +
+					"contract). Popouts will reopen at Obsidian's default position next time.",
+			)
 			.addButton((button) =>
 				button
 					.setButtonText("Forget all")
@@ -75,5 +64,90 @@ export class ExcalidrawPureRefSettingTab extends PluginSettingTab {
 						await this.plugin.geometry.clearAll();
 					}),
 			);
+	}
+
+	private renderAction(containerEl: HTMLElement, action: HotkeyActionDef, hasConflict: boolean): void {
+		const store = this.plugin.hotkeys;
+		const bindings = store.get(action.id);
+
+		const setting = new Setting(containerEl).setName(action.name).setDesc(action.desc);
+
+		const chip = setting.controlEl.createSpan({ text: describeBindings(bindings) });
+		chip.setCssStyles({
+			marginRight: "0.5em",
+			fontFamily: "var(--font-monospace)",
+			color: hasConflict ? "var(--text-error)" : "",
+		});
+
+		setting.addButton((button) => {
+			button.setButtonText("Record…").onClick(() => this.startRecording(action, button));
+		});
+		setting.addExtraButton((button) =>
+			button
+				.setIcon("rotate-ccw")
+				.setTooltip("Reset to default")
+				.setDisabled(!store.isOverridden(action.id))
+				.onClick(async () => {
+					await store.reset(action.id);
+					this.display();
+				}),
+		);
+	}
+
+	private startRecording(action: HotkeyActionDef, button: ButtonComponent): void {
+		const store = this.plugin.hotkeys;
+		const originalLabel = "Record…";
+		button.setButtonText(action.kind === "modifier" ? "Hold the modifiers, then release… (Esc to cancel)" : "Press keys… (Esc to cancel)");
+		button.setDisabled(true);
+
+		const doc = this.containerEl.ownerDocument;
+		// For a "modifier" action, the fullest chord seen while any modifier is
+		// still held — e.g. recording Ctrl+Alt sees Ctrl alone on the first
+		// keydown (Alt not pressed yet), so committing on that keydown would
+		// only ever capture the first key. Instead this accumulates the peak
+		// chord and only commits on keyup once every modifier has been let go.
+		let capturedModifiers: Modifier[] = [];
+
+		const cleanup = () => {
+			doc.removeEventListener("keydown", onKeyDown, true);
+			doc.removeEventListener("keyup", onKeyUp, true);
+			button.setDisabled(false);
+			button.setButtonText(originalLabel);
+		};
+		const finish = (bindings: HotkeyBinding[] | null) => {
+			cleanup();
+			if (bindings) void store.set(action.id, bindings).then(() => this.display());
+		};
+
+		const onKeyDown = (event: KeyboardEvent) => {
+			event.preventDefault();
+			event.stopImmediatePropagation();
+			if (event.key === "Escape") {
+				finish(null);
+				return;
+			}
+
+			if (action.kind === "modifier") {
+				if (!MODIFIER_KEY_NAMES.has(event.key)) return;
+				const modifiers = currentModifiers(event);
+				if (modifiers.length > capturedModifiers.length) capturedModifiers = modifiers;
+				return;
+			}
+
+			// A "key" action needs a real, non-modifier key to land on.
+			if (MODIFIER_KEY_NAMES.has(event.key)) return;
+			finish([{ modifiers: currentModifiers(event), key: normalizeRecordedKey(event) }]);
+		};
+
+		const onKeyUp = (event: KeyboardEvent) => {
+			if (action.kind !== "modifier") return;
+			event.preventDefault();
+			event.stopImmediatePropagation();
+			if (currentModifiers(event).length > 0) return; // at least one modifier is still held
+			finish(capturedModifiers.length ? [{ modifiers: capturedModifiers, key: null }] : null);
+		};
+
+		doc.addEventListener("keydown", onKeyDown, true);
+		doc.addEventListener("keyup", onKeyUp, true);
 	}
 }

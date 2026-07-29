@@ -1,6 +1,8 @@
 import type { App } from "obsidian";
 import { isEditableTarget } from "./editable-target";
 import { adjustSelectedElementsOpacity, findExcalidrawLeafForNode } from "./excalidraw-view";
+import { eventMatchesAnyBinding } from "./hotkey-match";
+import type { HotkeyStore } from "./hotkey-store";
 
 /**
  * Handles Ctrl+minus/plus before Obsidian's command dispatcher sees it. This
@@ -15,17 +17,16 @@ export interface OpacityKeydownOptions {
 	onNoSelection?: (direction: -1 | 1) => void;
 }
 
-export function attachOpacityKeydown(win: Window, app: App, options: OpacityKeydownOptions = {}): () => void {
+export function attachOpacityKeydown(win: Window, app: App, hotkeys: HotkeyStore, options: OpacityKeydownOptions = {}): () => void {
 	const handler = (event: KeyboardEvent) => {
-		if (!event.ctrlKey || event.metaKey || event.altKey) return;
 		// The selected element (if any) stays selected while its text label is being
 		// edited, so without this guard typing "-" or "=" inside that editor would be
 		// eaten as an opacity change instead of reaching the textarea.
 		if (isEditableTarget(event.target)) return;
 
-		const direction = event.key === "-"
+		const direction = eventMatchesAnyBinding(event, hotkeys.get("opacity-decrease"))
 			? -1
-			: (event.key === "=" || event.key === "+")
+			: eventMatchesAnyBinding(event, hotkeys.get("opacity-increase"))
 				? 1
 				: 0;
 		if (direction === 0) return;

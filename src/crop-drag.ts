@@ -15,6 +15,8 @@ import {
 	uncropImages,
 	type CropResult,
 } from "./crop-orchestrator";
+import { eventMatchesAnyBinding } from "./hotkey-match";
+import type { HotkeyStore } from "./hotkey-store";
 import { attachPointerDrag, findCanvasLeaf } from "./pointer-drag";
 
 /**
@@ -38,7 +40,7 @@ const MIN_DRAG_PX = 4;
  * a drag; releasing it mid-drag still completes the crop on pointer-up (matching
  * PureRef). Returns a disposer.
  */
-export function attachCropDrag(win: Window, app: App): () => void {
+export function attachCropDrag(win: Window, app: App, hotkeys: HotkeyStore): () => void {
 	const doc = win.document;
 	let cHeld = false;
 	let dragStartX = 0;
@@ -123,7 +125,7 @@ export function attachCropDrag(win: Window, app: App): () => void {
 				return;
 			}
 		}
-		if (event.key.toLowerCase() === "c" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+		if (eventMatchesAnyBinding(event, hotkeys.get("crop-hold"))) {
 			cHeld = true;
 			// Signal crop mode; Excalidraw may override the cursor over its canvas,
 			// which is harmless — the definitive crosshair is the overlay while dragging.
@@ -160,7 +162,11 @@ export function attachCropDrag(win: Window, app: App): () => void {
 	};
 
 	const onKeyUp = (event: KeyboardEvent) => {
-		if (event.key.toLowerCase() === "c") {
+		// Match on the bare key, ignoring modifiers: a keyup's modifier flags aren't
+		// reliable (e.g. releasing Ctrl and C near-simultaneously), and PureRef's own
+		// hold-C behavior never required the modifiers to still be held to release.
+		const heldKey = hotkeys.get("crop-hold")[0]?.key;
+		if (heldKey && event.key.toLowerCase() === heldKey.toLowerCase()) {
 			cHeld = false;
 			if (!drag.isActive()) doc.body.style.removeProperty("cursor");
 		}
