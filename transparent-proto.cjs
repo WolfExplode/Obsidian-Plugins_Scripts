@@ -30,11 +30,14 @@ const MARKER_TITLE = "__EPR_PROTOTYPE__";
 /** prototype window id -> its opener (Obsidian) BrowserWindow, for key relay + lifetime. */
 const openers = new Map();
 /**
- * prototype window id -> its intended {width,height} in DIP, captured once at
- * creation. Reasserted on every move because Electron drifts a transparent,
- * frameless window's size when it's moved at fractional DPI scaling (resizable:
- * false does not prevent this). Captured ONCE and never re-read, so a drifted
- * size can never feed back and compound.
+ * prototype window id -> its current intended {width,height} in DIP.
+ * Reasserted on every RMB-move because Electron drifts a transparent,
+ * frameless window's size when it's moved at fractional DPI scaling — this
+ * cancels that drift. Updated (not just captured once) whenever the user
+ * resizes the window natively, so a real resize sticks instead of being
+ * fought by the next move's drift-correction; a *drifted* size, however, must
+ * never feed back in, so the 'resize' handler ignores resizes it knows were
+ * caused by the move handler's own setBounds call (see suppressResizeCapture).
  */
 const fixedSizes = new Map();
 /**
@@ -46,6 +49,15 @@ const fixedSizes = new Map();
  * the window slowly crawl off the cursor.
  */
 const dragStates = new Map();
+/**
+ * Window ids whose very next 'resize' event was caused by OUR OWN setBounds
+ * call in the move handler below, not by the user dragging an edge. Without
+ * this, the 'resize' listener that keeps fixedSizes in sync with genuine
+ * user resizes would also capture the drift setBounds is trying to cancel —
+ * turning one drifted pixel into a growing window, larger on every mousemove
+ * of an RMB drag (the drifted size feeds back into the next move's target).
+ */
+const suppressResizeCapture = new Set();
 
 /**
  * Install the ipcMain handlers, replacing any left over from a previous (now
@@ -79,8 +91,12 @@ function installHandlers() {
 		if (size) {
 			// Pin width/height to their constant original values (see fixedSizes):
 			// a transparent frameless window drifts larger when moved at fractional
-			// DPI, and this cancels it without letting it compound.
+			// DPI, and this cancels it without letting it compound. Suppressed so
+			// the 'resize' this setBounds fires doesn't get mistaken for a genuine
+			// user resize and re-captured into fixedSizes (see suppressResizeCapture).
+			suppressResizeCapture.add(win.id);
 			win.setBounds({ x: nx, y: ny, width: size.width, height: size.height });
+			suppressResizeCapture.delete(win.id);
 		} else {
 			win.setPosition(nx, ny);
 		}
@@ -119,9 +135,9 @@ function createPrototype(options) {
 		backgroundColor: "#00000000",
 		opacity: options && typeof options.opacity === "number" ? Math.max(0.2, Math.min(1, options.opacity)) : 1,
 		hasShadow: false,
-		// Never resized (only moved), so lock the size — also removes any chance
-		// of DPI size drift.
-		resizable: false,
+		resizable: true,
+		minWidth: 120,
+		minHeight: 80,
 		skipTaskbar: true,
 		title: MARKER_TITLE,
 		webPreferences: {
@@ -161,9 +177,18 @@ function createPrototype(options) {
 	}
 
 	win.loadFile(htmlPath);
-	// Lock the size to what we requested (what the user sees as correct at open),
-	// captured once — see fixedSizes above.
+	// What we requested (what the user sees as correct at open) — see fixedSizes
+	// above; kept in sync by the 'resize' listener below whenever the user drags
+	// an edge to resize the window natively.
 	fixedSizes.set(win.id, { width: Math.round(bounds.width), height: Math.round(bounds.height) });
+	win.on("resize", () => {
+		if (win.isDestroyed()) return;
+		// Ignore resizes we caused ourselves (drift-correction during an RMB
+		// move) — only a genuine user edge-resize should update fixedSizes.
+		if (suppressResizeCapture.has(win.id)) return;
+		const [width, height] = win.getSize();
+		fixedSizes.set(win.id, { width, height });
+	});
 	if (parent) openers.set(win.id, parent);
 
 	// Tie the prototype's lifetime to Obsidian's window: when the opener closes
