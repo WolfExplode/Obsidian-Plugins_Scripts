@@ -56,7 +56,7 @@ function tryAutoConfirm(modal: HTMLElement): void {
  * buttons can render a tick after its container appears.
  */
 function considerNode(node: Node, win: Window): void {
-	if (!(node instanceof HTMLElement)) return;
+	if (!node.instanceOf(HTMLElement)) return;
 	const modal = node.classList?.contains("modal-container")
 		? node.querySelector<HTMLElement>(".modal.excalidraw-modal")
 		: node.matches?.(".modal.excalidraw-modal")

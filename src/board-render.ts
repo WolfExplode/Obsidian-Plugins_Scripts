@@ -187,7 +187,7 @@ export function collectMediaOverlays(
 		}
 	}
 	if (overlays.length || skipped) {
-		console.log(
+		console.debug(
 			`[Excalidraw PureRef] media overlays: ${overlays.length} rendered` +
 				(skipped ? `, ${skipped} unresolved link(s) skipped` : ""),
 		);
@@ -300,9 +300,8 @@ async function snapshotEmbeddableFile(plugin: ExcalidrawPureRefPlugin, file: TFi
 	const creator = registry?.getEmbedCreator?.(file);
 	if (!creator) return null;
 
-	const container = document.createElement("div");
+	const container = document.body.createDiv();
 	container.setCssStyles({ position: "fixed", left: "-99999px", top: "-99999px", pointerEvents: "none" });
-	document.body.appendChild(container);
 
 	let embed: EmbedComponentLike | null = null;
 	try {

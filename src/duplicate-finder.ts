@@ -236,9 +236,9 @@ export function attachDuplicateFinder(win: Window, app: App): () => void {
 			const menu = win.document.querySelector(".context-menu");
 			if (!menu || menu.querySelector(".epr-find-duplicates-menu")) return;
 			if (!hasSingleElementSelected(leaf)) return;
-			const item = win.document.createElement("li");
-			item.className = "epr-find-duplicates-menu";
-			item.innerHTML = '<button type="button" class="context-menu-item"><div class="context-menu-item__label">Find Duplicates</div></button>';
+			const item = menu.createEl("li", { cls: "epr-find-duplicates-menu" });
+			item.createEl("button", { cls: "context-menu-item", attr: { type: "button" } })
+				.createDiv({ cls: "context-menu-item__label", text: "Find Duplicates" });
 			item.addEventListener("click", (click) => {
 				click.stopPropagation();
 				// Hide, don't remove: runDuplicateSearch below changes
@@ -252,7 +252,6 @@ export function attachDuplicateFinder(win: Window, app: App): () => void {
 				if (popover) popover.setCssStyles({ display: "none" });
 				runDuplicateSearch(leaf);
 			});
-			menu.append(item);
 		}, 0);
 	};
 	win.addEventListener("contextmenu", onContextMenu, true);

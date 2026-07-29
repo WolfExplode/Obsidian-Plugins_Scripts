@@ -136,7 +136,7 @@ export function isExcalidrawPluginAvailable(app: App): boolean {
 
 export function getExcalidrawView(leaf: WorkspaceLeaf | null): ExcalidrawViewLike | null {
 	if (!isExcalidrawLeaf(leaf)) return null;
-	return leaf!.view as unknown as ExcalidrawViewLike;
+	return leaf!.view;
 }
 
 export function getExcalidrawApi(leaf: WorkspaceLeaf | null): ExcalidrawApi | null {
@@ -1090,7 +1090,7 @@ export function optimalPackElementsById(leaf: WorkspaceLeaf | null, ids: Readonl
 
 	const imported = all.filter((el) => ids.has(el.id) && isPackable(el));
 	if (imported.length < 2) return false;
-	const moves = planOptimalPack(imported as PackElement[], PACK_GAP);
+	const moves = planOptimalPack(imported, PACK_GAP);
 	if (moves.length === 0) return false;
 
 	const moveById = new Map(moves.map((move) => [move.id, move]));

@@ -311,12 +311,12 @@ export function attachMediaAutoPack(plugin: ExcalidrawPureRefPlugin): () => void
 		scanner: LeafScannerHandle<PackState>,
 	): (() => void) => {
 		const view = leaf.view as unknown as {
-			synchronizeWithData?: (...args: unknown[]) => Promise<unknown>;
+			synchronizeWithData?: (this: unknown, ...args: unknown[]) => Promise<unknown>;
 		};
 		const original = view.synchronizeWithData;
 		if (typeof original !== "function") return () => {};
 		const wrapped = function (this: unknown, ...args: unknown[]) {
-			const result = original.apply(this, args);
+			const result = original.call(this, ...args) as Promise<unknown>;
 			void Promise.resolve(result).then(() => {
 				if (scanner.isDisposed()) return;
 				debug("board-sync-resolved", {

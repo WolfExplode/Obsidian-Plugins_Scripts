@@ -72,12 +72,11 @@ export function attachCropDrag(win: Window, app: App): () => void {
 
 			dragStartX = event.clientX;
 			dragStartY = event.clientY;
-			overlay = doc.createElement("div");
+			overlay = doc.body.createDiv();
 			overlay.style.cssText =
 				"position:fixed;z-index:99999;pointer-events:none;box-sizing:border-box;" +
 				"border:1px solid var(--interactive-accent,#38bdf8);background:rgba(56,189,248,0.12);";
 			updateOverlay(dragStartX, dragStartY);
-			doc.body.appendChild(overlay);
 			return true;
 		},
 		onMove(event) {
@@ -199,13 +198,13 @@ const DEBUG_HOOK = "__eprCropDebug";
 
 export function installCropDebugHook(app: App): () => void {
 	const log = (label: string, result: CropResult) =>
-		console.log(`[EPR crop] ${label}: cropped=${result.cropped.length} skipped=${result.skipped.length}`, result);
+		console.debug(`[EPR crop] ${label}: cropped=${result.cropped.length} skipped=${result.skipped.length}`, result);
 
 	(window as unknown as Record<string, unknown>)[DEBUG_HOOK] = {
 		info: () => {
 			const leaf = getActiveExcalidrawLeaf(app);
 			const bbox = getSelectedImageSceneBBox(leaf);
-			console.log("[EPR crop] active leaf:", !!leaf, "selection bbox:", bbox);
+			console.debug("[EPR crop] active leaf:", !!leaf, "selection bbox:", bbox);
 			return bbox;
 		},
 		crop: async (rect: SceneRect) => {
@@ -217,7 +216,7 @@ export function installCropDebugHook(app: App): () => void {
 			const leaf = getActiveExcalidrawLeaf(app);
 			const bbox = getSelectedImageSceneBBox(leaf);
 			if (!bbox) {
-				console.log("[EPR crop] no image selected");
+				console.debug("[EPR crop] no image selected");
 				return null;
 			}
 			const rect: SceneRect = {
@@ -232,7 +231,7 @@ export function installCropDebugHook(app: App): () => void {
 		},
 		uncrop: async () => {
 			const uncropped = await uncropImages(app, getActiveExcalidrawLeaf(app));
-			console.log(`[EPR crop] uncrop: restored=${uncropped.length}`, uncropped);
+			console.debug(`[EPR crop] uncrop: restored=${uncropped.length}`, uncropped);
 			return uncropped;
 		},
 	};

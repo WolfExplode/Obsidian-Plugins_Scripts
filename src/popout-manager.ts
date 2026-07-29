@@ -869,7 +869,7 @@ export class PopoutManager {
 			return;
 		}
 
-		console.log("[Excalidraw PureRef] identified new popout window id:", newWindowId);
+		console.debug("[Excalidraw PureRef] identified new popout window id:", newWindowId);
 		this.pending = null;
 
 		if (!this.isCurrent(filePath, entry)) return;

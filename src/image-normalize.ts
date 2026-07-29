@@ -142,36 +142,25 @@ export function attachImageNormalize(win: Window, app: App): () => void {
 	const showSubmenu = (item: HTMLLIElement, leaf: WorkspaceLeaf, menu: Element) => {
 		removeSubmenu();
 		const rect = item.getBoundingClientRect();
-		const built = win.document.createElement("ul");
-		built.className = "epr-normalize-submenu is-open context-menu";
+		const built = win.document.body.createEl("ul", { cls: "epr-normalize-submenu is-open context-menu" });
 		built.style.left = `${rect.right - 4}px`;
 		built.style.top = `${rect.top}px`;
 		for (const [mode, label, shortcut] of MENU_ITEMS) {
-			const child = win.document.createElement("li");
-			const childButton = win.document.createElement("button");
-			childButton.type = "button";
-			childButton.className = "context-menu-item";
-			const childLabel = win.document.createElement("div");
-			childLabel.className = "context-menu-item__label";
-			childLabel.textContent = label;
-			const childShortcut = win.document.createElement("kbd");
-			childShortcut.className = "context-menu-item__shortcut";
-			childShortcut.textContent = shortcut;
-			childButton.append(childLabel, childShortcut);
-			child.append(childButton);
+			const child = built.createEl("li");
+			const childButton = child.createEl("button", { cls: "context-menu-item", attr: { type: "button" } });
+			childButton.createDiv({ cls: "context-menu-item__label", text: label });
+			childButton.createEl("kbd", { cls: "context-menu-item__shortcut", text: shortcut });
 			child.addEventListener("click", (click) => { click.stopPropagation(); void normalizeSelectedImages(leaf, mode); menu.parentElement?.remove(); removeSubmenu(); });
-			built.append(child);
 		}
 		built.addEventListener("mouseenter", cancelHide);
 		built.addEventListener("mouseleave", scheduleHide);
-		win.document.body.append(built);
 		submenu = built;
 	};
 
 	const menuCloseObserver = new MutationObserver((mutations) => {
 		for (const mutation of mutations) {
 			for (const removed of Array.from(mutation.removedNodes)) {
-				if (removed instanceof HTMLElement && removed.querySelector?.(".context-menu")) removeSubmenu();
+				if (removed.instanceOf(HTMLElement) && removed.querySelector?.(".context-menu")) removeSubmenu();
 			}
 		}
 	});
@@ -184,12 +173,12 @@ export function attachImageNormalize(win: Window, app: App): () => void {
 			const menu = win.document.querySelector(".context-menu");
 			if (!menu || menu.querySelector(".epr-normalize-menu")) return;
 			if (!hasNormalizableSelection(leaf)) return;
-			const item = win.document.createElement("li");
-			item.className = "epr-normalize-menu";
-			item.innerHTML = '<button type="button" class="context-menu-item"><div class="context-menu-item__label">Normalize</div><kbd class="context-menu-item__shortcut">›</kbd></button>';
+			const item = menu.createEl("li", { cls: "epr-normalize-menu" });
+			const itemButton = item.createEl("button", { cls: "context-menu-item", attr: { type: "button" } });
+			itemButton.createDiv({ cls: "context-menu-item__label", text: "Normalize" });
+			itemButton.createEl("kbd", { cls: "context-menu-item__shortcut", text: "›" });
 			item.addEventListener("mouseenter", () => showSubmenu(item, leaf, menu));
 			item.addEventListener("mouseleave", scheduleHide);
-			menu.append(item);
 		}, 0);
 	};
 	const onKeyDown = (event: KeyboardEvent) => {

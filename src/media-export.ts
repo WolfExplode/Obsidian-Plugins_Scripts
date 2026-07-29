@@ -84,7 +84,7 @@ interface ExcalidrawViewLike {
 }
 
 function getView(leaf: WorkspaceLeaf): ExcalidrawViewLike {
-	return leaf.view as unknown as ExcalidrawViewLike;
+	return leaf.view;
 }
 
 function getExportApi(leaf: WorkspaceLeaf): ExportApi | null {

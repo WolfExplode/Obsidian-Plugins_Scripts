@@ -79,7 +79,7 @@ interface EmbeddableEl {
 const DEBUG_HOOK = "__eprAspectDebug";
 let verbose = false;
 function dbg(...args: unknown[]): void {
-	if (verbose) console.log("[EPR aspect]", ...args);
+	if (verbose) console.debug("[EPR aspect]", ...args);
 }
 
 /**
@@ -113,7 +113,7 @@ function probeNaturalSize(win: Window, url: string, kind: "video" | "image"): Pr
 		const finish = (result: { w: number; h: number } | null) => {
 			if (settled) return;
 			settled = true;
-			clearTimeout(timer);
+			win.clearTimeout(timer);
 			resolve(result);
 		};
 		const timer = win.setTimeout(() => finish(null), 15000);
