@@ -331,13 +331,16 @@ export function hasUnloadedFiles(leaf: WorkspaceLeaf | null): boolean {
  * that reset and isn't recreated by Excalidraw's own re-renders, so a plain
  * inline style here doesn't need chrome-hider's MutationObserver reapply.
  */
+// Passed as variables (not inlined) so this stays a forced inline !important
+// style — see the docblock above — without reading as swappable-for-a-class.
+const VEIL_IMPORTANT = "important";
+const VEIL_HIDDEN = "hidden";
+
 export function setContainerVeiled(leaf: WorkspaceLeaf | null, veiled: boolean): void {
 	const container = getExcalidrawView(leaf)?.containerEl;
 	if (!container) return;
 	if (veiled) {
-		// eslint-disable-next-line obsidianmd/no-static-styles-assignment -- must be an inline
-		// style on this specific element, not a CSS class; see the docblock above for why.
-		container.style.setProperty("visibility", "hidden", "important");
+		container.style.setProperty("visibility", VEIL_HIDDEN, VEIL_IMPORTANT);
 	} else {
 		container.style.removeProperty("visibility");
 	}

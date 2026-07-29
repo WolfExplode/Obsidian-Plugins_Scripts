@@ -507,6 +507,10 @@ export async function cropImagesToSceneRect(
 			const current = new Map(api.getSceneElements?.().map((el) => [el.id, el]));
 			return targets.every((target) => {
 				const before = initialElements.get(target.id);
+				// eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- it isn't:
+				// `current`'s value type is the plain SceneElement `el` came in as, which has no
+				// versionNonce/fileId/customData; dropping this cast breaks `tsc` with
+				// "Property 'customData' does not exist on type 'SceneElement'".
 				const now = current.get(target.id) as ImageSceneElement | undefined;
 				return !!before && !!now && before.version === now.version && before.versionNonce === now.versionNonce && before.fileId === now.fileId && before.customData === now.customData?.[VIEWPORT_CROP_KEY];
 			});
@@ -605,7 +609,7 @@ export async function cropImagesToSceneRect(
 			// referenced binary is absent.
 			filesForScene = { ...(api.getFiles?.() ?? {}) };
 			for (const file of binaryFiles) {
-				filesForScene[file.id] = file as { dataURL?: string };
+				filesForScene[file.id] = file;
 			}
 		} catch {
 			for (const generated of generatedFiles) {

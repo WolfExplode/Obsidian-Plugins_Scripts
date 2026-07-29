@@ -248,7 +248,7 @@ export function attachDuplicateFinder(win: Window, app: App): () => void {
 				// targets a DOM node that's no longer there and throws (blanking
 				// the canvas until the file is reopened) -- the exact failure mode
 				// documented in context-menu-trim.ts for this same native menu.
-				const popover = menu.parentElement as HTMLElement | null;
+				const popover = menu.parentElement;
 				if (popover) popover.setCssStyles({ display: "none" });
 				runDuplicateSearch(leaf);
 			});

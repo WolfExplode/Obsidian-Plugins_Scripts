@@ -73,7 +73,7 @@ function getPersistedImageSeed(leaf: WorkspaceLeaf): { ids: Set<string>; fileIds
 	const scene = (leaf.view as unknown as { excalidrawData?: { scene?: { elements?: readonly ImageEl[] } } })
 		.excalidrawData?.scene;
 	const elements = scene?.elements;
-	if (!Array.isArray(elements)) return null;
+	if (!elements) return null;
 	const ids = new Set<string>();
 	const fileIds = new Set<string>();
 	for (const el of elements) {

@@ -161,8 +161,9 @@ export class PopoutManager {
 			await task();
 			this.plugin.recordDiagnostic("transition-complete", { label });
 		});
-		const handled = run.catch((error) => {
-			this.plugin.recordDiagnostic("transition-error", { label, error: String(error?.stack || error) });
+		const handled = run.catch((error: unknown) => {
+			const detail = error instanceof Error ? error.stack ?? error.message : String(error);
+			this.plugin.recordDiagnostic("transition-error", { label, error: detail });
 			console.error(`[Excalidraw PureRef] failed to ${label}.`, error);
 			new Notice(`Excalidraw PureRef could not ${label}. See the developer console for details.`);
 		});

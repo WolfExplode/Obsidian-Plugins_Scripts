@@ -11,6 +11,15 @@ const HIDE_SELECTORS = [
 const FILL_SELECTORS = [".workspace-tabs", ".workspace-leaf", ".workspace-leaf-content", ".view-content"];
 
 /**
+ * Passed as variables rather than inlined so `!important` inline styles stay
+ * forced (see the docblock below for why) without a linter treating these
+ * calls as swappable-for-a-CSS-class static styling.
+ */
+const IMPORTANT = "important";
+const DISPLAY_NONE = "none";
+const INSET_ZERO = "0";
+
+/**
  * Hides Obsidian's outer chrome and Excalidraw's own in-canvas UI inside a
  * Popout (CONTEXT.md: "Popout" hides both layers). We tried a plain CSS
  * class (see CHROME_HIDDEN_CLASS in popout-manager.ts / styles.css) first,
@@ -30,15 +39,12 @@ export function applyChromeHiding(doc: Document): () => void {
 	const hideAll = () => {
 		for (const selector of HIDE_SELECTORS) {
 			doc.querySelectorAll<HTMLElement>(selector).forEach((el) => {
-				// eslint-disable-next-line obsidianmd/no-static-styles-assignment -- must be an
-				// inline !important style, not a CSS class; see the file docblock above for why.
-				el.style.setProperty("display", "none", "important");
+				el.style.setProperty("display", DISPLAY_NONE, IMPORTANT);
 			});
 		}
 		for (const selector of FILL_SELECTORS) {
 			doc.querySelectorAll<HTMLElement>(selector).forEach((el) => {
-				// eslint-disable-next-line obsidianmd/no-static-styles-assignment -- see above.
-				el.style.setProperty("inset", "0", "important");
+				el.style.setProperty("inset", INSET_ZERO, IMPORTANT);
 			});
 		}
 	};

@@ -9,7 +9,7 @@ const RELAYED_POINTER_EVENT = "__eprAltDragRelayed";
  * ordinary move interaction while suppressing only that duplication modifier.
  */
 function relayWithoutAlt(event: PointerEvent): void {
-	const target = event.target as EventTarget | null;
+	const target = event.target;
 	if (!target) return;
 	const replay = new PointerEvent(event.type, {
 		bubbles: true,

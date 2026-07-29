@@ -97,7 +97,7 @@ function getPersistedEmbeddableSeed(leaf: WorkspaceLeaf): Set<string> | null {
 	const scene = (leaf.view as unknown as { excalidrawData?: { scene?: { elements?: readonly EmbeddableEl[] } } })
 		.excalidrawData?.scene;
 	const elements = scene?.elements;
-	if (!Array.isArray(elements)) return null;
+	if (!elements) return null;
 	const ids = new Set<string>();
 	for (const el of elements) {
 		if (el?.type !== "embeddable" || !el.id) continue;
