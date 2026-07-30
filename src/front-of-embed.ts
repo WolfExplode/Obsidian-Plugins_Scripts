@@ -18,6 +18,7 @@
 
 import { freehandInputPoints, freehandOptionsFor, getStroke, type FreehandStrokeOptions } from "./freehand";
 import { elementAABB, type PackElement } from "./pack-elements";
+import { roughCurve, roughLinearPath, roughOptionsFor, roughRectangle, type RoughOp } from "./rough";
 
 /** The minimal element shape the front-of-embed planner and mask builder read. */
 export interface FrontOfEmbedElement extends PackElement {
@@ -33,6 +34,8 @@ export interface FrontOfEmbedElement extends PackElement {
 	roughness?: number;
 	/** `"solid"` (or absent), `"dashed"`, or `"dotted"` -- a dashed stroke leaves gaps a solid mask would cover. */
 	strokeStyle?: string;
+	/** Seeds rough.js's generator, which is what makes the hand-drawn jitter reproducible. */
+	seed?: number;
 	/** Linear elements (line/arrow/freedraw): vertices relative to `x`/`y`. */
 	points?: readonly (readonly number[])[];
 	/** Freedraw: recorded pen pressure per point, when the input device reported any. */
@@ -285,6 +288,19 @@ export type MaskShape =
 	 */
 	| { kind: "roundrect"; radius: number; fill: boolean; strokeWidth: number; roughness: number; dash: readonly number[] | null }
 	/**
+	 * The hand-drawn path rough.js actually drew, reconstructed from the element's
+	 * `seed`. Needs no jitter allowance at all, because it *is* the jitter -- see
+	 * rough.ts. `fillPoints` is the nominal outline, used only to cover a filled
+	 * interior; the drawn edge comes from `ops`.
+	 */
+	| {
+			kind: "rough";
+			ops: readonly RoughOp[];
+			fillPoints: readonly (readonly number[])[] | null;
+			strokeWidth: number;
+			dash: readonly number[] | null;
+	  }
+	/**
 	 * A freedraw, masked by the closed polygon perfect-freehand builds around the
 	 * stroke -- the same geometry Excalidraw fills. Not a stroked centerline: the
 	 * points are streamlined before they are drawn, so the recorded points aren't
@@ -390,6 +406,23 @@ function cornerRadius(element: FrontOfEmbedElement): number {
 	return 0;
 }
 
+/**
+ * A diamond's four vertices, mirroring Excalidraw's own `getDiamondPoints`. The
+ * top and right are `floor(side / 2) + 1`, not the midpoint -- a unit off, but
+ * enough that a mask built on the midpoint misses the drawn path (verified live,
+ * 2026-07-30: a 280x200 diamond is drawn through x=141, y=101).
+ */
+function diamondPoints(element: FrontOfEmbedElement): readonly (readonly number[])[] {
+	const midX = Math.floor(element.width / 2) + 1;
+	const midY = Math.floor(element.height / 2) + 1;
+	return [
+		[midX, 0],
+		[element.width, midY],
+		[midX, element.height],
+		[0, midY],
+	];
+}
+
 export function maskShapeFor(element: FrontOfEmbedElement): MaskShape {
 	const nominalStrokeWidth = element.strokeWidth ?? 1;
 	const strokeWidth = drawnStrokeWidth(element.strokeStyle, nominalStrokeWidth);
@@ -421,6 +454,44 @@ export function maskShapeFor(element: FrontOfEmbedElement): MaskShape {
 				interior: fill && isPathALoop(element.points) ? element.points : null,
 			};
 		}
+	}
+
+	// Everything rough.js draws along a path it can be asked to reproduce exactly.
+	// Rounded rectangles and ellipses are not here yet: Excalidraw draws those
+	// through rough's SVG-path and ellipse routines, which this port doesn't cover,
+	// so they fall through to the nominal shapes and their jitter allowance.
+	if (element.points && element.points.length > 1 && (element.type === "line" || element.type === "arrow")) {
+		const points = element.points;
+		const options = roughOptionsFor(element, !element.roundness);
+		return {
+			kind: "rough",
+			ops: element.roundness ? roughCurve(points, options) : roughLinearPath(points, false, options),
+			fillPoints: fill && isPathALoop(points) ? points : null,
+			strokeWidth,
+			dash,
+		};
+	}
+
+	if (element.type === "rectangle" && !element.roundness) {
+		const { width: w, height: h } = element;
+		return {
+			kind: "rough",
+			ops: roughRectangle(w, h, roughOptionsFor(element, true)),
+			fillPoints: fill ? [[0, 0], [w, 0], [w, h], [0, h]] : null,
+			strokeWidth,
+			dash,
+		};
+	}
+
+	if (element.type === "diamond" && !element.roundness) {
+		const points = diamondPoints(element);
+		return {
+			kind: "rough",
+			ops: roughLinearPath(points, true, roughOptionsFor(element, true)),
+			fillPoints: fill ? points : null,
+			strokeWidth,
+			dash,
+		};
 	}
 
 	if (element.points && element.points.length > 1) {

@@ -178,6 +178,26 @@ function paintMask(
 		return;
 	}
 
+	if (mask.kind === "rough") {
+		if (mask.fillPoints) {
+			ctx.beginPath();
+			tracePolygon(ctx, mask.fillPoints);
+			ctx.fill();
+		}
+		ctx.beginPath();
+		for (const op of mask.ops) {
+			if (op.op === "move") ctx.moveTo(op.data[0], op.data[1]);
+			else ctx.bezierCurveTo(op.data[0], op.data[1], op.data[2], op.data[3], op.data[4], op.data[5]);
+		}
+		// No jitter allowance: this path *is* where rough.js drew, so the only slack
+		// needed is for the antialiased edge.
+		ctx.lineWidth = mask.strokeWidth + maskDilation(zoom, 0) * 2;
+		if (mask.dash) ctx.setLineDash(mask.dash as number[]);
+		ctx.stroke();
+		if (mask.dash) ctx.setLineDash([]);
+		return;
+	}
+
 	if (mask.kind === "outline") {
 		// Excalidraw fills this polygon as chained quadratics through the midpoints
 		// between successive points (its `getSvgPathFromStroke`), which is what makes

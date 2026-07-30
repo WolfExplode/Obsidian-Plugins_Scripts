@@ -30,6 +30,11 @@ directly rather than left as a pure upstream limitation.
   embeddable is driven entirely by existing scene z-order plus whether its
   bounds overlap the embeddable — there is nothing new for the user to turn
   on, and no plugin setting to disable it in v1.
+- **Sloppiness and stroke style are honoured.** An element's hand-drawn jitter
+  is reproduced from its own `seed`, so the mask follows where rough.js actually
+  drew rather than a band around where it might have; architect, artist and
+  cartoonist all mask correctly. Dashed and dotted strokes mask as dashes and
+  dots rather than as a solid line.
 - **What appears in front is the real element, not an approximation.** The
   mechanism copies Excalidraw's own rendered pixels through a mask of the
   element's shape, so what shows over the embeddable is identical to what
@@ -85,21 +90,22 @@ directly rather than left as a pure upstream limitation.
   each one, where the mask traces a shape as a single continuous path. On a
   shape with many segments the two can fall out of step, masking a gap and
   leaving part of a dash uncovered. The dilation's round caps absorb some of it.
-- **Hand-drawn jitter is still an allowance, not the real path.** At `roughness`
-  0 the mask is exact — rough.js emits zero offsets and `maskDilation` adds no
-  jitter allowance — but at 1 and 2 the mask is widened by
-  `MASK_JITTER_ALLOWANCE` per unit of roughness rather than following where
-  rough.js actually drew. That band is scene background wherever the stroke
-  didn't wander, and it is what remains of the rim on lines, arrows, rectangles
-  and ellipses.
+- **Rounded rectangles and ellipses still mask by allowance, not by path.**
+  `rough.ts` reproduces the hand-drawn path exactly for straight and curved
+  lines and arrows, sharp rectangles, and sharp diamonds — those need no jitter
+  allowance at all, because the mask *is* the drawn path. Excalidraw draws
+  rounded rectangles by handing rough.js an SVG path string and ellipses through
+  its own ellipse routine, and neither of those routines is ported, so those two
+  fall back to the nominal shape widened by `MASK_JITTER_ALLOWANCE` per unit of
+  roughness. That band is scene background wherever the stroke didn't wander,
+  and it is what remains of the rim.
 
-  rough.js is deterministic given the element's `seed`, so this is reproducible
-  in principle: a seeded LCG (`Math.imul(48271, seed)`) plus its per-shape
-  offset logic. The cost is that its random draws are *stateful and ordered*, so
-  a port has to match rough's exact call sequence per shape type, including its
-  SVG-path renderer — Excalidraw draws rounded rectangles by handing rough a
-  path string. A wrong draw order yields visibly wrong jitter rather than a
-  slightly wrong width.
+  Adding them means porting rough's `_svgPath`/`_bezierTo` and
+  `_computeEllipsePoints`. The same care applies as to everything already in
+  `rough.ts`: rough's random draws are stateful and ordered, so a routine that
+  computes the right numbers in the wrong sequence produces a completely
+  different path. Validate against `exportToSvg` rather than against the
+  upstream source.
 - **Hachure and cross-hatch fills mask as solid.** `fillStyle` is not read
   either, so a hatched interior masks as a slab rather than as its lines.
 - **Bound and elbowed arrows bail out.** Excalidraw does not draw these along
