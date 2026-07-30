@@ -179,7 +179,16 @@ function paintMask(
 	}
 
 	if (mask.kind === "rough") {
-		if (mask.fillPoints) {
+		if (mask.fillRadius > 0) {
+			// A rounded rectangle's interior: filling its bounding box instead would put
+			// the four background triangles back outside the drawn corner arcs.
+			const rounded = ctx as RoundRectCapableContext;
+			ctx.beginPath();
+			const radius = Math.min(mask.fillRadius, Math.abs(width) / 2, Math.abs(height) / 2);
+			if (rounded.roundRect) rounded.roundRect(0, 0, width, height, radius);
+			else ctx.rect(0, 0, width, height);
+			ctx.fill();
+		} else if (mask.fillPoints) {
 			ctx.beginPath();
 			tracePolygon(ctx, mask.fillPoints);
 			ctx.fill();
@@ -220,13 +229,6 @@ function paintMask(
 	ctx.beginPath();
 	if (mask.kind === "ellipse") {
 		ctx.ellipse(width / 2, height / 2, width / 2, height / 2, 0, 0, Math.PI * 2);
-	} else if (mask.kind === "roundrect") {
-		// Clamped because roundRect throws on a radius larger than half the shorter
-		// side, which a degenerate (near-zero) element can produce mid-creation.
-		const radius = Math.min(mask.radius, Math.abs(width) / 2, Math.abs(height) / 2);
-		const rounded = ctx as RoundRectCapableContext;
-		if (radius > 0 && rounded.roundRect) rounded.roundRect(0, 0, width, height, radius);
-		else ctx.rect(0, 0, width, height);
 	} else {
 		const points = mask.points.map((point) => [point[0] ?? 0, point[1] ?? 0] as const);
 		const first = points[0];

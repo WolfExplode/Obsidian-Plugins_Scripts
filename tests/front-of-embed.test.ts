@@ -155,25 +155,21 @@ describe("maskShapeFor", () => {
 		assert.equal(outlined.kind === "ellipse" && outlined.fill, false);
 
 		const box = maskShapeFor(el({ id: "r", type: "rectangle", backgroundColor: "transparent" }));
-		assert.equal(box.kind === "roundrect" && box.fill, false);
+		assert.equal(box.kind === "rough" && box.fillPoints, null);
 	});
 
 	it("treats a missing backgroundColor as unfilled", () => {
-		const shape = maskShapeFor(el({ id: "r", type: "rectangle", roundness: { type: 3 } }));
-		assert.equal(shape.kind, "roundrect");
-		assert.equal(shape.kind === "roundrect" && shape.fill, false);
-
-		// A sharp rectangle goes through the rough.js path, where an unfilled interior
-		// is expressed as having no fill polygon at all.
-		const sharp = maskShapeFor(el({ id: "s", type: "rectangle" }));
-		assert.equal(sharp.kind, "rough");
-		assert.equal(sharp.kind === "rough" && sharp.fillPoints, null);
+		// A rectangle masks along the path rough.js drew, so an unfilled interior is
+		// expressed as having neither a fill polygon nor a fill radius.
+		for (const roundness of [null, { type: 3 }]) {
+			const shape = maskShapeFor(el({ id: "r", type: "rectangle", roundness }));
+			assert.equal(shape.kind, "rough");
+			assert.equal(shape.kind === "rough" && shape.fillPoints, null);
+			assert.equal(shape.kind === "rough" && shape.fillRadius, 0);
+		}
 	});
 
 	it("masks a filled shape's interior too", () => {
-		const filled = maskShapeFor(el({ id: "r", type: "rectangle", backgroundColor: "#ffc9c9", roundness: { type: 3 } }));
-		assert.equal(filled.kind === "roundrect" && filled.fill, true);
-
 		const sharp = maskShapeFor(el({ id: "s", type: "rectangle", width: 40, height: 20, backgroundColor: "#ffc9c9" }));
 		assert.deepEqual(sharp.kind === "rough" ? sharp.fillPoints : null, [
 			[0, 0],
@@ -181,27 +177,43 @@ describe("maskShapeFor", () => {
 			[40, 20],
 			[0, 20],
 		]);
+
+		// A rounded rectangle's interior is no polygon, so it carries a radius instead.
+		const rounded = maskShapeFor(
+			el({ id: "r", type: "rectangle", width: 280, height: 200, backgroundColor: "#ffc9c9", roundness: { type: 3 } }),
+		);
+		assert.equal(rounded.kind === "rough" && rounded.fillPoints, null);
+		assert.equal(rounded.kind === "rough" && rounded.fillRadius, 32);
 	});
 
 	it("masks a rectangle with the corner radius Excalidraw actually draws it with", () => {
-		// Square corners left four triangles of scene background outside the drawn
-		// arcs, which read as notched corners over the embeddable.
+		// Square corners left four triangles of scene background outside the drawn arcs.
 		// Adaptive radius: a quarter of the shorter side until that exceeds the fixed
 		// 32, and 32 thereafter.
-		const big = maskShapeFor(el({ id: "r", type: "rectangle", width: 280, height: 200, roundness: { type: 3 } }));
-		assert.equal(big.kind === "roundrect" && big.radius, 32);
-		const small = maskShapeFor(el({ id: "r", type: "rectangle", width: 280, height: 80, roundness: { type: 3 } }));
-		assert.equal(small.kind === "roundrect" && small.radius, 20);
-		const custom = maskShapeFor(
-			el({ id: "r", type: "rectangle", width: 280, height: 200, roundness: { type: 3, value: 8 } }),
-		);
-		assert.equal(custom.kind === "roundrect" && custom.radius, 8);
-
+		const radiusOf = (width: number, height: number, roundness: { type: number; value?: number } | null): number => {
+			const shape = maskShapeFor(
+				el({ id: "r", type: "rectangle", width, height, roundness, backgroundColor: "#ffc9c9" }),
+			);
+			return shape.kind === "rough" ? shape.fillRadius : -1;
+		};
+		assert.equal(radiusOf(280, 200, { type: 3 }), 32);
+		assert.equal(radiusOf(280, 80, { type: 3 }), 20);
+		assert.equal(radiusOf(280, 200, { type: 3, value: 8 }), 8);
 		// Proportional radius is a flat quarter of the shorter side at any size.
-		const proportional = maskShapeFor(
-			el({ id: "r", type: "rectangle", width: 280, height: 200, roundness: { type: 2 } }),
+		assert.equal(radiusOf(280, 200, { type: 2 }), 50);
+		// No roundness at all means sharp corners.
+		assert.equal(radiusOf(280, 200, null), 0);
+	});
+
+	it("draws a rounded rectangle along a different path than a sharp one", () => {
+		const sharp = maskShapeFor(el({ id: "r", type: "rectangle", width: 280, height: 200, seed: 42 }));
+		const rounded = maskShapeFor(
+			el({ id: "r", type: "rectangle", width: 280, height: 200, seed: 42, roundness: { type: 3 } }),
 		);
-		assert.equal(proportional.kind === "roundrect" && proportional.radius, 50);
+		assert.ok(sharp.kind === "rough" && rounded.kind === "rough");
+		// Four sides doubled, against four sides and four corners doubled.
+		assert.equal(sharp.kind === "rough" ? sharp.ops.length : 0, 16);
+		assert.equal(rounded.kind === "rough" ? rounded.ops.length : 0, 32);
 	});
 
 	it("masks an ellipse as an ellipse", () => {
@@ -229,7 +241,7 @@ describe("maskShapeFor", () => {
 		const rect = maskShapeFor(
 			el({ id: "r", type: "rectangle", strokeWidth: 1, strokeStyle: "dashed", roundness: { type: 3 } }),
 		);
-		assert.deepEqual(rect.kind === "roundrect" ? rect.dash : null, [8, 9]);
+		assert.deepEqual(rect.kind === "rough" ? rect.dash : null, [8, 9]);
 		const line = maskShapeFor(
 			el({ id: "l", type: "line", strokeWidth: 1, strokeStyle: "dotted", points: [[0, 0], [10, 10]] }),
 		);
@@ -273,12 +285,12 @@ describe("maskShapeFor", () => {
 	});
 
 	it("carries roughness through to the dilation for the shapes still using an allowance", () => {
-		// Rounded rectangles and ellipses aren't reproduced from the seed yet, so they
-		// still widen by an allowance -- which is zero at architect roughness.
+		// Ellipses aren't reproduced from the seed yet, so they still widen by an
+		// allowance -- which is zero at architect roughness.
 		const artist = maskShapeFor(el({ id: "e", type: "ellipse", roughness: 2 }));
 		assert.equal(artist.kind === "ellipse" && artist.roughness, 2);
-		const architect = maskShapeFor(el({ id: "a", type: "rectangle", roughness: 0, roundness: { type: 3 } }));
-		assert.equal(architect.kind === "roundrect" && architect.roughness, 0);
+		const architect = maskShapeFor(el({ id: "a", type: "ellipse", roughness: 0 }));
+		assert.equal(architect.kind === "ellipse" && architect.roughness, 0);
 	});
 
 	it("masks a diamond along Excalidraw's own vertices, which are not the midpoints", () => {

@@ -90,22 +90,20 @@ directly rather than left as a pure upstream limitation.
   each one, where the mask traces a shape as a single continuous path. On a
   shape with many segments the two can fall out of step, masking a gap and
   leaving part of a dash uncovered. The dilation's round caps absorb some of it.
-- **Rounded rectangles and ellipses still mask by allowance, not by path.**
-  `rough.ts` reproduces the hand-drawn path exactly for straight and curved
-  lines and arrows, sharp rectangles, and sharp diamonds — those need no jitter
-  allowance at all, because the mask *is* the drawn path. Excalidraw draws
-  rounded rectangles by handing rough.js an SVG path string and ellipses through
-  its own ellipse routine, and neither of those routines is ported, so those two
-  fall back to the nominal shape widened by `MASK_JITTER_ALLOWANCE` per unit of
-  roughness. That band is scene background wherever the stroke didn't wander,
-  and it is what remains of the rim.
+- **Ellipses still mask by allowance, not by path.** `rough.ts` reproduces the
+  hand-drawn path exactly for straight and curved lines and arrows, rectangles
+  both sharp and rounded, and sharp diamonds — those need no jitter allowance at
+  all, because the mask *is* the drawn path. Excalidraw draws ellipses through
+  rough's own ellipse routine, which is not ported, so an ellipse falls back to
+  the nominal shape widened by `MASK_JITTER_ALLOWANCE` per unit of roughness.
+  That band is scene background wherever the stroke didn't wander. Rounded
+  diamonds fall back the same way.
 
-  Adding them means porting rough's `_svgPath`/`_bezierTo` and
-  `_computeEllipsePoints`. The same care applies as to everything already in
-  `rough.ts`: rough's random draws are stateful and ordered, so a routine that
-  computes the right numbers in the wrong sequence produces a completely
-  different path. Validate against `exportToSvg` rather than against the
-  upstream source.
+  Adding them means porting `generateEllipseParams`/`_computeEllipsePoints`. The
+  same care applies as to everything already in `rough.ts`: rough's random draws
+  are stateful and ordered, so a routine that computes the right numbers in the
+  wrong sequence produces a completely different path. Validate against
+  `exportToSvg` rather than against the upstream source.
 - **Hachure and cross-hatch fills mask as solid.** `fillStyle` is not read
   either, so a hatched interior masks as a slab rather than as its lines.
 - **Bound and elbowed arrows bail out.** Excalidraw does not draw these along
@@ -113,6 +111,39 @@ directly rather than left as a pure upstream limitation.
   boundary, and an elbowed arrow is re-routed as orthogonal segments — so their
   drawn path can't be masked from element data. They stay behind the embeddable.
   An ordinary unbound arrow works normally.
+
+## Worth revisiting: reading Excalidraw's geometry instead of reproducing it
+
+Every mask shape here is reproduced from element data by plugin-side ports of
+perfect-freehand (`freehand.ts`) and rough.js (`rough.ts`). That is a deliberate
+choice for the reason ADR 0010 gives — the compositing loop stays synchronous,
+with no cache and no frame of lag — but it is worth restating what it costs,
+because the alternative was checked and is real.
+
+Excalidraw *does* emit this geometry: `exportToSvg` (and `exportToCanvas` /
+`exportToBlob`) return the exact path data, and `new Path2D(d)` parses it
+directly. Measured at 4.2 ms for a 636-point freedraw. What it does **not** have
+is any synchronous per-element geometry API — of `ExcalidrawLib`'s 105 exports
+none expose one, the Obsidian plugin's `ExcalidrawAutomate` has nothing
+shape-related, and Excalidraw's internal `ShapeCache` is not reachable. So the
+real trade is *async emission plus a cache* against *synchronous reproduction*.
+
+The reproduction's standing costs:
+
+- `CONSTANT_VARIABILITY_PRESSURE` is a fitted constant that is knowingly wrong
+  (see the freedraw limitation below).
+- Neither port could be diffed against its source — perfect-freehand is not in
+  the Obsidian Excalidraw plugin's bundle — so both are reconstructions
+  validated only against the cases that were tested.
+- Upstream drift is silent. `strokeOptions.variability` is evidently a recent
+  Excalidraw addition, and it is exactly the kind of change that leaves masks
+  quietly sitting beside strokes with nothing failing loudly.
+
+If this is picked up, the shape to try is a `Path2D` cached per element
+`version` in element-local space, with the existing ports kept as the
+synchronous first-frame path so nothing ever lags. That would cover ellipses,
+the freedraw constant-pressure gap, custom pens and any future shape type at
+once, and make the ports a fallback rather than the source of truth.
 
 ## Known limitations
 

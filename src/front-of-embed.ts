@@ -18,7 +18,7 @@
 
 import { freehandInputPoints, freehandOptionsFor, getStroke, type FreehandStrokeOptions } from "./freehand";
 import { elementAABB, type PackElement } from "./pack-elements";
-import { roughCurve, roughLinearPath, roughOptionsFor, roughRectangle, type RoughOp } from "./rough";
+import { roughCurve, roughLinearPath, roughOptionsFor, roughRectangle, roughRoundRect, type RoughOp } from "./rough";
 
 /** The minimal element shape the front-of-embed planner and mask builder read. */
 export interface FrontOfEmbedElement extends PackElement {
@@ -286,7 +286,6 @@ export type MaskShape =
 	 * triangles of scene background outside the drawn corner arcs (seen live,
 	 * 2026-07-30).
 	 */
-	| { kind: "roundrect"; radius: number; fill: boolean; strokeWidth: number; roughness: number; dash: readonly number[] | null }
 	/**
 	 * The hand-drawn path rough.js actually drew, reconstructed from the element's
 	 * `seed`. Needs no jitter allowance at all, because it *is* the jitter -- see
@@ -297,6 +296,12 @@ export type MaskShape =
 			kind: "rough";
 			ops: readonly RoughOp[];
 			fillPoints: readonly (readonly number[])[] | null;
+			/**
+			 * Fills the element's whole box with this corner radius instead of
+			 * `fillPoints` -- a rounded rectangle's interior, which no polygon expresses.
+			 * 0 means "use `fillPoints`". Only ever one or the other.
+			 */
+			fillRadius: number;
 			strokeWidth: number;
 			dash: readonly number[] | null;
 	  }
@@ -456,10 +461,9 @@ export function maskShapeFor(element: FrontOfEmbedElement): MaskShape {
 		}
 	}
 
-	// Everything rough.js draws along a path it can be asked to reproduce exactly.
-	// Rounded rectangles and ellipses are not here yet: Excalidraw draws those
-	// through rough's SVG-path and ellipse routines, which this port doesn't cover,
-	// so they fall through to the nominal shapes and their jitter allowance.
+	// Everything rough.js draws along a path this port can reproduce exactly, from
+	// the element's own seed -- so these need no jitter allowance at all. Ellipses
+	// are not here yet: Excalidraw draws those through rough's own ellipse routine.
 	if (element.points && element.points.length > 1 && (element.type === "line" || element.type === "arrow")) {
 		const points = element.points;
 		const options = roughOptionsFor(element, !element.roundness);
@@ -467,17 +471,21 @@ export function maskShapeFor(element: FrontOfEmbedElement): MaskShape {
 			kind: "rough",
 			ops: element.roundness ? roughCurve(points, options) : roughLinearPath(points, false, options),
 			fillPoints: fill && isPathALoop(points) ? points : null,
+			fillRadius: 0,
 			strokeWidth,
 			dash,
 		};
 	}
 
-	if (element.type === "rectangle" && !element.roundness) {
+	if (element.type === "rectangle") {
 		const { width: w, height: h } = element;
+		const radius = cornerRadius(element);
+		const options = roughOptionsFor(element, true);
 		return {
 			kind: "rough",
-			ops: roughRectangle(w, h, roughOptionsFor(element, true)),
-			fillPoints: fill ? [[0, 0], [w, 0], [w, h], [0, h]] : null,
+			ops: radius > 0 ? roughRoundRect(w, h, radius, options) : roughRectangle(w, h, options),
+			fillPoints: fill && radius === 0 ? [[0, 0], [w, 0], [w, h], [0, h]] : null,
+			fillRadius: fill ? radius : 0,
 			strokeWidth,
 			dash,
 		};
@@ -489,6 +497,7 @@ export function maskShapeFor(element: FrontOfEmbedElement): MaskShape {
 			kind: "rough",
 			ops: roughLinearPath(points, true, roughOptionsFor(element, true)),
 			fillPoints: fill ? points : null,
+			fillRadius: 0,
 			strokeWidth,
 			dash,
 		};
@@ -545,10 +554,6 @@ export function maskShapeFor(element: FrontOfEmbedElement): MaskShape {
 			dash,
 			smooth: false,
 		};
-	}
-
-	if (element.type === "rectangle") {
-		return { kind: "roundrect", radius: cornerRadius(element), fill, strokeWidth, roughness, dash };
 	}
 
 	// image, and any element type this plugin hasn't accounted for: mask the whole

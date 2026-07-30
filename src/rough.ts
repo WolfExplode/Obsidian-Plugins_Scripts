@@ -266,6 +266,109 @@ function linearPathWith(
 	return ops;
 }
 
+/**
+ * rough.js's `_bezierTo`: a hand-drawn cubic. Its two passes use *different*
+ * offsets (`maxRandomnessOffset` and that plus 0.3) rather than the halving a
+ * line's overlay pass uses, and both draw from the same starting point.
+ */
+function bezierPass(
+	x1: number,
+	y1: number,
+	x2: number,
+	y2: number,
+	x: number,
+	y: number,
+	current: readonly [number, number],
+	options: RoughOptions,
+	sampler: Sampler,
+): RoughOp[] {
+	const ros = [options.maxRandomnessOffset, options.maxRandomnessOffset + 0.3];
+	const iterations = options.disableMultiStroke ? 1 : 2;
+	const pinned = options.preserveVertices;
+	const ops: RoughOp[] = [];
+	for (let i = 0; i < iterations; i++) {
+		if (i === 0 || pinned) {
+			ops.push({ op: "move", data: [current[0], current[1]] });
+		} else {
+			const magnitude = ros[0] ?? 0;
+			ops.push({ op: "move", data: [current[0] + sampler.offset(magnitude), current[1] + sampler.offset(magnitude)] });
+		}
+		const magnitude = ros[i] ?? 0;
+		const endX = pinned ? x : x + sampler.offset(magnitude);
+		const endY = pinned ? y : y + sampler.offset(magnitude);
+		ops.push({
+			op: "bcurveTo",
+			data: [
+				x1 + sampler.offset(magnitude),
+				y1 + sampler.offset(magnitude),
+				x2 + sampler.offset(magnitude),
+				y2 + sampler.offset(magnitude),
+				endX,
+				endY,
+			],
+		});
+	}
+	return ops;
+}
+
+/** A quadratic's two cubic control points, which is how rough normalizes one before drawing it. */
+function quadraticToCubic(
+	from: readonly [number, number],
+	control: readonly [number, number],
+	to: readonly [number, number],
+): [number, number, number, number] {
+	return [
+		from[0] + (2 / 3) * (control[0] - from[0]),
+		from[1] + (2 / 3) * (control[1] - from[1]),
+		to[0] + (2 / 3) * (control[0] - to[0]),
+		to[1] + (2 / 3) * (control[1] - to[1]),
+	];
+}
+
+/**
+ * A hand-drawn rounded rectangle. Excalidraw draws one by handing rough.js a
+ * path string, always of the same shape -- four straight sides and four
+ * quadratic corners -- so this walks those eight segments directly rather than
+ * needing rough's general SVG-path parser. Straight sides go through the line
+ * routine and corners through the bezier one, all sharing one generator, and the
+ * two passes of each segment are emitted together before moving to the next.
+ */
+export function roughRoundRect(width: number, height: number, radius: number, options: RoughOptions): RoughOp[] {
+	const r = Math.min(radius, Math.abs(width) / 2, Math.abs(height) / 2);
+	const w = width;
+	const h = height;
+	// Mirrors Excalidraw's own path: M r,0 L w-r,0 Q w,0 w,r L w,h-r Q w,h w-r,h
+	// L r,h Q 0,h 0,h-r L 0,r Q 0,0 r,0
+	const segments: Array<
+		{ kind: "line"; to: [number, number] } | { kind: "quad"; control: [number, number]; to: [number, number] }
+	> = [
+		{ kind: "line", to: [w - r, 0] },
+		{ kind: "quad", control: [w, 0], to: [w, r] },
+		{ kind: "line", to: [w, h - r] },
+		{ kind: "quad", control: [w, h], to: [w - r, h] },
+		{ kind: "line", to: [r, h] },
+		{ kind: "quad", control: [0, h], to: [0, h - r] },
+		{ kind: "line", to: [0, r] },
+		{ kind: "quad", control: [0, 0], to: [r, 0] },
+	];
+
+	const sampler = makeSampler(options, options.seed);
+	let current: [number, number] = [r, 0];
+	let ops: RoughOp[] = [];
+	for (const segment of segments) {
+		if (segment.kind === "line") {
+			ops = ops.concat(doubleLine(current[0], current[1], segment.to[0], segment.to[1], options, sampler));
+		} else {
+			const [c1x, c1y, c2x, c2y] = quadraticToCubic(current, segment.control, segment.to);
+			ops = ops.concat(
+				bezierPass(c1x, c1y, c2x, c2y, segment.to[0], segment.to[1], current, options, sampler),
+			);
+		}
+		current = segment.to;
+	}
+	return ops;
+}
+
 /** A hand-drawn rectangle -- rough.js draws one as a closed four-point polygon. */
 export function roughRectangle(width: number, height: number, options: RoughOptions): RoughOp[] {
 	return roughLinearPath(
