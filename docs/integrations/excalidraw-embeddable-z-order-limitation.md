@@ -36,6 +36,22 @@ Traced in Excalidraw core, `packages/excalidraw/components/App.tsx`:
   so z-order *is* respected between embeddables — the break is only ever
   "embeddable vs. canvas-drawn element."
 
+Verified live against a running board (2026-07-29), the layering inside
+`.excalidraw` is:
+
+| layer | z-index | pointer-events |
+| --- | --- | --- |
+| `canvas.static` (all drawn elements) | 1 | none |
+| `canvas.interactive` (selection UI) | 2 | auto |
+| `.excalidraw__embeddable-container` | 2, later in DOM → paints above | none until active |
+| `SVGLayer` / wysiwyg text editor | 3 | — |
+
+So the embeddable layer beats the drawn layer by exactly one z-index step plus
+DOM order. That is what makes a plugin-owned overlay viable at all (see below),
+and also why the tempting fix — pushing the embeddable *below* the static canvas
+with CSS — does not work: the static canvas is filled opaque with
+`viewBackgroundColor`, so a demoted embeddable is hidden rather than revealed.
+
 "Bring to front" / "Send to back" changes each element's position in the
 scene's z-order array, which correctly reorders paint order within a layer
 (canvas-drawn elements among themselves, or embeddables among themselves). It

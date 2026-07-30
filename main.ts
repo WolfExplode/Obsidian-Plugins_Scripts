@@ -81,9 +81,9 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 		// media newly created by an import; it seeds existing Board content first.
 		this.register(attachMediaAutoPack(this));
 		this.register(attachPopoutDropBridge(window.document, { alwaysBridge: false }));
-		// Mirrors elements already in front of an embeddable per scene z-order onto
-		// a DOM overlay layer, and dims the embeddable for live feedback during a
-		// draw/drag/resize/rotate gesture -- see
+		// Makes elements already in front of an embeddable per scene z-order
+		// actually render in front of it, by copying Excalidraw's own static canvas
+		// onto a DOM overlay through a mask of those elements' shapes -- see
 		// docs/behavior/front-of-embed-rendering.md and ADR 0010. Spans the main
 		// window and every Popout via the same leaf-scanner lifecycle as the
 		// correctors above.

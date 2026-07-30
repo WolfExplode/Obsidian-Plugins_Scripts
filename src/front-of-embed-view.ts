@@ -1,109 +1,62 @@
 import type { WorkspaceLeaf } from "obsidian";
 import type ExcalidrawPureRefPlugin from "../main";
-import { planFrontOfEmbedOverlaps, type FrontOfEmbedElement } from "./front-of-embed";
-import { elementAABB } from "./pack-elements";
+import { maskDilation, maskShapeFor, planFrontOfEmbedCandidates, type FrontOfEmbedElement, type MaskShape } from "./front-of-embed";
 import { getExcalidrawApi, readSceneElements } from "./excalidraw-view";
 import { attachPerLeafScanner, leafDocument, type LeafScannerApi, type LeafScannerHandle } from "./leaf-scanner";
 
 /**
  * DOM/API glue for Front-of-embed rendering -- see
  * docs/behavior/front-of-embed-rendering.md and
- * docs/adr/0010-front-of-embed-rendering.md for the mechanism this
- * implements. front-of-embed.ts (pure, dependency-free) decides WHICH
- * elements need the treatment; this file decides HOW: mounting a DOM overlay
- * canvas above every embeddable, rasterizing at-rest candidates onto it, and
- * dimming embeddable DOM nodes for live feedback while a gesture is in
- * progress.
+ * docs/adr/0010-front-of-embed-rendering.md for the mechanism this implements.
+ * front-of-embed.ts (pure, dependency-free) decides WHICH elements need the
+ * treatment and WHAT SHAPE each one occludes; this file does the compositing.
+ *
+ * The whole mechanism is: Excalidraw has already rendered every one of those
+ * elements into its own static canvas, this frame, at the current zoom, in the
+ * current theme. So the overlay paints an alpha mask of the qualifying elements,
+ * then copies Excalidraw's static canvas through it with `source-in`. Nothing is
+ * re-rendered and nothing is cached -- the overlay is a masked copy of live
+ * pixels, so it tracks drags, resizes, rotations, zooming and theme changes for
+ * free, with no gesture handling of its own.
  *
  * Rides the same attach/prune/reconcile lifecycle as video-aspect.ts,
  * animated-image-drop.ts, and media-auto-pack.ts (attachPerLeafScanner in
- * leaf-scanner.ts) -- one registration covers the main window and every
- * Popout, attaching to views as they mount and detaching as they close.
+ * leaf-scanner.ts) -- one registration covers the main window and every Popout,
+ * attaching to views as they mount and detaching as they close.
  */
-
-/** Fixed dim level for an embeddable while a live gesture over it is in progress. Not a setting in v1. */
-const GESTURE_DIM_OPACITY = "0.4";
-/** Above .excalidraw__canvas (z-index 1) and .interactive (2); below Excalidraw's own UI chrome (--zIndex-layerUI: 4+). */
-const OVERLAY_Z_INDEX = "3";
-
-interface SceneBounds {
-	minX: number;
-	minY: number;
-	maxX: number;
-	maxY: number;
-}
 
 /**
- * scrollX/scrollY/zoom only -- deliberately NOT offsetLeft/offsetTop.
- * Excalidraw's appState offsetLeft/offsetTop are the `.excalidraw` root's own
- * position on the page (verified live: equal to the root's
- * getBoundingClientRect(), to the pixel), used for page-relative pointer math.
- * The overlay canvas is a CSS-positioned child of that same root (`inset: 0`),
- * so its own drawing surface is already root-local -- adding offsetLeft/Top
- * again double-counts the root's page position. Confirmed live: an element
- * placed to overlap an embeddable rasterized ~(offsetLeft, offsetTop) px away
- * from where it should have appeared until this was removed.
+ * Ties with Excalidraw's own embeddable containers (also z-index 2, verified
+ * live) and with its interactive canvas, so DOM order decides -- which is why
+ * the overlay is kept as the *last* child of the `.excalidraw` root (see
+ * `ensureMounted`). Deliberately NOT 3: `--zIndex-svgLayer` and
+ * `--zIndex-wysiwyg` are 3, and a later-in-DOM overlay at that level paints over
+ * the in-place text editor.
  */
-interface ViewportSnapshot {
-	scrollX: number;
-	scrollY: number;
-	zoom: number;
-}
+const OVERLAY_Z_INDEX = "2";
 
-interface RasterState {
-	/**
-	 * Identifies which candidate elements (and versions) produced `bitmap` --
-	 * i.e. what's actually currently displayed. `bitmap`, `bounds`, and `ids`
-	 * always describe this same set; they're only ever replaced together, in
-	 * one assignment, once a matching export resolves. Never updated eagerly.
-	 */
-	key: string | null;
-	/**
-	 * Key of the most recently *requested* export, which may still be
-	 * in-flight -- separate from `key` so rasterize() can dedupe repeated
-	 * requests for the same candidate set without touching what's displayed
-	 * while the request is pending. Read repaint()'s comment before changing
-	 * this: pairing `bounds` with a not-yet-arrived `bitmap` was the exact bug
-	 * (verified live, 2026-07-29) behind an overlaid element visibly warping
-	 * while being dragged across an embeddable -- each re-scan updated bounds
-	 * to the new position/size immediately, but drawImage kept stretching the
-	 * still-old bitmap into that new rectangle until the fresh export landed.
-	 */
-	pendingKey: string | null;
-	/** Guards against an in-flight exportToBlob resolving after a newer request superseded it, or after teardown. */
-	token: number;
-	bitmap: ImageBitmap | null;
-	bounds: SceneBounds | null;
-	/** Ids of the elements baked into `bitmap`, so a live gesture can tell whether it's dragging one of them (see `overlaySuppressed`). */
-	ids: readonly string[];
-}
+/** Excalidraw's own static scene canvas -- the source of every pixel this overlay draws. */
+const STATIC_CANVAS_SELECTOR = "canvas.static";
 
 interface FrontOfEmbedState {
 	root: HTMLElement;
 	canvas: HTMLCanvasElement;
 	ctx: CanvasRenderingContext2D;
 	resizeObserver: ResizeObserver;
-	/** Embeddable ids currently dimmed for live-gesture feedback. */
-	dimmed: Set<string>;
-	pointerDown: boolean;
-	/** Set by scan() while a gesture is live: true when the overlay's frozen bitmap would show a stale copy of whatever's currently selected/moving, so repaint() should blank it instead. */
-	overlaySuppressed: boolean;
-	raster: RasterState;
-	lastViewport: ViewportSnapshot | null;
+	/** Recomputed on every scene change (see `scan`), read by every frame. */
+	candidates: ReadonlyArray<{ element: FrontOfEmbedElement; mask: MaskShape }>;
+	/** Whether the overlay currently has anything painted, so idle frames can skip the clear. */
+	painted: boolean;
 	rafHandle: number;
-	detachPointer: () => void;
 }
 
 /** Minimal shape of the `window.ExcalidrawLib` global the Excalidraw plugin injects per-window (PackageManager.ts). */
 interface ExcalidrawLibGlobal {
-	exportToBlob?(opts: {
-		elements: readonly unknown[];
-		appState?: Record<string, unknown>;
-		files: unknown;
-		mimeType?: string;
-		exportPadding?: number;
-	}): Promise<Blob>;
-	getCommonBoundingBox?(elements: readonly unknown[]): SceneBounds;
+	getFontString?(opts: { fontSize: number; fontFamily: number }): string;
+	getFontMetrics?(
+		fontFamily: number,
+		fontSize?: number,
+	): { unitsPerEm: number; ascender: number; descender: number; lineHeight: number } | undefined;
 }
 
 function windowOf(leaf: WorkspaceLeaf): (Window & { ExcalidrawLib?: ExcalidrawLibGlobal }) | null {
@@ -115,75 +68,210 @@ function findExcalidrawRoot(leaf: WorkspaceLeaf): HTMLElement | null {
 	return containerEl?.querySelector<HTMLElement>(".excalidraw") ?? null;
 }
 
-/** Same rotation-aware AABB union other Board features (pack-elements.ts, zorder.ts) already use, as a fallback if ExcalidrawLib's own bounding-box helper is unavailable. */
-function unionBounds(elements: readonly FrontOfEmbedElement[]): SceneBounds | null {
-	if (elements.length === 0) return null;
-	let minX = Infinity;
-	let minY = Infinity;
-	let maxX = -Infinity;
-	let maxY = -Infinity;
-	for (const element of elements) {
-		const rect = elementAABB(element);
-		minX = Math.min(minX, rect.minX);
-		minY = Math.min(minY, rect.minY);
-		maxX = Math.max(maxX, rect.maxX);
-		maxY = Math.max(maxY, rect.maxY);
+/**
+ * The vertical offset from an element's top edge to its first line's alphabetic
+ * baseline, matching Excalidraw's own `getVerticalOffset`
+ * (packages/element/src/renderElement.ts) exactly so the mask lands on the
+ * glyphs. Falls back to a rough half-line-height estimate if the bundled fork
+ * doesn't expose font metrics -- the mask is dilated, so a few units of error
+ * costs a slightly loose fit rather than a clipped glyph.
+ */
+function textBaselineOffset(
+	lib: ExcalidrawLibGlobal | undefined,
+	fontFamily: number,
+	fontSize: number,
+	lineHeightPx: number,
+): number {
+	const metrics = lib?.getFontMetrics?.(fontFamily, fontSize);
+	if (!metrics?.unitsPerEm) return (lineHeightPx + fontSize) / 2;
+	const fontSizeEm = fontSize / metrics.unitsPerEm;
+	const lineGap = (lineHeightPx - fontSizeEm * metrics.ascender + fontSizeEm * metrics.descender) / 2;
+	return fontSizeEm * metrics.ascender + lineGap;
+}
+
+/**
+ * Paints one element's occluded region, opaque, in element-local coordinates.
+ * Only the alpha matters -- the colour is discarded by the `source-in` blit that
+ * replaces these pixels with Excalidraw's own.
+ */
+function paintMask(
+	ctx: CanvasRenderingContext2D,
+	mask: MaskShape,
+	element: FrontOfEmbedElement,
+	zoom: number,
+	lib: ExcalidrawLibGlobal | undefined,
+): void {
+	const { width, height } = element;
+
+	if (mask.kind === "box") {
+		ctx.fillRect(0, 0, width, height);
+		return;
 	}
-	return { minX, minY, maxX, maxY };
-}
 
-function raterKey(elements: readonly FrontOfEmbedElement[]): string {
-	return elements
-		.map((element) => `${element.id}:${element.version ?? 0}`)
-		.sort()
-		.join("|");
+	if (mask.kind === "text") {
+		ctx.font = lib?.getFontString?.({ fontSize: mask.fontSize, fontFamily: mask.fontFamily }) ?? `${mask.fontSize}px sans-serif`;
+		ctx.textAlign = mask.textAlign;
+		// strokeText over fillText dilates the glyphs enough to cover their
+		// antialiased edges; without it the blit clips a hairline off every letter.
+		// Text carries no rough.js jitter, so it gets the antialias allowance only.
+		ctx.lineWidth = maskDilation(zoom, false) * 2;
+		const baseline = textBaselineOffset(lib, mask.fontFamily, mask.fontSize, mask.lineHeightPx);
+		mask.lines.forEach((line, index) => {
+			const y = index * mask.lineHeightPx + baseline;
+			ctx.fillText(line, mask.horizontalOffset, y);
+			ctx.strokeText(line, mask.horizontalOffset, y);
+		});
+		return;
+	}
+
+	ctx.beginPath();
+	if (mask.kind === "ellipse") {
+		ctx.ellipse(width / 2, height / 2, width / 2, height / 2, 0, 0, Math.PI * 2);
+	} else {
+		const points = mask.points.map((point) => [point[0] ?? 0, point[1] ?? 0] as const);
+		const first = points[0];
+		const last = points[points.length - 1];
+		if (!first || !last) return;
+		ctx.moveTo(first[0], first[1]);
+		if (mask.smooth && points.length > 2) {
+			// Quadratic through the midpoints between successive control points: the
+			// standard smoothing that approximates the cardinal spline rough.js draws
+			// for a curved line/arrow, close enough to stay inside the dilation.
+			for (let i = 1; i < points.length - 1; i++) {
+				const point = points[i];
+				const next = points[i + 1];
+				if (!point || !next) continue;
+				ctx.quadraticCurveTo(point[0], point[1], (point[0] + next[0]) / 2, (point[1] + next[1]) / 2);
+			}
+			ctx.lineTo(last[0], last[1]);
+		} else {
+			for (let i = 1; i < points.length; i++) {
+				const point = points[i];
+				if (point) ctx.lineTo(point[0], point[1]);
+			}
+		}
+		if (mask.closed) ctx.closePath();
+	}
+	if (mask.fill) ctx.fill();
+	ctx.lineWidth = mask.strokeWidth + maskDilation(zoom, true) * 2;
+	ctx.stroke();
 }
 
 /**
- * Maps each non-deleted embeddable element to its `.excalidraw__embeddable-container`
- * DOM node, by position rather than id.
- *
- * Verified live (2026-07-29, MCP-attached against a running board): the
- * bundled Excalidraw fork's embeddable container carries no id or data
- * attribute identifying which scene element it renders -- only
- * `CustomEmbeddable.tsx`'s `#embed-${element.id}` markup (used for local
- * Obsidian-rendered embeds) has one, and this board's web/YouTube embeddables
- * render through a plain `<webview>` with no such wrapper at all. Positional
- * correlation is used instead: the root-cause doc for
- * excalidraw-embeddable-z-order-limitation.md already established that
- * `renderEmbeddables()` maps embeddables in scene order, and a live check
- * (comparing two embeddables' screen transforms against their scene y
- * values) confirmed DOM order matches scene array order. If the counts don't
- * match -- e.g. mid-render, or a container type this plugin hasn't accounted
- * for -- this returns an empty map and dimming is skipped for that tick
- * rather than guessing.
+ * Re-attaches the overlay if Excalidraw replaced its root (a mode switch does
+ * this without closing the leaf) and keeps it the last child of that root:
+ * embeddable containers share the overlay's z-index, so being appended after
+ * them is what puts the overlay on top, and React appends a newly-mounted
+ * embeddable to the same parent.
  */
-function mapEmbeddableContainers(root: HTMLElement, elements: readonly FrontOfEmbedElement[]): ReadonlyMap<string, HTMLElement> {
-	const embeddableElements = elements.filter((element) => element.type === "embeddable" && !element.isDeleted);
-	const containers = Array.from(root.querySelectorAll<HTMLElement>(".excalidraw__embeddable-container"));
-	if (containers.length !== embeddableElements.length) return new Map();
-	const map = new Map<string, HTMLElement>();
-	embeddableElements.forEach((element, index) => map.set(element.id, containers[index]));
-	return map;
+function ensureMounted(leaf: WorkspaceLeaf, state: FrontOfEmbedState): void {
+	if (!state.canvas.isConnected) {
+		const root = findExcalidrawRoot(leaf);
+		if (!root) return;
+		state.root = root;
+		root.appendChild(state.canvas);
+		state.resizeObserver.disconnect();
+		state.resizeObserver.observe(root);
+		return;
+	}
+	if (state.root.lastElementChild !== state.canvas) state.root.appendChild(state.canvas);
+}
+
+/** Composites the overlay for one frame: mask the qualifying elements, then blit Excalidraw's own pixels through it. */
+function paint(leaf: WorkspaceLeaf, state: FrontOfEmbedState): void {
+	const { ctx, canvas } = state;
+	const width = canvas.width;
+	const height = canvas.height;
+
+	const api = getExcalidrawApi(leaf);
+	const staticCanvas = state.root.querySelector<HTMLCanvasElement>(STATIC_CANVAS_SELECTOR);
+	if (state.candidates.length === 0 || !api?.getAppState || !staticCanvas) {
+		if (state.painted) {
+			ctx.setTransform(1, 0, 0, 1, 0, 0);
+			ctx.clearRect(0, 0, width, height);
+			state.painted = false;
+		}
+		return;
+	}
+
+	const appState = api.getAppState();
+	const zoom = appState.zoom.value;
+	const { scrollX, scrollY } = appState;
+	const cssWidth = state.root.clientWidth;
+	const cssHeight = state.root.clientHeight;
+	const dpr = width / Math.max(1, cssWidth);
+	const lib = windowOf(leaf)?.ExcalidrawLib;
+
+	ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+	ctx.globalCompositeOperation = "source-over";
+	ctx.clearRect(0, 0, cssWidth, cssHeight);
+	ctx.fillStyle = "#000";
+	ctx.strokeStyle = "#000";
+	ctx.lineJoin = "round";
+	ctx.lineCap = "round";
+
+	for (const { element, mask } of state.candidates) {
+		ctx.save();
+		// Element-local -> viewport: place the element's origin, scale to zoom, then
+		// rotate about its centre, matching how Excalidraw itself transforms it.
+		// Note there is no offsetLeft/offsetTop term: appState's offsets are the
+		// `.excalidraw` root's own page position, and this canvas is a child of that
+		// root (`inset: 0`), so its coordinates are already root-local.
+		ctx.translate((element.x + scrollX) * zoom, (element.y + scrollY) * zoom);
+		ctx.scale(zoom, zoom);
+		ctx.translate(element.width / 2, element.height / 2);
+		ctx.rotate(element.angle ?? 0);
+		ctx.translate(-element.width / 2, -element.height / 2);
+		paintMask(ctx, mask, element, zoom, lib);
+		ctx.restore();
+	}
+
+	// Everything painted above is now just a stencil: keep Excalidraw's own
+	// rendered pixels only where the mask covered them.
+	ctx.globalCompositeOperation = "source-in";
+	ctx.drawImage(staticCanvas, 0, 0, cssWidth, cssHeight);
+	ctx.globalCompositeOperation = "source-over";
+	state.painted = true;
 }
 
 /**
- * Sets or restores an embeddable container's opacity. Verified live: writing
- * `style.opacity` directly on `.excalidraw__embeddable-container` survives
- * both an unrelated scene mutation and a mutation of the embeddable's own
- * position (two separate `updateScene` calls, checked after each) without
- * Excalidraw's own re-render stomping it back -- so this only needs to run on
- * the dimmed/restored transition, not every scan tick. Not confirmed against
- * a live pointer-driven drag specifically (only programmatic `updateScene`),
- * so if a real drag is ever observed reverting this, re-apply on every tick
- * instead of only on transition.
+ * The compositing loop, which runs only while the overlay has something to draw.
+ * It stops itself once the candidate set empties (after the frame that clears
+ * what was on screen), and `scan` restarts it when candidates reappear -- so a
+ * board with no element in front of an embeddable, which is most boards, costs
+ * nothing per frame.
  */
-function setEmbeddableDimmed(node: HTMLElement, dimmed: boolean): void {
-	node.style.opacity = dimmed ? GESTURE_DIM_OPACITY : "1";
+function tick(leaf: WorkspaceLeaf, state: FrontOfEmbedState, scanner: LeafScannerHandle<FrontOfEmbedState>): void {
+	if (scanner.isDisposed()) {
+		state.rafHandle = 0;
+		return;
+	}
+	ensureMounted(leaf, state);
+	paint(leaf, state);
+	if (state.candidates.length === 0) {
+		state.rafHandle = 0;
+		return;
+	}
+	state.rafHandle = (windowOf(leaf) ?? window).requestAnimationFrame(() => tick(leaf, state, scanner));
 }
 
-function mountOverlay(leaf: WorkspaceLeaf, root: HTMLElement): { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D; resizeObserver: ResizeObserver } {
-	const win = windowOf(leaf) ?? window;
+function startLoop(leaf: WorkspaceLeaf, state: FrontOfEmbedState, scanner: LeafScannerHandle<FrontOfEmbedState>): void {
+	if (state.rafHandle !== 0) return;
+	state.rafHandle = (windowOf(leaf) ?? window).requestAnimationFrame(() => tick(leaf, state, scanner));
+}
+
+/** Which elements need masking, and with what shape. Cheap enough to redo per scene change; never per frame. */
+function planCandidates(leaf: WorkspaceLeaf): FrontOfEmbedState["candidates"] {
+	const elements = readSceneElements(leaf) as readonly FrontOfEmbedElement[] | null;
+	if (!elements) return [];
+	return planFrontOfEmbedCandidates(elements).map((element) => ({ element, mask: maskShapeFor(element) }));
+}
+
+function setup(leaf: WorkspaceLeaf, _api: LeafScannerApi, scanner: LeafScannerHandle<FrontOfEmbedState>): FrontOfEmbedState | null {
+	const root = findExcalidrawRoot(leaf);
+	const win = windowOf(leaf);
+	if (!root || !win) return null;
+
 	const canvas = win.document.createElement("canvas");
 	canvas.className = "epr-front-of-embed-overlay";
 	canvas.style.position = "absolute";
@@ -195,289 +283,81 @@ function mountOverlay(leaf: WorkspaceLeaf, root: HTMLElement): { canvas: HTMLCan
 	root.appendChild(canvas);
 
 	const ctx = canvas.getContext("2d");
-	if (!ctx) throw new Error("Unable to create 2d context for front-of-embed overlay canvas");
+	if (!ctx) return null;
 
 	const resize = () => {
 		const dpr = win.devicePixelRatio || 1;
-		const width = Math.max(1, Math.round(root.clientWidth * dpr));
-		const height = Math.max(1, Math.round(root.clientHeight * dpr));
-		if (canvas.width !== width) canvas.width = width;
-		if (canvas.height !== height) canvas.height = height;
-		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+		const width = Math.max(1, Math.round(state.root.clientWidth * dpr));
+		const height = Math.max(1, Math.round(state.root.clientHeight * dpr));
+		if (canvas.width === width && canvas.height === height) return;
+		canvas.width = width;
+		canvas.height = height;
+		// The resize cleared the bitmap; the next frame repaints it unconditionally.
+		state.painted = false;
 	};
-	resize();
-	// Not window-scoped: ResizeObserver's constructor isn't declared on the
-	// Window interface in this project's pinned TypeScript/lib version, and
-	// observing a Popout's DOM node works fine via the global constructor.
+	// Not window-scoped: ResizeObserver's constructor isn't declared on the Window
+	// interface in this project's pinned TypeScript/lib version, and observing a
+	// Popout's DOM node works fine via the global constructor.
 	const resizeObserver = new ResizeObserver(resize);
-	resizeObserver.observe(root);
-
-	return { canvas, ctx, resizeObserver };
-}
-
-function currentViewport(leaf: WorkspaceLeaf): ViewportSnapshot | null {
-	const api = getExcalidrawApi(leaf);
-	if (!api?.getAppState) return null;
-	try {
-		const state = api.getAppState();
-		return {
-			scrollX: state.scrollX,
-			scrollY: state.scrollY,
-			zoom: state.zoom.value,
-		};
-	} catch {
-		return null;
-	}
-}
-
-function viewportsEqual(a: ViewportSnapshot | null, b: ViewportSnapshot | null): boolean {
-	if (a === b) return true;
-	if (!a || !b) return false;
-	return a.scrollX === b.scrollX && a.scrollY === b.scrollY && a.zoom === b.zoom;
-}
-
-/** Redraws the overlay from whatever's already rasterized -- never triggers a new export. Cheap enough to call every animation frame. */
-function repaint(state: FrontOfEmbedState, viewport: ViewportSnapshot): void {
-	const { ctx, canvas } = state;
-	ctx.clearRect(0, 0, canvas.width, canvas.height);
-	// While a gesture is live and scan() has determined the frozen bitmap is
-	// stale for it (see overlaySuppressed's setter in scan()), the overlay
-	// stays blank until the gesture ends and a fresh rasterization lands --
-	// otherwise it doubles whatever's moving: Excalidraw's own canvas already
-	// renders the live, moving element in real time, and drawing the old
-	// snapshot on top of that (at its pre-drag position) painted a ghost copy.
-	if (state.pointerDown && state.overlaySuppressed) return;
-	const { bitmap, bounds } = state.raster;
-	if (!bitmap || !bounds) return;
-	const x = (bounds.minX + viewport.scrollX) * viewport.zoom;
-	const y = (bounds.minY + viewport.scrollY) * viewport.zoom;
-	const width = (bounds.maxX - bounds.minX) * viewport.zoom;
-	const height = (bounds.maxY - bounds.minY) * viewport.zoom;
-	ctx.drawImage(bitmap, x, y, width, height);
-}
-
-/** Kicks off (at most one in flight per state) a fresh rasterization of `candidates`, repainting once it resolves. */
-function rasterize(leaf: WorkspaceLeaf, state: FrontOfEmbedState, candidates: readonly FrontOfEmbedElement[]): void {
-	const key = raterKey(candidates);
-	if (key === state.raster.pendingKey) return;
-	const ids = candidates.map((element) => element.id);
-
-	const lib = windowOf(leaf)?.ExcalidrawLib;
-	const api = getExcalidrawApi(leaf);
-	if (!lib?.exportToBlob || !api?.getFiles) {
-		// Can't export at all -- clear what's displayed rather than leaving a
-		// stale bitmap/bounds pair, but still track this as the pending request
-		// so a scan() with the same unchanged candidates doesn't retry every tick.
-		state.raster = { key: null, pendingKey: key, token: state.raster.token, bitmap: null, bounds: null, ids: [] };
-		return;
-	}
-
-	const bounds = lib.getCommonBoundingBox?.(candidates) ?? unionBounds(candidates);
-	const token = state.raster.token + 1;
-	// Only pendingKey/token move yet -- key/bitmap/bounds/ids (what repaint()
-	// actually draws) stay untouched until the matching bitmap below resolves,
-	// so they're never out of sync with each other.
-	state.raster = { ...state.raster, pendingKey: key, token };
-
-	// exportToBlob renders raw element colors and ignores the live canvas's
-	// dark-mode color filter unless told to reapply it -- verified live
-	// (2026-07-29, MCP-attached): a #1e1e1e rectangle (Excalidraw's default
-	// "black", shown near-white on screen in dark theme) exported back to
-	// near-black (30,30,30) without `exportWithDarkMode`, and to the expected
-	// near-white (211,211,211) with it. Without this, every default-colored
-	// element flips to its light-theme color once rasterized onto the overlay.
-	const isDarkMode = api.getAppState().theme === "dark";
-
-	void lib
-		.exportToBlob({
-			elements: candidates,
-			files: api.getFiles(),
-			mimeType: "image/png",
-			exportPadding: 0,
-			appState: { exportBackground: false, exportWithDarkMode: isDarkMode },
-		})
-		.then(async (blob) => {
-			if (state.raster.token !== token) return; // superseded by a newer request, or torn down
-			const bitmap = await createImageBitmap(blob);
-			if (state.raster.token !== token) {
-				bitmap.close();
-				return;
-			}
-			state.raster.bitmap?.close();
-			state.raster = { key, pendingKey: key, token, bitmap, bounds, ids };
-			const viewport = currentViewport(leaf);
-			if (viewport) repaint(state, viewport);
-		})
-		.catch(() => {
-			// Leaves the previous bitmap on screen (stale but not wrong-looking)
-			// rather than blanking the overlay on a transient export failure.
-		});
-}
-
-function tick(leaf: WorkspaceLeaf, state: FrontOfEmbedState, scanner: LeafScannerHandle<FrontOfEmbedState>): void {
-	if (scanner.isDisposed()) return;
-	if (!state.canvas.isConnected) {
-		// The Excalidraw plugin can replace its `.excalidraw` root without closing
-		// the leaf (e.g. a mode switch) -- reattach rather than drawing into a
-		// detached node forever.
-		const root = findExcalidrawRoot(leaf);
-		if (root) root.appendChild(state.canvas);
-	}
-	const viewport = currentViewport(leaf);
-	if (viewport && !viewportsEqual(viewport, state.lastViewport)) {
-		state.lastViewport = viewport;
-		repaint(state, viewport);
-	}
-	state.rafHandle = (windowOf(leaf) ?? window).requestAnimationFrame(() => tick(leaf, state, scanner));
-}
-
-function setup(leaf: WorkspaceLeaf, _api: LeafScannerApi, scanner: LeafScannerHandle<FrontOfEmbedState>): FrontOfEmbedState | null {
-	const root = findExcalidrawRoot(leaf);
-	if (!root) return null;
-	const doc = leafDocument(leaf);
-	const win = windowOf(leaf);
-	if (!doc || !win) return null;
-
-	const { canvas, ctx, resizeObserver } = mountOverlay(leaf, root);
 
 	const state: FrontOfEmbedState = {
 		root,
 		canvas,
 		ctx,
 		resizeObserver,
-		dimmed: new Set(),
-		pointerDown: false,
-		overlaySuppressed: false,
-		raster: { key: null, pendingKey: null, token: 0, bitmap: null, bounds: null, ids: [] },
-		lastViewport: null,
+		candidates: planCandidates(leaf),
+		painted: false,
 		rafHandle: 0,
-		detachPointer: () => {},
 	};
 
-	const onPointerDown = (e: PointerEvent) => {
-		// Only the primary button (left click / touch / pen) drives an actual
-		// editing gesture (drag/resize/rotate/draw). Middle-mouse-drag panning
-		// and right-click both fire pointerdown too; treating those as a gesture
-		// start left the overlay blank (see repaint) and dimmed the embeddable
-		// underneath for the duration of the pan, with nothing ever un-dimming
-		// it mid-drag since no element was actually moving.
-		if (e.button !== 0) return;
-		state.pointerDown = true;
-	};
-	const onPointerUp = () => {
-		if (!state.pointerDown) return;
-		state.pointerDown = false;
-		scanner.rescan(leaf);
-	};
-	doc.addEventListener("pointerdown", onPointerDown, true);
-	doc.addEventListener("pointerup", onPointerUp, true);
-	doc.addEventListener("pointercancel", onPointerUp, true);
-	state.detachPointer = () => {
-		doc.removeEventListener("pointerdown", onPointerDown, true);
-		doc.removeEventListener("pointerup", onPointerUp, true);
-		doc.removeEventListener("pointercancel", onPointerUp, true);
-	};
-
-	state.rafHandle = win.requestAnimationFrame(() => tick(leaf, state, scanner));
+	resize();
+	resizeObserver.observe(root);
+	startLoop(leaf, state, scanner);
 	return state;
 }
 
-function scan(leaf: WorkspaceLeaf, state: FrontOfEmbedState): void {
-	const elements = readSceneElements(leaf) as readonly FrontOfEmbedElement[] | null;
-	if (!elements) return;
-
-	const overlaps = planFrontOfEmbedOverlaps(elements);
-	const containers = mapEmbeddableContainers(state.root, elements);
-
-	if (state.pointerDown) {
-		// Live gesture: dim exactly the embeddables a currently-qualifying
-		// element overlaps, so the user sees Excalidraw's own real-time
-		// rendering through the translucency instead of a mirrored
-		// approximation. The overlay itself stays blank meanwhile (see repaint).
-		//
-		// Restricted to selected elements: `overlaps` reflects every eligible
-		// element's *current* geometry, including ones sitting still. Without
-		// this filter, a left-click drag anywhere on the canvas (selecting/
-		// moving an unrelated element, or even just a selection-box drag over
-		// empty space) dimmed embeddables under completely uninvolved,
-		// stationary elements for the duration of the gesture.
-		const selectedIds = getExcalidrawApi(leaf)?.getAppState().selectedElementIds ?? {};
-		const needed = new Set<string>();
-		for (const [elementId, embeddableIds] of overlaps) {
-			if (!selectedIds[elementId]) continue;
-			for (const id of embeddableIds) needed.add(id);
-		}
-
-		for (const id of state.dimmed) {
-			if (!needed.has(id)) {
-				const node = containers.get(id);
-				if (node) setEmbeddableDimmed(node, false);
-				state.dimmed.delete(id);
-			}
-		}
-		for (const id of needed) {
-			if (!state.dimmed.has(id)) {
-				const node = containers.get(id);
-				if (!node) continue;
-				setEmbeddableDimmed(node, true);
-				state.dimmed.add(id);
-			}
-		}
-		// The frozen bitmap is stale the instant a gesture starts -- it isn't
-		// re-rasterized until the gesture ends (see the at-rest branch below).
-		// If the thing being dragged/resized is itself one of the elements
-		// baked into that bitmap, drawing it would show a ghost at its
-		// pre-drag position alongside Excalidraw's own live rendering of it at
-		// its current position. `needed`-driven dimming alone doesn't catch
-		// this: it only covers embeddables currently overlapped, not a
-		// selected candidate that's been dragged clear of every embeddable.
-		state.overlaySuppressed = needed.size > 0 || state.raster.ids.some((id) => selectedIds[id]);
-		const viewport = currentViewport(leaf);
-		if (viewport) repaint(state, viewport);
-		return;
-	}
-
-	state.overlaySuppressed = false;
-
-	// At rest: restore anything still dimmed from a gesture that just ended,
-	// then rasterize the current candidate set onto the overlay.
-	for (const id of state.dimmed) {
-		const node = containers.get(id);
-		if (node) setEmbeddableDimmed(node, false);
-	}
-	state.dimmed.clear();
-
-	const byId = new Map(elements.map((element) => [element.id, element]));
-	const candidates = [...overlaps.keys()].map((id) => byId.get(id)).filter((el): el is FrontOfEmbedElement => !!el);
-
-	if (candidates.length === 0) {
-		state.raster.bitmap?.close();
-		state.raster = { key: null, pendingKey: null, token: state.raster.token + 1, bitmap: null, bounds: null, ids: [] };
-	} else {
-		rasterize(leaf, state, candidates);
-	}
-	const viewport = currentViewport(leaf);
-	if (viewport) repaint(state, viewport);
+function scan(leaf: WorkspaceLeaf, state: FrontOfEmbedState, scanner: LeafScannerHandle<FrontOfEmbedState>): void {
+	const had = state.candidates.length > 0 || state.painted;
+	state.candidates = planCandidates(leaf);
+	// Restart the loop when candidates appear, and for one final clearing frame
+	// when the last one disappears.
+	if (state.candidates.length > 0 || had) startLoop(leaf, state, scanner);
 }
 
 function teardown(leaf: WorkspaceLeaf, state: FrontOfEmbedState): void {
 	(windowOf(leaf) ?? window).cancelAnimationFrame(state.rafHandle);
 	state.resizeObserver.disconnect();
-	state.detachPointer();
-	if (state.dimmed.size > 0) {
-		const elements = readSceneElements(leaf) as readonly FrontOfEmbedElement[] | null;
-		const containers = elements ? mapEmbeddableContainers(state.root, elements) : new Map<string, HTMLElement>();
-		for (const id of state.dimmed) {
-			const node = containers.get(id);
-			if (node) setEmbeddableDimmed(node, false);
-		}
-	}
-	state.raster.bitmap?.close();
-	state.raster = { key: null, pendingKey: null, token: state.raster.token + 1, bitmap: null, bounds: null, ids: [] };
+	state.candidates = [];
 	state.canvas.remove();
 }
 
 /** Installs Front-of-embed rendering across every Excalidraw view -- main window and Popouts alike. Returns a dispose function. */
 export function attachFrontOfEmbedRendering(plugin: ExcalidrawPureRefPlugin): () => void {
-	return attachPerLeafScanner<FrontOfEmbedState>(plugin, { setup, scan, teardown });
+	const dispose = attachPerLeafScanner<FrontOfEmbedState>(plugin, { setup, scan, teardown, extras: installDebugHook });
+	return dispose;
+}
+
+/**
+ * Mirrors the console hook pattern `crop-drag.ts` already uses
+ * (`window.__eprCropDebug`): a read-only view of each attached leaf's overlay
+ * state, so "is the compositing loop actually running?" can be answered from the
+ * devtools console without instrumenting a build.
+ */
+function installDebugHook(scanner: LeafScannerHandle<FrontOfEmbedState>): Array<() => void> {
+	const host = window as unknown as { __eprFrontOfEmbed?: unknown };
+	host.__eprFrontOfEmbed = () =>
+		scanner.entries().map(([, state]) => ({
+			candidates: state.candidates.map(({ element }) => `${element.type}:${element.id.slice(0, 6)}`),
+			painted: state.painted,
+			loopRunning: state.rafHandle !== 0,
+			canvasConnected: state.canvas.isConnected,
+			canvasIsLastChild: state.root.lastElementChild === state.canvas,
+			rootConnected: state.root.isConnected,
+			canvasSize: [state.canvas.width, state.canvas.height],
+		}));
+	return [
+		() => {
+			delete host.__eprFrontOfEmbed;
+		},
+	];
 }

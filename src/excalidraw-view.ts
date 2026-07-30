@@ -77,7 +77,6 @@ export interface ExcalidrawApi {
 		selectedElementIds?: Record<string, boolean>;
 		/** Non-null while Excalidraw is editing inside a group's constituents. */
 		editingGroupId?: string | null;
-		theme?: "light" | "dark";
 	};
 	getSceneElements?(): readonly SceneElement[];
 	/** The scene's binary files, keyed by an image element's `fileId`. */
