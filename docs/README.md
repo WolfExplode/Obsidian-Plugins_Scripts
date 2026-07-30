@@ -13,7 +13,7 @@ find the right context before changing code or investigating behavior.
 | Understand Popout ownership and lifecycle | [Popout lifecycle](popout-lifecycle.md) | [Window event listeners](integrations/obsidian-window-event-listeners.md) |
 | Work with vault images or an Excalidraw image element's `fileId` | [Generated-image lifecycle](integrations/obsidian-excalidraw-generated-images.md) | — |
 | Load a vault file into a `<video>`/`<img>` by URL | [Media URL schemes](integrations/obsidian-media-url-schemes.md) | — |
-| Check whether a rendering quirk is an accepted upstream limitation before investigating it as a bug | [Excalidraw embeddable z-order limitation](integrations/excalidraw-embeddable-z-order-limitation.md), [Obsidian Canvas image-embed stretch fix](integrations/obsidian-canvas-image-stretch-fix.md) | — |
+| Check whether a rendering quirk is an accepted upstream limitation before investigating it as a bug | [Excalidraw embeddable z-order limitation](integrations/excalidraw-embeddable-z-order-limitation.md), [Excalidraw linear-element canvas offset](integrations/excalidraw-linear-element-canvas-offset.md), [Obsidian Canvas image-embed stretch fix](integrations/obsidian-canvas-image-stretch-fix.md) | — |
 | Understand how elements render in front of embeddables (video/PDF/markdown/web embeds) | [Front-of-embed rendering](behavior/front-of-embed-rendering.md) | [ADR 0010](adr/0010-front-of-embed-rendering.md) |
 | Research a known problem, failed experiment, or paused direction | [Investigations](investigations/) | Treat findings as context, not an implementation plan |
 | Measure real interaction cost instead of guessing from reading code | [Performance profiling](perf-profiling.md) | — |
@@ -38,6 +38,7 @@ find the right context before changing code or investigating behavior.
 | Dropped/imported attachment filenames or wikilink-unsafe characters | [Obsidian wikilink-unsafe attachment names](integrations/obsidian-wikilink-attachment-names.md) |
 | Window-, Popout-, or DOM-level event listeners | [Obsidian window event listeners](integrations/obsidian-window-event-listeners.md) and [Popout lifecycle](popout-lifecycle.md) |
 | Local media loaded by URL in any window (`file://` vs `getResourcePath`) | [Media URL schemes](integrations/obsidian-media-url-schemes.md) |
+| Anything that has to land on the pixels Excalidraw drew for a line, arrow, or freedraw | [Excalidraw linear-element canvas offset](integrations/excalidraw-linear-element-canvas-offset.md) |
 | Architecture, scope, or product-boundary changes | The relevant [ADR](adr/) before implementation |
 | Transparent Popouts or `Uncaught illegal access` | The relevant [investigation](investigations/) and its linked ADRs; do not treat experimental routes as current behavior |
 
