@@ -30,11 +30,11 @@ directly rather than left as a pure upstream limitation.
   embeddable is driven entirely by existing scene z-order plus whether its
   bounds overlap the embeddable — there is nothing new for the user to turn
   on, and no plugin setting to disable it in v1.
-- **Sloppiness and stroke style are honoured.** An element's hand-drawn jitter
-  is reproduced from its own `seed`, so the mask follows where rough.js actually
-  drew rather than a band around where it might have; architect, artist and
-  cartoonist all mask correctly. Dashed and dotted strokes mask as dashes and
-  dots rather than as a solid line.
+- **Sloppiness, stroke style and pen settings are honoured.** The mask follows
+  the path Excalidraw actually drew, so architect, artist and cartoonist all mask
+  correctly, dashed and dotted strokes mask as dashes and dots rather than as a
+  solid line, and a stroke drawn with a custom pen masks with that pen's own
+  profile.
 - **What appears in front is the real element, not an approximation.** The
   mechanism copies Excalidraw's own rendered pixels through a mask of the
   element's shape, so what shows over the embeddable is identical to what
@@ -63,87 +63,72 @@ directly rather than left as a pure upstream limitation.
   text of its own, it's skipped and stays behind the embeddable as before. A
   labelled shape bails out as a pair, so it never renders in front with its
   label left behind.
-- **A constant-pressure freedraw is masked approximately.** Measured against
-  Excalidraw's own output (2026-07-30, `exportToSvg` on a live 636-point
-  stroke), `freehand.ts` reproduces a **variable**-pressure stroke exactly — a
-  mean deviation of **0.012 scene units**, 1266 outline points against 1267,
-  which is the SVG's own 2-decimal rounding. A **constant**-pressure stroke sits
-  a mean of **0.43** off, with 1268 points against 1345.
-
-  `CONSTANT_VARIABILITY_PRESSURE` is fitted, not read from Excalidraw: pinning
-  pressure to 0 fits far better than the alternatives (`thinning: 0` gives 1.95,
-  an unpinned `simulatePressure: false` gives 3.92), but nothing tried reaches
-  the variable case's exactness, and no combination of `size`, `thinning`,
-  `smoothing`, or `streamline` reproduces the 1345-point count. perfect-freehand
-  is *not* in the Obsidian Excalidraw plugin's `main.js` — `ExcalidrawLib` is
-  supplied from elsewhere — so the port was reconstructed rather than diffed,
-  and closing this means finding that build.
-- **Custom pens are only partly accounted for.** The element's own
-  `strokeOptions` (`variability`, `streamline`) are read, but the Obsidian
-  Excalidraw plugin's pens carry more than that — its highlighter uses
-  `thinning: 1`, `constantPressure`, and an extra `outlineWidth: 4` outline —
-  and those are not stored on the element, so a highlighter stroke will be
-  masked with the wrong profile.
-- **A dashed mask's phase can drift against the drawn dashes.** `strokeStyle` is
-  read and the mask carries Excalidraw's own pattern and width, but rough.js
-  draws each edge and corner as a separate subpath, restarting the dash phase at
-  each one, where the mask traces a shape as a single continuous path. On a
-  shape with many segments the two can fall out of step, masking a gap and
-  leaving part of a dash uncovered. The dilation's round caps absorb some of it.
-- **Ellipses still mask by allowance, not by path.** `rough.ts` reproduces the
-  hand-drawn path exactly for straight and curved lines and arrows, rectangles
-  both sharp and rounded, and sharp diamonds — those need no jitter allowance at
-  all, because the mask *is* the drawn path. Excalidraw draws ellipses through
-  rough's own ellipse routine, which is not ported, so an ellipse falls back to
-  the nominal shape widened by `MASK_JITTER_ALLOWANCE` per unit of roughness.
-  That band is scene background wherever the stroke didn't wander. Rounded
-  diamonds fall back the same way.
-
-  Adding them means porting `generateEllipseParams`/`_computeEllipsePoints`. The
-  same care applies as to everything already in `rough.ts`: rough's random draws
-  are stateful and ordered, so a routine that computes the right numbers in the
-  wrong sequence produces a completely different path. Validate against
-  `exportToSvg` rather than against the upstream source.
-- **Hachure and cross-hatch fills mask as solid.** `fillStyle` is not read
-  either, so a hatched interior masks as a slab rather than as its lines.
+- **Text and images keep a reconstructed mask.** Excalidraw exports text as
+  `<text>` and images as `<image>`, neither of which is path geometry, so those
+  two types are always masked from the shapes derived in `front-of-embed.ts`
+  rather than from emitted paths. Text is masked glyph-accurately; an image
+  masks as its whole box.
+- **The reconstructed fallback is approximate where it is used.** For the frame
+  or two before an element's geometry has been fetched, the mask comes from the
+  ports, and a few of their cases are known to be imperfect: a
+  constant-pressure freedraw sits a mean of 0.43 scene units off (see
+  `CONSTANT_VARIABILITY_PRESSURE`, a fitted constant), ellipses and rounded
+  diamonds are not reproduced at all and fall back to a jitter allowance, the
+  Obsidian plugin's custom pen options are not stored on the element so a
+  highlighter stroke gets the wrong profile, and a dashed mask's phase can drift
+  because rough.js restarts it per subpath where the fallback traces one
+  continuous path. None of these persist: once the fetched geometry lands it
+  replaces all of them.
+- **Hachure and cross-hatch fills mask as solid.** `fillStyle` is read for
+  whether a fill exists but a hatched interior still masks as a slab rather than
+  as its lines, because the mask fills the emitted fill path rather than
+  following its hatching.
 - **Bound and elbowed arrows bail out.** Excalidraw does not draw these along
   their own `points` — a bound endpoint is pulled back to the bound element's
   boundary, and an elbowed arrow is re-routed as orthogonal segments — so their
   drawn path can't be masked from element data. They stay behind the embeddable.
   An ordinary unbound arrow works normally.
 
-## Worth revisiting: reading Excalidraw's geometry instead of reproducing it
+## Where the mask geometry comes from
 
-Every mask shape here is reproduced from element data by plugin-side ports of
-perfect-freehand (`freehand.ts`) and rough.js (`rough.ts`). That is a deliberate
-choice for the reason ADR 0010 gives — the compositing loop stays synchronous,
-with no cache and no frame of lag — but it is worth restating what it costs,
-because the alternative was checked and is real.
+The mask needs to know exactly where Excalidraw drew each element. It gets that
+from Excalidraw itself, with a plugin-side reconstruction as a fallback.
 
-Excalidraw *does* emit this geometry: `exportToSvg` (and `exportToCanvas` /
-`exportToBlob`) return the exact path data, and `new Path2D(d)` parses it
-directly. Measured at 4.2 ms for a 636-point freedraw. What it does **not** have
-is any synchronous per-element geometry API — of `ExcalidrawLib`'s 105 exports
-none expose one, the Obsidian plugin's `ExcalidrawAutomate` has nothing
-shape-related, and Excalidraw's internal `ShapeCache` is not reachable. So the
-real trade is *async emission plus a cache* against *synchronous reproduction*.
+**Primary: what Excalidraw emits.** `exportToSvg` on a single element returns
+the real path data, which `new Path2D(d)` parses directly, and its coordinates
+are already element-local — the `<g>` transform is SVG layout only. Each path is
+filled or stroked exactly as Excalidraw marked it, at the width and dash pattern
+it marked, so no shape knowledge and no jitter allowance are involved. See
+`emitted-geometry.ts`.
 
-The reproduction's standing costs:
+This is asynchronous and there is no alternative: of `ExcalidrawLib`'s 105
+exports none expose per-element geometry synchronously, the Obsidian plugin's
+`ExcalidrawAutomate` has nothing shape-related, and Excalidraw's internal
+`ShapeCache` is unreachable. So it is necessarily a cache. Two things keep that
+cheap enough to be invisible:
 
-- `CONSTANT_VARIABILITY_PRESSURE` is a fitted constant that is knowingly wrong
-  (see the freedraw limitation below).
-- Neither port could be diffed against its source — perfect-freehand is not in
-  the Obsidian Excalidraw plugin's bundle — so both are reconstructions
-  validated only against the cases that were tested.
-- Upstream drift is silent. `strokeOptions.variability` is evidently a recent
-  Excalidraw addition, and it is exactly the kind of change that leaves masks
-  quietly sitting beside strokes with nothing failing loudly.
+- **The cache key is the element's geometry, not its `version`.** Moving,
+  rotating, re-colouring and re-ordering leave it untouched, so no re-export
+  happens; only drawing and resizing invalidate it. This matters because a scene
+  change fires on every pointer move of a drag.
+- **A cached path is only drawn if its signature still matches the element.** A
+  resize therefore falls back to the reconstruction for a frame rather than
+  masking the element's previous size.
 
-If this is picked up, the shape to try is a `Path2D` cached per element
-`version` in element-local space, with the existing ports kept as the
-synchronous first-frame path so nothing ever lags. That would cover ellipses,
-the freedraw constant-pressure gap, custom pens and any future shape type at
-once, and make the ports a fallback rather than the source of truth.
+Measured on a live board (2026-07-30): 0.72 ms per element to export, and no
+perceptible lag while drawing or resizing.
+
+**Fallback: reconstruction.** `rough.ts` and `freehand.ts` port rough.js's and
+perfect-freehand's geometry so a frame with nothing cached yet still masks
+correctly instead of flashing. They are validated against `exportToSvg` output
+rather than against upstream source, and several match it exactly — but they are
+reconstructions of code that is not in the Obsidian Excalidraw plugin's bundle,
+so they can drift silently when upstream changes. That is tolerable for a
+fallback and would not be as the primary path; see the scope cuts above for
+where they are known to be imperfect.
+
+`__eprEmittedGeometry(false)` switches the primary path off from the console, so
+the two can be compared on the same board without a rebuild.
 
 ## Known limitations
 

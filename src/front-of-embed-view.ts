@@ -8,6 +8,12 @@ import {
 	type FrontOfEmbedElement,
 	type MaskShape,
 } from "./front-of-embed";
+import {
+	fetchEmittedGeometry,
+	geometrySignature,
+	hasEmittablePaths,
+	type SvgExporter,
+} from "./emitted-geometry";
 import { getExcalidrawApi, readSceneElements } from "./excalidraw-view";
 import { attachPerLeafScanner, leafDocument, type LeafScannerApi, type LeafScannerHandle } from "./leaf-scanner";
 
@@ -45,12 +51,30 @@ const OVERLAY_Z_INDEX = "2";
 /** Excalidraw's own static scene canvas -- the source of every pixel this overlay draws. */
 const STATIC_CANVAS_SELECTOR = "canvas.static";
 
+/**
+ * EXPERIMENT (see emitted-geometry.ts): one element's geometry as Excalidraw
+ * itself emitted it, already parsed into `Path2D`. `signature` is what it was
+ * built from, so a stale entry is never drawn.
+ */
+interface EmittedEntry {
+	signature: string;
+	paths: Array<{ path: Path2D; filled: boolean; strokeWidth: number | null; dash: readonly number[] | null }>;
+}
+
 interface FrontOfEmbedState {
 	root: HTMLElement;
 	canvas: HTMLCanvasElement;
 	ctx: CanvasRenderingContext2D;
-	/** Recomputed on every scene change (see `scan`), read by every frame. */
-	candidates: ReadonlyArray<{ element: FrontOfEmbedElement; mask: MaskShape }>;
+	/**
+	 * Recomputed on every scene change (see `scan`), read by every frame.
+	 * `signature` is the element's geometry as of that scan, so a frame can tell a
+	 * cached export apart from a stale one without re-deriving it.
+	 */
+	candidates: ReadonlyArray<{ element: FrontOfEmbedElement; mask: MaskShape; signature: string }>;
+	/** Emitted geometry per element id, filled in asynchronously; empty until it resolves. */
+	emitted: Map<string, EmittedEntry>;
+	/** Signatures already being fetched, so a drag doesn't queue the same export repeatedly. */
+	inFlight: Set<string>;
 	/** Whether the overlay currently has anything painted, so idle frames can skip the clear. */
 	painted: boolean;
 	rafHandle: number;
@@ -261,6 +285,23 @@ function paintMask(
 }
 
 /**
+ * EXPERIMENT (see emitted-geometry.ts): masks an element from the paths
+ * Excalidraw itself emitted, rather than from a reconstruction. Each path is
+ * filled or stroked exactly as Excalidraw marked it, so this needs no shape
+ * knowledge at all -- and no jitter allowance, since the path is the drawing.
+ */
+function paintEmitted(ctx: CanvasRenderingContext2D, entry: EmittedEntry, zoom: number): void {
+	for (const { path, filled, strokeWidth, dash } of entry.paths) {
+		if (filled) ctx.fill(path);
+		if (strokeWidth === null) continue;
+		ctx.lineWidth = strokeWidth + maskDilation(zoom, 0) * 2;
+		if (dash) ctx.setLineDash(dash as number[]);
+		ctx.stroke(path);
+		if (dash) ctx.setLineDash([]);
+	}
+}
+
+/**
  * Re-attaches the overlay if Excalidraw replaced its root (a mode switch does
  * this without closing the leaf) and keeps it the last child of that root:
  * embeddable containers share the overlay's z-index, so being appended after
@@ -323,7 +364,12 @@ function paint(leaf: WorkspaceLeaf, state: FrontOfEmbedState): void {
 	ctx.lineJoin = "round";
 	ctx.lineCap = "round";
 
-	for (const { element, mask } of state.candidates) {
+	for (const { element, mask, signature } of state.candidates) {
+		// Only a cache entry built from *this* geometry may be drawn. Without the
+		// signature check a resize would keep masking the element's previous size
+		// until its re-export landed, instead of falling back to the shape below.
+		const cached = useEmittedGeometry ? state.emitted.get(element.id) : undefined;
+		const emitted = cached?.signature === signature ? cached : undefined;
 		ctx.save();
 		// Element-local -> viewport: place the element's origin, scale to zoom, then
 		// rotate about its centre, matching how Excalidraw itself transforms it.
@@ -335,7 +381,8 @@ function paint(leaf: WorkspaceLeaf, state: FrontOfEmbedState): void {
 		ctx.translate(element.width / 2, element.height / 2);
 		ctx.rotate(element.angle ?? 0);
 		ctx.translate(-element.width / 2, -element.height / 2);
-		paintMask(ctx, mask, element, zoom, lib);
+		if (emitted) paintEmitted(ctx, emitted, zoom);
+		else paintMask(ctx, mask, element, zoom, lib);
 		ctx.restore();
 	}
 
@@ -374,11 +421,64 @@ function startLoop(leaf: WorkspaceLeaf, state: FrontOfEmbedState, scanner: LeafS
 	state.rafHandle = (windowOf(leaf) ?? window).requestAnimationFrame(() => tick(leaf, state, scanner));
 }
 
+/**
+ * EXPERIMENT (see emitted-geometry.ts). Flip with `__eprEmittedGeometry(false)`
+ * from the console to A/B this against the synchronous ports without a rebuild.
+ */
+let useEmittedGeometry = true;
+
+/**
+ * Asks Excalidraw for the geometry of any candidate whose own geometry has
+ * changed since it was last asked. Keyed on that geometry rather than on the
+ * element's version, so a drag -- which fires a scene change per pointer move --
+ * re-exports nothing.
+ */
+function refreshEmittedGeometry(leaf: WorkspaceLeaf, state: FrontOfEmbedState): void {
+	if (!useEmittedGeometry) return;
+	const exporter = windowOf(leaf)?.ExcalidrawLib as SvgExporter | undefined;
+	if (!exporter?.exportToSvg) return;
+	// Path2D isn't on this project's pinned Window type, but a Popout needs its own
+	// window's constructor, not the main one's.
+	const win = (windowOf(leaf) ?? window) as unknown as { Path2D: new (d: string) => Path2D };
+
+	const live = new Set<string>();
+	for (const { element, signature } of state.candidates) {
+		live.add(element.id);
+		if (!hasEmittablePaths(element)) continue;
+		if (state.emitted.get(element.id)?.signature === signature) continue;
+		const key = `${element.id}:${signature}`;
+		if (state.inFlight.has(key)) continue;
+		state.inFlight.add(key);
+		void fetchEmittedGeometry(exporter, element)
+			.then((paths) => {
+				state.emitted.set(element.id, {
+					signature,
+					paths: paths.map((emitted) => ({
+						path: new win.Path2D(emitted.d),
+						filled: emitted.filled,
+						strokeWidth: emitted.strokeWidth,
+						dash: emitted.dash,
+					})),
+				});
+			})
+			.catch(() => {
+				// Leave the entry absent; the synchronous mask keeps covering it.
+			})
+			.finally(() => state.inFlight.delete(key));
+	}
+	// Elements that stopped qualifying shouldn't hold their geometry forever.
+	for (const id of Array.from(state.emitted.keys())) if (!live.has(id)) state.emitted.delete(id);
+}
+
 /** Which elements need masking, and with what shape. Cheap enough to redo per scene change; never per frame. */
 function planCandidates(leaf: WorkspaceLeaf): FrontOfEmbedState["candidates"] {
 	const elements = readSceneElements(leaf) as readonly FrontOfEmbedElement[] | null;
 	if (!elements) return [];
-	return planFrontOfEmbedCandidates(elements).map((element) => ({ element, mask: maskShapeFor(element) }));
+	return planFrontOfEmbedCandidates(elements).map((element) => ({
+		element,
+		mask: maskShapeFor(element),
+		signature: geometrySignature(element),
+	}));
 }
 
 function setup(leaf: WorkspaceLeaf, _api: LeafScannerApi, scanner: LeafScannerHandle<FrontOfEmbedState>): FrontOfEmbedState | null {
@@ -407,10 +507,13 @@ function setup(leaf: WorkspaceLeaf, _api: LeafScannerApi, scanner: LeafScannerHa
 		canvas,
 		ctx,
 		candidates: planCandidates(leaf),
+		emitted: new Map(),
+		inFlight: new Set(),
 		painted: false,
 		rafHandle: 0,
 	};
 
+	refreshEmittedGeometry(leaf, state);
 	startLoop(leaf, state, scanner);
 	return state;
 }
@@ -418,6 +521,7 @@ function setup(leaf: WorkspaceLeaf, _api: LeafScannerApi, scanner: LeafScannerHa
 function scan(leaf: WorkspaceLeaf, state: FrontOfEmbedState, scanner: LeafScannerHandle<FrontOfEmbedState>): void {
 	const had = state.candidates.length > 0 || state.painted;
 	state.candidates = planCandidates(leaf);
+	refreshEmittedGeometry(leaf, state);
 	// Restart the loop when candidates appear, and for one final clearing frame
 	// when the last one disappears.
 	if (state.candidates.length > 0 || had) startLoop(leaf, state, scanner);
@@ -442,10 +546,22 @@ export function attachFrontOfEmbedRendering(plugin: ExcalidrawPureRefPlugin): ()
  * devtools console without instrumenting a build.
  */
 function installDebugHook(scanner: LeafScannerHandle<FrontOfEmbedState>): Array<() => void> {
-	const host = window as unknown as { __eprFrontOfEmbed?: unknown };
+	const host = window as unknown as { __eprFrontOfEmbed?: unknown; __eprEmittedGeometry?: unknown };
+	// EXPERIMENT: `__eprEmittedGeometry(false)` switches back to the synchronous
+	// ports without a rebuild, so the two can be compared on the same board.
+	host.__eprEmittedGeometry = (on?: boolean) => {
+		if (on !== undefined) {
+			useEmittedGeometry = on;
+			if (!on) for (const [, state] of scanner.entries()) state.emitted.clear();
+		}
+		return useEmittedGeometry;
+	};
 	host.__eprFrontOfEmbed = () =>
 		scanner.entries().map(([, state]) => ({
 			candidates: state.candidates.map(({ element }) => `${element.type}:${element.id.slice(0, 6)}`),
+			emittedGeometry: useEmittedGeometry,
+			emittedReady: state.emitted.size,
+			emittedInFlight: state.inFlight.size,
 			painted: state.painted,
 			loopRunning: state.rafHandle !== 0,
 			canvasConnected: state.canvas.isConnected,
@@ -456,6 +572,7 @@ function installDebugHook(scanner: LeafScannerHandle<FrontOfEmbedState>): Array<
 	return [
 		() => {
 			delete host.__eprFrontOfEmbed;
+			delete host.__eprEmittedGeometry;
 		},
 	];
 }
