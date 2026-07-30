@@ -42,7 +42,6 @@ interface FrontOfEmbedState {
 	root: HTMLElement;
 	canvas: HTMLCanvasElement;
 	ctx: CanvasRenderingContext2D;
-	resizeObserver: ResizeObserver;
 	/** Recomputed on every scene change (see `scan`), read by every frame. */
 	candidates: ReadonlyArray<{ element: FrontOfEmbedElement; mask: MaskShape }>;
 	/** Whether the overlay currently has anything painted, so idle frames can skip the clear. */
@@ -90,6 +89,16 @@ function textBaselineOffset(
 }
 
 /**
+ * `roundRect` isn't declared in this project's pinned TypeScript lib, though
+ * every Chromium Obsidian ships on has had it since 99. Declared optional so the
+ * one call site falls back to a square-cornered `rect` rather than throwing if it
+ * ever isn't there.
+ */
+type RoundRectCapableContext = CanvasRenderingContext2D & {
+	roundRect?(x: number, y: number, width: number, height: number, radii: number): void;
+};
+
+/**
  * Paints one element's occluded region, opaque, in element-local coordinates.
  * Only the alpha matters -- the colour is discarded by the `source-in` blit that
  * replaces these pixels with Excalidraw's own.
@@ -127,6 +136,13 @@ function paintMask(
 	ctx.beginPath();
 	if (mask.kind === "ellipse") {
 		ctx.ellipse(width / 2, height / 2, width / 2, height / 2, 0, 0, Math.PI * 2);
+	} else if (mask.kind === "roundrect") {
+		// Clamped because roundRect throws on a radius larger than half the shorter
+		// side, which a degenerate (near-zero) element can produce mid-creation.
+		const radius = Math.min(mask.radius, Math.abs(width) / 2, Math.abs(height) / 2);
+		const rounded = ctx as RoundRectCapableContext;
+		if (radius > 0 && rounded.roundRect) rounded.roundRect(0, 0, width, height, radius);
+		else ctx.rect(0, 0, width, height);
 	} else {
 		const points = mask.points.map((point) => [point[0] ?? 0, point[1] ?? 0] as const);
 		const first = points[0];
@@ -170,8 +186,6 @@ function ensureMounted(leaf: WorkspaceLeaf, state: FrontOfEmbedState): void {
 		if (!root) return;
 		state.root = root;
 		root.appendChild(state.canvas);
-		state.resizeObserver.disconnect();
-		state.resizeObserver.observe(root);
 		return;
 	}
 	if (state.root.lastElementChild !== state.canvas) state.root.appendChild(state.canvas);
@@ -180,18 +194,26 @@ function ensureMounted(leaf: WorkspaceLeaf, state: FrontOfEmbedState): void {
 /** Composites the overlay for one frame: mask the qualifying elements, then blit Excalidraw's own pixels through it. */
 function paint(leaf: WorkspaceLeaf, state: FrontOfEmbedState): void {
 	const { ctx, canvas } = state;
-	const width = canvas.width;
-	const height = canvas.height;
 
 	const api = getExcalidrawApi(leaf);
 	const staticCanvas = state.root.querySelector<HTMLCanvasElement>(STATIC_CANVAS_SELECTOR);
 	if (state.candidates.length === 0 || !api?.getAppState || !staticCanvas) {
 		if (state.painted) {
 			ctx.setTransform(1, 0, 0, 1, 0, 0);
-			ctx.clearRect(0, 0, width, height);
+			ctx.clearRect(0, 0, canvas.width, canvas.height);
 			state.painted = false;
 		}
 		return;
+	}
+
+	// Matched to the source bitmap rather than recomputed from clientWidth * dpr:
+	// the two disagree by a pixel at fractional device ratios (818 * 1.25 rounds to
+	// 1023 where Excalidraw's canvas is 1022), and that pixel became a stretch
+	// across the whole blit, sliding every copied pixel off the element it came
+	// from. Same size means `drawImage` at the identity transform is an exact copy.
+	if (canvas.width !== staticCanvas.width || canvas.height !== staticCanvas.height) {
+		canvas.width = staticCanvas.width;
+		canvas.height = staticCanvas.height;
 	}
 
 	const appState = api.getAppState();
@@ -199,7 +221,11 @@ function paint(leaf: WorkspaceLeaf, state: FrontOfEmbedState): void {
 	const { scrollX, scrollY } = appState;
 	const cssWidth = state.root.clientWidth;
 	const cssHeight = state.root.clientHeight;
-	const dpr = width / Math.max(1, cssWidth);
+	// The scale Excalidraw *drew* with, which is what the masks have to agree with.
+	// Deliberately not `canvas.width / cssWidth`: Excalidraw scales its context by
+	// devicePixelRatio and then rounds the bitmap down, so the ratio of the two is
+	// a slightly different number than the one its own strokes were placed by.
+	const dpr = (windowOf(leaf) ?? window).devicePixelRatio || 1;
 	const lib = windowOf(leaf)?.ExcalidrawLib;
 
 	ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -229,7 +255,8 @@ function paint(leaf: WorkspaceLeaf, state: FrontOfEmbedState): void {
 	// Everything painted above is now just a stencil: keep Excalidraw's own
 	// rendered pixels only where the mask covered them.
 	ctx.globalCompositeOperation = "source-in";
-	ctx.drawImage(staticCanvas, 0, 0, cssWidth, cssHeight);
+	ctx.setTransform(1, 0, 0, 1, 0, 0);
+	ctx.drawImage(staticCanvas, 0, 0);
 	ctx.globalCompositeOperation = "source-over";
 	state.painted = true;
 }
@@ -285,33 +312,18 @@ function setup(leaf: WorkspaceLeaf, _api: LeafScannerApi, scanner: LeafScannerHa
 	const ctx = canvas.getContext("2d");
 	if (!ctx) return null;
 
-	const resize = () => {
-		const dpr = win.devicePixelRatio || 1;
-		const width = Math.max(1, Math.round(state.root.clientWidth * dpr));
-		const height = Math.max(1, Math.round(state.root.clientHeight * dpr));
-		if (canvas.width === width && canvas.height === height) return;
-		canvas.width = width;
-		canvas.height = height;
-		// The resize cleared the bitmap; the next frame repaints it unconditionally.
-		state.painted = false;
-	};
-	// Not window-scoped: ResizeObserver's constructor isn't declared on the Window
-	// interface in this project's pinned TypeScript/lib version, and observing a
-	// Popout's DOM node works fine via the global constructor.
-	const resizeObserver = new ResizeObserver(resize);
-
+	// No ResizeObserver: `paint` sizes the bitmap from Excalidraw's static canvas on
+	// the frame it needs it, which is the only size that can ever be correct, and
+	// the loop is idle whenever there's nothing to draw at any size.
 	const state: FrontOfEmbedState = {
 		root,
 		canvas,
 		ctx,
-		resizeObserver,
 		candidates: planCandidates(leaf),
 		painted: false,
 		rafHandle: 0,
 	};
 
-	resize();
-	resizeObserver.observe(root);
 	startLoop(leaf, state, scanner);
 	return state;
 }
@@ -326,7 +338,6 @@ function scan(leaf: WorkspaceLeaf, state: FrontOfEmbedState, scanner: LeafScanne
 
 function teardown(leaf: WorkspaceLeaf, state: FrontOfEmbedState): void {
 	(windowOf(leaf) ?? window).cancelAnimationFrame(state.rafHandle);
-	state.resizeObserver.disconnect();
 	state.candidates = [];
 	state.canvas.remove();
 }

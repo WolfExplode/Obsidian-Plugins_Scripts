@@ -81,12 +81,32 @@ directly rather than left as a pure upstream limitation.
   the real element instead of the embeddable. No workaround exists today —
   select the element before it becomes visually occluded, or via Send to Back
   / Bring to Front toggling, or the outline/selection panel if applicable.
-- **A thin rim of scene background is copied along with the element.** The mask
-  is grown slightly past the element's exact geometry, because Excalidraw's
-  hand-drawn strokes overshoot their nominal path and the rendered pixels are
-  antialiased — masking exactly would clip a hairline off every edge. The rim is
-  about a pixel wide on screen at any zoom, and is only noticeable against
-  high-contrast embed content.
+- **A rim of scene background is copied along with the element** — *known bug,
+  deferred.* Excalidraw's static canvas is fully opaque: it is the view
+  background with the scene drawn onto it, so every mask pixel that isn't
+  exactly on the element blits board background over the embed. The mask must
+  be grown past the element's exact geometry (hand-drawn strokes overshoot their
+  nominal path, and the rendered pixels are antialiased — masking exactly clips
+  a hairline off every edge), so some rim is unavoidable as long as the
+  mechanism copies from an opaque source.
+
+  Measured live on 2026-07-30: at 38% zoom the rim reads as a ~5px dark outline
+  around every stroke, and **39.7% of the overlay's opaque pixels are background
+  rather than element**. `maskDilation` is the immediate lever —
+  `MASK_ANTIALIAS_ALLOWANCE_PX` is 1.5px *per side*, and the flat
+  `MASK_JITTER_ALLOWANCE` of 2 scene units is 100% of a thin stroke's own width.
+
+  The rim is inherent to mask-and-blit; tuning the dilation shrinks it but
+  cannot remove it. The candidate fix is to stop compositing over the
+  embeddable and instead **punch holes in it**: give each
+  `.excalidraw__embeddable-container` a `mask-image: url(#…)` referencing a live
+  in-document `<svg><mask>` holding the element shapes, so Excalidraw's own
+  canvas — already below the embeddable — shows through unaltered. Verified that
+  Chromium accepts the reference (2026-07-30); not verified that masked
+  iframes/videos composite correctly. That approach would also retire the two
+  limitations below, since each embeddable would carry its own mask built only
+  from the elements above *it*, and nothing would be re-composited against the
+  scene background.
 - **Semi-transparent and hachure-filled elements composite against the scene
   background, not the embeddable.** The copied pixels are Excalidraw's already
   composited output, so a 50%-opacity element over an embeddable shows itself

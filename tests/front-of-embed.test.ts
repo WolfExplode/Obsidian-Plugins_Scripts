@@ -149,21 +149,46 @@ describe("maskShapeFor", () => {
 	});
 
 	it("masks an unfilled shape as its outline only, so the embeddable shows through its interior", () => {
-		const outlined = maskShapeFor(el({ id: "r", type: "rectangle", backgroundColor: "transparent", strokeWidth: 2 }));
-		assert.equal(outlined.kind, "path");
-		assert.equal(outlined.kind === "path" && outlined.fill, false);
-		assert.equal(outlined.kind === "path" && outlined.closed, true);
+		const outlined = maskShapeFor(el({ id: "r", type: "ellipse", backgroundColor: "transparent", strokeWidth: 2 }));
+		assert.equal(outlined.kind === "ellipse" && outlined.fill, false);
+
+		const box = maskShapeFor(el({ id: "r", type: "rectangle", backgroundColor: "transparent" }));
+		assert.equal(box.kind === "roundrect" && box.fill, false);
 	});
 
 	it("treats a missing backgroundColor as unfilled", () => {
-		assert.equal(maskShapeFor(el({ id: "r", type: "rectangle" })).kind === "path", true);
 		const shape = maskShapeFor(el({ id: "r", type: "rectangle" }));
-		assert.equal(shape.kind === "path" && shape.fill, false);
+		assert.equal(shape.kind, "roundrect");
+		assert.equal(shape.kind === "roundrect" && shape.fill, false);
 	});
 
 	it("masks a filled shape's interior too", () => {
 		const filled = maskShapeFor(el({ id: "r", type: "rectangle", backgroundColor: "#ffc9c9" }));
-		assert.equal(filled.kind === "path" && filled.fill, true);
+		assert.equal(filled.kind === "roundrect" && filled.fill, true);
+	});
+
+	it("masks a rectangle with the corner radius Excalidraw actually draws it with", () => {
+		// Square corners left four triangles of scene background outside the drawn
+		// arcs, which read as notched corners over the embeddable.
+		const sharp = maskShapeFor(el({ id: "r", type: "rectangle", width: 280, height: 200 }));
+		assert.equal(sharp.kind === "roundrect" && sharp.radius, 0);
+
+		// Adaptive radius: a quarter of the shorter side until that exceeds the fixed
+		// 32, and 32 thereafter.
+		const big = maskShapeFor(el({ id: "r", type: "rectangle", width: 280, height: 200, roundness: { type: 3 } }));
+		assert.equal(big.kind === "roundrect" && big.radius, 32);
+		const small = maskShapeFor(el({ id: "r", type: "rectangle", width: 280, height: 80, roundness: { type: 3 } }));
+		assert.equal(small.kind === "roundrect" && small.radius, 20);
+		const custom = maskShapeFor(
+			el({ id: "r", type: "rectangle", width: 280, height: 200, roundness: { type: 3, value: 8 } }),
+		);
+		assert.equal(custom.kind === "roundrect" && custom.radius, 8);
+
+		// Proportional radius is a flat quarter of the shorter side at any size.
+		const proportional = maskShapeFor(
+			el({ id: "r", type: "rectangle", width: 280, height: 200, roundness: { type: 2 } }),
+		);
+		assert.equal(proportional.kind === "roundrect" && proportional.radius, 50);
 	});
 
 	it("masks an ellipse as an ellipse", () => {
@@ -237,11 +262,46 @@ describe("maskShapeFor", () => {
 		});
 	});
 
-	it("masks a diamond and rectangle without smoothing, so their corners stay sharp", () => {
-		for (const type of ["diamond", "rectangle"]) {
-			const shape = maskShapeFor(el({ id: "s", type, roundness: { type: 3 } }));
-			assert.equal(shape.kind === "path" && shape.smooth, false, `${type} should not be smoothed`);
+	it("masks a diamond without smoothing, so its corners stay sharp", () => {
+		const shape = maskShapeFor(el({ id: "s", type: "diamond", roundness: { type: 3 } }));
+		assert.equal(shape.kind === "path" && shape.smooth, false);
+	});
+
+	it("fills a linear element only when its path loops, as Excalidraw itself does", () => {
+		// An open stroke is drawn as a bare stroke whatever background is set on it, so
+		// filling its raw polyline masks the path's whole convex sweep -- a band of
+		// scene background clear across the embeddable.
+		const open = [
+			[0, 0],
+			[50, 20],
+			[100, 0],
+		];
+		const loop = [
+			[0, 0],
+			[50, 20],
+			[100, 0],
+			[2, 3],
+		];
+		for (const type of ["freedraw", "line", "arrow"]) {
+			const openShape = maskShapeFor(el({ id: "o", type, points: open, backgroundColor: "#1e1e1e" }));
+			assert.equal(openShape.kind === "path" && openShape.fill, false, `open ${type} should not be filled`);
+
+			const loopShape = maskShapeFor(el({ id: "c", type, points: loop, backgroundColor: "#1e1e1e" }));
+			assert.equal(loopShape.kind === "path" && loopShape.fill, true, `looping ${type} should be filled`);
 		}
+
+		// A loop whose background is transparent still isn't filled -- the background
+		// colour remains what decides, the loop test only gates it.
+		const unfilled = maskShapeFor(el({ id: "t", type: "line", points: loop, backgroundColor: "transparent" }));
+		assert.equal(unfilled.kind === "path" && unfilled.fill, false);
+
+		// Too few points to close, and a gap wider than Excalidraw's threshold.
+		const twoPoint = maskShapeFor(el({ id: "2", type: "line", points: [[0, 0], [0, 0]], backgroundColor: "#1e1e1e" }));
+		assert.equal(twoPoint.kind === "path" && twoPoint.fill, false);
+		const nearMiss = maskShapeFor(
+			el({ id: "n", type: "line", points: [[0, 0], [50, 20], [100, 0], [11, 0]], backgroundColor: "#1e1e1e" }),
+		);
+		assert.equal(nearMiss.kind === "path" && nearMiss.fill, false);
 	});
 
 	it("offsets text horizontally to match Excalidraw's own alignment handling", () => {

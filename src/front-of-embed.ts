@@ -30,8 +30,12 @@ export interface FrontOfEmbedElement extends PackElement {
 	backgroundColor?: string;
 	/** Linear elements (line/arrow/freedraw): vertices relative to `x`/`y`. */
 	points?: readonly (readonly number[])[];
-	/** Non-null when Excalidraw draws the element curved rather than as straight segments. */
-	roundness?: { type: number } | null;
+	/**
+	 * Non-null when Excalidraw draws the element curved rather than as straight
+	 * segments. On a rectangle it instead means rounded corners, and `value` is the
+	 * adaptive radius when the element carries an explicit one.
+	 */
+	roundness?: { type: number; value?: number } | null;
 	/** Set on an arrow whose endpoint is attached to another element, which moves where it's drawn. */
 	startBinding?: unknown;
 	endBinding?: unknown;
@@ -175,6 +179,13 @@ export type MaskShape =
 	/** Occludes its whole bounding box -- images and anything else opaque by nature. */
 	| { kind: "box" }
 	| { kind: "ellipse"; fill: boolean; strokeWidth: number }
+	/**
+	 * A rectangle, whose corners Excalidraw rounds by default. `radius` is 0 for a
+	 * sharp-cornered one; masking a rounded rectangle with square corners left four
+	 * triangles of scene background outside the drawn corner arcs (seen live,
+	 * 2026-07-30).
+	 */
+	| { kind: "roundrect"; radius: number; fill: boolean; strokeWidth: number }
 	| {
 			kind: "path";
 			points: readonly (readonly number[])[];
@@ -211,6 +222,59 @@ const DEFAULT_LINE_HEIGHT = 1.25;
 const DEFAULT_FONT_SIZE = 20;
 const DEFAULT_FONT_FAMILY = 5;
 
+/**
+ * Excalidraw's `LINE_CONFIRM_THRESHOLD` -- how close a linear element's last
+ * point has to come back to its first for the path to count as closed.
+ */
+const LINE_CONFIRM_THRESHOLD = 10;
+
+/**
+ * Whether Excalidraw treats a linear element's path as a closed loop, mirroring
+ * its own `isPathALoop`. This is the only condition under which it fills a
+ * freedraw, line, or arrow at all: an open stroke is drawn as a bare stroke no
+ * matter what background colour is set on it, so its background must not become
+ * part of the mask. Verified live (2026-07-30): open `line` elements carrying a
+ * `#e78190` background render unfilled, while the ones whose endpoints coincide
+ * render filled.
+ */
+function isPathALoop(points: readonly (readonly number[])[]): boolean {
+	if (points.length < 3) return false;
+	const first = points[0];
+	const last = points[points.length - 1];
+	if (!first || !last) return false;
+	return Math.hypot((last[0] ?? 0) - (first[0] ?? 0), (last[1] ?? 0) - (first[1] ?? 0)) <= LINE_CONFIRM_THRESHOLD;
+}
+
+/** Excalidraw's `ROUNDNESS` enum (verified live against `window.ExcalidrawLib.ROUNDNESS`). */
+const ROUNDNESS_LEGACY = 1;
+const ROUNDNESS_PROPORTIONAL_RADIUS = 2;
+const ROUNDNESS_ADAPTIVE_RADIUS = 3;
+
+/** Excalidraw's own corner-radius constants (packages/element/src/shapes.ts). */
+const PROPORTIONAL_RADIUS_RATIO = 0.25;
+const DEFAULT_ADAPTIVE_RADIUS = 32;
+
+/**
+ * The corner radius Excalidraw draws a rectangle with, mirroring its own
+ * `getCornerRadius`. A proportional radius is a flat quarter of the shorter side;
+ * an adaptive one is that same quarter until the shape is big enough for the
+ * fixed radius to be the smaller of the two, and the fixed radius thereafter.
+ */
+function cornerRadius(element: FrontOfEmbedElement): number {
+	const roundness = element.roundness;
+	if (!roundness) return 0;
+	const shorterSide = Math.min(Math.abs(element.width), Math.abs(element.height));
+	if (roundness.type === ROUNDNESS_LEGACY || roundness.type === ROUNDNESS_PROPORTIONAL_RADIUS) {
+		return shorterSide * PROPORTIONAL_RADIUS_RATIO;
+	}
+	if (roundness.type === ROUNDNESS_ADAPTIVE_RADIUS) {
+		const fixedRadius = roundness.value ?? DEFAULT_ADAPTIVE_RADIUS;
+		const cutoff = fixedRadius / PROPORTIONAL_RADIUS_RATIO;
+		return shorterSide <= cutoff ? shorterSide * PROPORTIONAL_RADIUS_RATIO : fixedRadius;
+	}
+	return 0;
+}
+
 export function maskShapeFor(element: FrontOfEmbedElement): MaskShape {
 	const strokeWidth = element.strokeWidth ?? 1;
 	const fill = !!element.backgroundColor && element.backgroundColor !== "transparent";
@@ -240,7 +304,13 @@ export function maskShapeFor(element: FrontOfEmbedElement): MaskShape {
 			kind: "path",
 			points: element.points,
 			closed: false,
-			fill,
+			// A linear element is only filled when its path closes back on itself --
+			// see `isPathALoop`. An open stroke with a background colour set is drawn
+			// as a bare stroke, so filling its raw polyline masks the whole convex
+			// sweep of the path: a solid band of scene background clear across the
+			// embeddable (seen live, 2026-07-30, on both a 636-point freedraw scribble
+			// and an open line).
+			fill: fill && isPathALoop(element.points),
 			strokeWidth,
 			// freedraw points are already dense enough to trace the drawn stroke.
 			smooth: !!element.roundness && element.type !== "freedraw",
@@ -267,20 +337,7 @@ export function maskShapeFor(element: FrontOfEmbedElement): MaskShape {
 	}
 
 	if (element.type === "rectangle") {
-		const { width: w, height: h } = element;
-		return {
-			kind: "path",
-			points: [
-				[0, 0],
-				[w, 0],
-				[w, h],
-				[0, h],
-			],
-			closed: true,
-			fill,
-			strokeWidth,
-			smooth: false,
-		};
+		return { kind: "roundrect", radius: cornerRadius(element), fill, strokeWidth };
 	}
 
 	// image, and any element type this plugin hasn't accounted for: mask the whole
