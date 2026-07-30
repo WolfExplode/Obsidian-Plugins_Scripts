@@ -75,6 +75,8 @@ export interface ExcalidrawApi {
 		gridSize?: number;
 		boxSelectionMode?: "contain" | "overlap";
 		selectedElementIds?: Record<string, boolean>;
+		/** Non-null while an iframe/embeddable owns interactive focus. */
+		activeEmbeddable?: { element?: { id?: string }; state?: "hover" | "active" } | null;
 		/** Non-null while Excalidraw is editing inside a group's constituents. */
 		editingGroupId?: string | null;
 	};
@@ -598,11 +600,14 @@ export interface ElementResize {
 /** The mutable geometry needed for a modal selection transform. */
 export interface TransformElement {
 	id: string;
+	type: string;
 	x: number;
 	y: number;
 	width: number;
 	height: number;
 	angle: number;
+	locked?: boolean;
+	points?: readonly (readonly [number, number])[];
 }
 
 /** Returns a stable snapshot of the current selection's transformable elements. */
@@ -615,15 +620,158 @@ export function getSelectedTransformElements(leaf: WorkspaceLeaf | null): Transf
 			if (!selectedIds[element.id] || element.isDeleted) return [];
 			return [{
 				id: element.id,
+				type: element.type,
 				x: element.x,
 				y: element.y,
 				width: element.width,
 				height: element.height,
 				angle: element.angle ?? 0,
+				locked: (element as SceneElement & { locked?: boolean }).locked,
+				points: (element as SceneElement & { points?: readonly (readonly [number, number])[] }).points,
 			}];
 		});
 	} catch {
 		return [];
+	}
+}
+
+/**
+ * Deep snapshot of the complete element array before a modal native gesture.
+ * Native transforms can mutate bound text, arrows, frames, and other elements
+ * outside selectedElementIds, so an exact cancel must cover the whole Board.
+ */
+export function snapshotSceneElements(leaf: WorkspaceLeaf | null): readonly SceneElement[] | null {
+	const api = getExcalidrawApi(leaf);
+	if (!api?.getSceneElements) return null;
+	try {
+		return structuredClone(api.getSceneElements());
+	} catch {
+		return null;
+	}
+}
+
+/** Restores a modal gesture snapshot without producing an undo increment. */
+export function restoreSceneElementsEventually(
+	leaf: WorkspaceLeaf | null,
+	snapshot: readonly SceneElement[],
+): boolean {
+	const api = getExcalidrawApi(leaf);
+	const view = getExcalidrawView(leaf);
+	if (!api?.getSceneElements || !view?.updateScene) return false;
+	let current: readonly SceneElement[];
+	try {
+		current = api.getSceneElements();
+	} catch {
+		return false;
+	}
+	const currentById = new Map(current.map((element) => [element.id, element]));
+	const restored = snapshot.map((element) => {
+		const live = currentById.get(element.id);
+		return {
+			...element,
+			version: Math.max(element.version ?? 1, live?.version ?? 1) + 1,
+			versionNonce: randomVersionNonce(),
+			updated: Date.now(),
+		};
+	});
+	try {
+		view.updateScene({ elements: restored, captureUpdate: "EVENTUALLY", commitToHistory: false });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/** A transient invisible rectangle that makes native selection hit-testing deterministic. */
+export function installTransformProxy(
+	leaf: WorkspaceLeaf | null,
+	bounds: { x: number; y: number; width: number; height: number },
+	selectedIds: readonly string[],
+): string | null {
+	const api = getExcalidrawApi(leaf);
+	const view = getExcalidrawView(leaf);
+	if (!api?.getSceneElements || !view?.updateScene) return null;
+	const id = `epr-transform-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+	const proxy = {
+		id,
+		type: "rectangle",
+		x: bounds.x,
+		y: bounds.y,
+		width: Math.max(1, bounds.width),
+		height: Math.max(1, bounds.height),
+		angle: 0,
+		strokeColor: "transparent",
+		backgroundColor: "#000000",
+		fillStyle: "solid",
+		strokeWidth: 1,
+		strokeStyle: "solid",
+		roughness: 0,
+		opacity: 0,
+		groupIds: [],
+		frameId: null,
+		index: null,
+		roundness: null,
+		seed: randomVersionNonce(),
+		version: 1,
+		versionNonce: randomVersionNonce(),
+		isDeleted: false,
+		boundElements: null,
+		updated: Date.now(),
+		link: null,
+		locked: false,
+		customData: { eprTransformProxy: true },
+	};
+	try {
+		view.updateScene({
+			elements: [...api.getSceneElements(), proxy],
+			appState: {
+				selectedElementIds: Object.fromEntries([...selectedIds, id].map((elementId) => [elementId, true])),
+				// Excalidraw deliberately blocks selected-element dragging while an
+				// embeddable is active. A native click outside exits that interaction
+				// state before starting a drag; the keyboard transform must do likewise.
+				activeEmbeddable: null,
+				showHyperlinkPopup: false,
+			},
+			captureUpdate: "EVENTUALLY",
+			commitToHistory: false,
+		});
+		return id;
+	} catch {
+		return null;
+	}
+}
+
+export function isTransformProxyReady(leaf: WorkspaceLeaf | null, id: string): boolean {
+	const api = getExcalidrawApi(leaf);
+	if (!api?.getSceneElements) return false;
+	try {
+		const state = api.getAppState();
+		return api.getSceneElements().some((element) => element.id === id) &&
+			!!state.selectedElementIds?.[id] && state.activeEmbeddable == null;
+	} catch {
+		return false;
+	}
+}
+
+/** Removes the transient proxy and restores the user's original selection. */
+export function removeTransformProxyEventually(
+	leaf: WorkspaceLeaf | null,
+	id: string,
+	selectedIds: readonly string[],
+): boolean {
+	const api = getExcalidrawApi(leaf);
+	const view = getExcalidrawView(leaf);
+	if (!api?.getSceneElements || !view?.updateScene) return false;
+	try {
+		view.updateScene({
+			elements: api.getSceneElements().filter((element) => element.id !== id),
+			appState: { selectedElementIds: Object.fromEntries(selectedIds.map((elementId) => [elementId, true])) },
+			captureUpdate: "EVENTUALLY",
+			commitToHistory: false,
+		});
+		return true;
+	} catch {
+		return false;
 	}
 }
 
@@ -887,6 +1035,7 @@ export async function resetSelectedImageScale(leaf: WorkspaceLeaf | null): Promi
 		const cy = el.y + el.height / 2;
 		transforms.push({
 			id: el.id,
+			type: el.type,
 			x: cx - target.w / 2,
 			y: cy - target.h / 2,
 			width: target.w,
@@ -976,6 +1125,27 @@ export function clientToSceneCoords(leaf: WorkspaceLeaf | null, clientX: number,
 	} catch {
 		return null;
 	}
+}
+
+/** Converts a scene point to the client coordinates consumed by Excalidraw's pointer handlers. */
+export function sceneToClientCoords(leaf: WorkspaceLeaf | null, sceneX: number, sceneY: number): { x: number; y: number } | null {
+	const api = getExcalidrawApi(leaf);
+	if (!api) return null;
+	try {
+		const s = api.getAppState();
+		const zoom = s.zoom?.value || 1;
+		return {
+			x: (sceneX + s.scrollX) * zoom + (s.offsetLeft ?? 0),
+			y: (sceneY + s.scrollY) * zoom + (s.offsetTop ?? 0),
+		};
+	} catch {
+		return null;
+	}
+}
+
+/** The canvas which owns Excalidraw's native React pointer handlers for a leaf. */
+export function getInteractiveCanvas(leaf: WorkspaceLeaf | null): HTMLCanvasElement | null {
+	return getExcalidrawView(leaf)?.containerEl?.querySelector<HTMLCanvasElement>("canvas.excalidraw__canvas.interactive") ?? null;
 }
 
 /**
