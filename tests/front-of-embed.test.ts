@@ -101,6 +101,27 @@ describe("planFrontOfEmbedCandidates", () => {
 		assert.deepEqual(ids([embeddable, { ...upright, angle: Math.PI / 2 }]), ["bar"]);
 	});
 
+	it("tests a stroke's real extent, not a box hanging off its starting point", () => {
+		// A scribble drawn right-to-left: its origin is where the pen went down, and
+		// every point runs left and up from there. Taking x/y as the top-left corner
+		// put its box entirely below-right of that origin -- so the embeddable it
+		// actually covers was missed, and one it never reaches was flagged.
+		const scribble = el({
+			id: "scribble",
+			type: "freedraw",
+			x: 1000,
+			y: 1000,
+			width: 500,
+			height: 400,
+			points: [[0, 0], [-500, -400], [-250, -200]],
+		});
+		const covered = el({ id: "covered", type: "embeddable", x: 600, y: 700, width: 200, height: 200 });
+		const untouched = el({ id: "untouched", type: "embeddable", x: 1200, y: 1200, width: 200, height: 200 });
+
+		assert.deepEqual(ids([covered, scribble]), ["scribble"]);
+		assert.deepEqual(ids([untouched, scribble]), []);
+	});
+
 	it("Send to Back removes an element from the candidate set", () => {
 		const inFront = [el({ id: "embed", type: "embeddable" }), el({ id: "img", type: "image" })];
 		assert.deepEqual(ids(inFront), ["img"]);

@@ -80,7 +80,9 @@ condition instead of trying to patch around it.
 
 Overlap is tested via `elementAABB`'s rotation-aware **axis-aligned** bounding
 box (the same approximation `pack-elements.ts` uses), not exact per-shape
-geometry. For rotated non-rectangular elements this can register a false
+geometry. That box is anchored via `geometryOffset`, because a linear element's
+`x`/`y` is where its first point went down rather than its top-left corner — a
+stroke drawn right-to-left lies to the *left* of its own origin. For rotated non-rectangular elements this can register a false
 overlap (two rotated shapes whose AABBs touch but whose actual outlines don't),
 which only makes the jump stop one element earlier than strictly necessary —
 never wrong-direction, never skips a real overlap.

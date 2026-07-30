@@ -14,6 +14,7 @@ import {
 	hasEmittablePaths,
 	type SvgExporter,
 } from "./emitted-geometry";
+import { geometryOffset } from "./pack-elements";
 import { getExcalidrawApi, readSceneElements } from "./excalidraw-view";
 import { attachPerLeafScanner, leafDocument, type LeafScannerApi, type LeafScannerHandle } from "./leaf-scanner";
 
@@ -378,9 +379,16 @@ function paint(leaf: WorkspaceLeaf, state: FrontOfEmbedState): void {
 		// root (`inset: 0`), so its coordinates are already root-local.
 		ctx.translate((element.x + scrollX) * zoom, (element.y + scrollY) * zoom);
 		ctx.scale(zoom, zoom);
-		ctx.translate(element.width / 2, element.height / 2);
+		// The pivot is the centre of the element's *box*, which for a linear element
+		// is not `width/2, height/2` from its origin -- `points[0]` sits at `x`/`y`
+		// and the rest of the stroke can run left or up from there. See
+		// `geometryOffset`.
+		const [offsetX, offsetY] = geometryOffset(element);
+		const pivotX = offsetX + element.width / 2;
+		const pivotY = offsetY + element.height / 2;
+		ctx.translate(pivotX, pivotY);
 		ctx.rotate(element.angle ?? 0);
-		ctx.translate(-element.width / 2, -element.height / 2);
+		ctx.translate(-pivotX, -pivotY);
 		if (emitted) paintEmitted(ctx, emitted, zoom);
 		else paintMask(ctx, mask, element, zoom, lib);
 		ctx.restore();
