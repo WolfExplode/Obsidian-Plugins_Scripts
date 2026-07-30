@@ -2,11 +2,19 @@
 
 ## Scope
 
-Known upstream Excalidraw core bug, present in the `@zsviczian/excalidraw`
-0.18.112 fork bundled with obsidian-excalidraw-plugin 2.25.3. Documented here so
-it isn't rediscovered as a plugin bug: it looks exactly like "our geometry is
-wrong", and it is not. This plugin compensates for it in one place only — the
-front-of-embed mask (`maskPlacement` in `src/front-of-embed.ts`).
+Bug in **Excalidraw core itself**, not in the Obsidian plugin's fork. The code is
+byte-identical in upstream `excalidraw/excalidraw` 0.18.0
+([renderElement.ts:227-242](../../reference/excalidraw-master/packages/element/src/renderElement.ts#L227-L242)
+and [:307](../../reference/excalidraw-master/packages/element/src/renderElement.ts#L307))
+and in the `@zsviczian/excalidraw` 0.18.112 fork bundled with
+obsidian-excalidraw-plugin 2.25.3, which is where it was first observed. Nothing
+Obsidian-side contributes to it; a vanilla excalidraw.com board draws the same
+way.
+
+Documented here so it isn't rediscovered as a plugin bug: it looks exactly like
+"our geometry is wrong", and it is not. This plugin compensates for it in one
+place only — the front-of-embed mask (`maskPlacement` in
+`src/front-of-embed.ts`).
 
 Affects `line`, `arrow`, and `freedraw` elements. Shapes, text and images go
 through a different path in the same function and are unaffected.
@@ -27,9 +35,9 @@ straddling the stroke.
 
 ## Root cause
 
-`packages/element/src/renderElement.ts`. `generateElementCanvas` renders the
-element into a per-element canvas, offsetting it by the gap between the element's
-origin and its bounds:
+`packages/element/src/renderElement.ts` (upstream; the fork does not touch either
+function). `generateElementCanvas` renders the element into a per-element canvas,
+offsetting it by the gap between the element's origin and its bounds:
 
 ```js
 const [x1, y1] = getElementAbsoluteCoords(element, elementsMap);
@@ -109,7 +117,9 @@ otherwise the shift must be removed at the same time. It is one branch, gated on
 
 ## Upstream status
 
-Not filed. A search of excalidraw/excalidraw issues on 2026-07-30 turned up
+Not filed, and it belongs upstream against excalidraw/excalidraw rather than
+against the Obsidian plugin — the fork inherits it unchanged. A search of
+excalidraw/excalidraw issues on 2026-07-30 turned up
 nothing matching (nearest neighbours are unrelated linear-element bugs:
 [#9292](https://github.com/excalidraw/excalidraw/issues/9292),
 [#9755](https://github.com/excalidraw/excalidraw/issues/9755)). Worth reporting
