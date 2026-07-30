@@ -57,6 +57,43 @@ drag/resize/rotate/draw gesture needs no handling of its own: the copied pixels
 move with the element because they *are* the element. There is no cache to
 invalidate, no in-flight export to supersede, and no gesture state.
 
+### The read-only transparent window renders a second, clipped export instead
+
+The mask-and-blit decision above is about the editable surfaces. The read-only
+window (ADR 0008) has no Excalidraw canvas to blit from: it shows a static SVG
+export with live media laid over it, and z-order breaks there for two separate
+reasons — Excalidraw's SVG exporter renders iframe-like elements in a second
+pass after everything else, and this plugin's own media overlays are appended
+after the SVG.
+
+So that window gets its own mechanism: the same candidates
+(`planFrontOfEmbedCandidates` — deliberately shared, so a Board looks the same
+either side of the F10 switch) are **exported a second time into their own SVG
+and appended above the media overlays, clipped to the embeddables**. The clip is
+what keeps it from being a duplicate render rather than a re-ordering: each copy
+owns a disjoint region, so no element is painted twice. `board-render.ts` builds
+it through the same public ExcalidrawAutomate surface the base render already
+uses (`copyViewElementsToEAforEditing` + `createSVG`), per ADR 0001.
+
+Rejected there:
+
+- **Porting mask-and-blit** — there is no canvas to copy pixels from.
+- **Reordering the single existing export** (moving each embeddable's nodes back
+  to its z-order position, and injecting the media as a `foreignObject` at that
+  depth). Strictly the better output — it would fix interleaved depths, which
+  neither mechanism does — but it needs a node→element mapping the export
+  doesn't publish (`data-id` is set only under `isTestEnv()`). Reconstructing it
+  means re-deriving upstream's render order: `<mask>` siblings emitted next to
+  linear elements, frames emitting two nodes, `<a>` wrappers swallowing all of an
+  element's nodes when it carries a link. Verified live (2026-07-30) that the
+  counting works on a rich Board — and that it is exactly the kind of thing that
+  breaks silently on an Excalidraw version bump.
+- **Re-exporting the whole Board minus the candidates as the base layer**, which
+  would need no clip. Rejected to leave the base render alone: it goes through
+  `createSVG(filePath)`, which loads the file and resolves embedded files itself,
+  where an elements-only export can only see what the live view has already
+  loaded.
+
 ## Rejected alternatives
 
 - **Patching Excalidraw's `renderEmbeddables`/canvas pipeline directly** —

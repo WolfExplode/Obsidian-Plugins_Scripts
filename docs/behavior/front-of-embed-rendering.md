@@ -4,12 +4,20 @@
 
 Applies to every non-embeddable element type (freedraw, arrow, line,
 rectangle, ellipse, diamond, text, image) against every embeddable type (video,
-PDF, markdown embed, web iframe), in both the main Obsidian view and the
-editable Popout. See [ADR 0010](../adr/0010-front-of-embed-rendering.md) for why
-this is built as a plugin-owned mechanism rather than a patch to Excalidraw's
-render pipeline, and
+PDF, markdown embed, web iframe), in the main Obsidian view, the editable
+Popout, **and the read-only transparent window**. See
+[ADR 0010](../adr/0010-front-of-embed-rendering.md) for why this is built as a
+plugin-owned mechanism rather than a patch to Excalidraw's render pipeline, and
 [excalidraw-embeddable-z-order-limitation.md](../integrations/excalidraw-embeddable-z-order-limitation.md)
 for the upstream root cause this works around.
+
+The editable surfaces and the read-only window reach the same result by
+different means, because they are different kinds of surface: one is a live
+canvas, the other a static SVG export with live media laid over it. Everything
+up to "Where the mask geometry comes from" describes the editable surfaces; the
+read-only window has its own section below. **The candidate set — which elements
+render in front — is shared**, so a Board looks the same either side of the F10
+switch.
 
 ## Problem this solves
 
@@ -220,17 +228,105 @@ where they are known to be imperfect.
 `__eprEmittedGeometry(false)` switches the primary path off from the console, so
 the two can be compared on the same board without a rebuild.
 
+## The read-only transparent window
+
+The read-only window (F10) has no Excalidraw canvas at all. It displays a static
+SVG export of the Board, with live `<video>`/`<img>` overlays placed over the
+regions local-media embeddables export to (see `board-render.ts`). So z-order
+breaks there for two reasons that have nothing to do with the canvas one:
+
+- Excalidraw's SVG exporter renders iframe-like elements in a **second pass
+  after every other element** — `renderSceneToSvg`'s "render embeddables on top"
+  ([staticSvgScene.ts:780](../../reference/excalidraw-master/packages/excalidraw/renderer/staticSvgScene.ts#L780)).
+  Confirmed live on the export the read-only window actually receives
+  (2026-07-30): both embeddables came back as the last two children of the
+  `<svg>`, in scene order, whatever their z-order.
+- This plugin's own media overlays are appended after the SVG, so a playing
+  video covers the whole Board regardless.
+
+**The mechanism: a second export, clipped.** The candidates
+(`planFrontOfEmbedCandidates`, the same set the editable view masks) are
+exported a second time into their own SVG —
+`ea.copyViewElementsToEAforEditing(candidates, true)` followed by `createSVG()`
+with no template path, which renders exactly the elements the instance holds —
+and that layer is appended last inside `#viewport`, above both the base SVG and
+every media overlay. Nothing is masked and nothing is approximated: it is
+Excalidraw's own renderer drawing the same elements at vector resolution.
+
+- **It is clipped to the embeddables.** The base export already drew these
+  elements, so an unclipped second copy would paint every one of them twice —
+  invisible for an opaque element, but a semi-transparent one would composite
+  against itself, and a candidate would cover any later element that overlaps it
+  away from the embeddable. Clipped, the two copies own disjoint regions: the
+  front one over the embeddable, the base one everywhere else. The clip
+  rectangles are the same rotation-aware AABBs (`elementAABB`) the overlap test
+  used to admit the candidate, so the clip can never be tighter than the test.
+- **Positioned by its own bounding box.** Each export is normalized to its
+  content's bounds and records no absolute position, so the layer ships the scene
+  coordinate its local (0,0) maps to, exactly as the base SVG ships `minX`/`minY`.
+  `ea.getBoundingBox` is the same bounds math the exporter uses — verified live
+  (2026-07-30): a rectangle at scene x 28520 in a subset whose box starts at
+  25580 exported at `translate(2940 …)`.
+- **Its ids are namespaced.** Both layers go into the same document, and an
+  export names its masks and clip paths after the element ids they belong to — so
+  the layers, which by design share elements, would collide. `url(#id)` resolves
+  to the first match in document order and these masks are `userSpaceOnUse`, so
+  the front layer's labelled arrow would have been masked by the base layer's
+  copy of that mask, in the base layer's coordinates.
+- **Images come from the live view.** `copyViewElementsToEAforEditing`'s
+  `copyImages` pulls each image candidate's binary out of the view's loaded scene
+  files, which is why the layer is rendered while the editable Popout is still
+  alive rather than from the file on disk.
+- **Web embeds are covered too.** An absolutely-positioned sibling appended after
+  the SVG paints above a live `<iframe>` inside a `foreignObject` — verified live
+  (2026-07-30), so annotations land in front of a YouTube embed as readily as in
+  front of a video file.
+- **It costs nothing on a Board with no candidates.** No candidates, no second
+  export, no layer in the payload.
+
+This is deliberately *not* the mask-and-blit mechanism ported: there is no canvas
+to blit from. It is also deliberately not surgery on the single existing export
+(moving the embeddable nodes back to their z-order position), which would need a
+node→element mapping the export doesn't publish — `data-id` is set only under
+`isTestEnv()` — and would have to be re-derived from render-order rules that are
+genuinely intricate (masks emitted as siblings, frames emitting two nodes,
+`<a>` wrappers swallowing an element's nodes when it has a link) and would break
+silently on an upstream change.
+
+**Two limitations of the editable mechanism don't apply here.** There is no rim
+of scene background, because nothing is copied from an opaque canvas — the layer
+is transparent everywhere the elements aren't. And a semi-transparent or
+hachure-filled element composites against the *embed*, showing the video through
+it, because its only copy over the embeddable is drawn over the media itself.
+
+**What it inherits, and what is new:**
+
+- Interleaved depths are wrong the same way (see "Known limitations"): the layer
+  is one flat surface above every embeddable, and the clip is the union of them
+  all.
+- The shared candidate rules' bail-outs still earn their keep even though nothing
+  is masked. A framed element re-exported without its frame would lose the
+  frame's clip, and a bound or elbowed arrow re-exported without the element it
+  binds to is re-routed by Excalidraw as it exports.
+- A candidate stroke that crosses an embeddable's edge is drawn as two clipped
+  halves that meet there, each antialiased against transparency, so the seam can
+  read a hair light under magnification. Not dilated to hide it: overlapping the
+  two copies instead is what the clip exists to prevent.
+- The layer is a snapshot taken when read-only mode opens, like the rest of the
+  read-only Board. Nothing in that window updates live.
+
 ## Known limitations
 
-- **Multiple embeddables at interleaved depths aren't correctly represented.**
-  The mechanism is a single flat layer rendered above *every* embeddable, not
-  one sliced in at each embeddable's actual depth. An element meant to sit in
+- **Multiple embeddables at interleaved depths aren't correctly represented** —
+  on every surface. Each mechanism is a single flat layer rendered above *every*
+  embeddable, not one sliced in at each embeddable's actual depth. An element meant to sit in
   front of one embeddable but behind another (e.g. `Embed A (back) → Image X
   → Embed B (front)`) will incorrectly render above both. Accepted as a known
   limitation — the common case of a single embeddable with elements in front
   of it is unaffected.
 - **A rim of scene background is copied along with the element** — *known bug,
-  deferred.* Excalidraw's static canvas is fully opaque: it is the view
+  deferred*, and specific to the editable surfaces (the read-only layer copies
+  nothing). Excalidraw's static canvas is fully opaque: it is the view
   background with the scene drawn onto it, so every mask pixel that isn't
   exactly on the element blits board background over the embed. The mask must
   be grown past the element's exact geometry (hand-drawn strokes overshoot their
@@ -261,7 +357,7 @@ the two can be compared on the same board without a rebuild.
   before spending effort hardening either against a mechanism this would
   replace.
 - **Semi-transparent and hachure-filled elements composite against the scene
-  background, not the embeddable.** The copied pixels are Excalidraw's already
+  background, not the embeddable** — again editable-only. The copied pixels are Excalidraw's already
   composited output, so a 50%-opacity element over an embeddable shows itself
   blended with the view background rather than with the video underneath, and a
   hachure fill's gaps show background rather than embed content.

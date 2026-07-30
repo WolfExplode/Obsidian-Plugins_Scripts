@@ -246,7 +246,13 @@ export function isFrontOfEmbedEligible(
 	return true;
 }
 
-function isEligibleEmbeddable(element: FrontOfEmbedElement): boolean {
+/**
+ * Whether an element is an embeddable this mechanism treats as something to get
+ * in front of. Exported for front-of-embed-layer.ts, which clips the read-only
+ * front layer to exactly these -- the same set the candidates below were tested
+ * against.
+ */
+export function isFrontOfEmbedEmbeddable(element: FrontOfEmbedElement): boolean {
 	if (element.isDeleted) return false;
 	if (!EMBEDDABLE_TYPES.has(element.type)) return false;
 	if (element.frameId) return false;
@@ -282,7 +288,7 @@ export function planFrontOfEmbedCandidates(
 	const qualified = new Set<string>();
 	const embeddablesSoFar: FrontOfEmbedElement[] = [];
 	for (const element of allElements) {
-		if (isEligibleEmbeddable(element)) {
+		if (isFrontOfEmbedEmbeddable(element)) {
 			embeddablesSoFar.push(element);
 			continue;
 		}

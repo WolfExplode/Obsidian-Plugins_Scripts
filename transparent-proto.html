@@ -60,6 +60,17 @@
 		background: transparent;
 	}
 
+	/* The front-of-embed layer: a second board SVG holding only the elements
+	   scene z-order puts in front of an embeddable, stacked above the media
+	   overlays above so they actually appear in front of a playing video or a
+	   snapshot. Its SVG is normalized to its own bounding box, so the layer is
+	   offset to the scene position that box starts at. Already clipped to the
+	   embeddables by the renderer — nothing here is drawn twice. */
+	#viewport .epr-front {
+		position: absolute;
+		transform-origin: 0 0;
+	}
+
 	/* The board is display-only here — every interaction (pan/zoom/window-move)
 	   lives on #surface/#frame, not the drawing. Excalidraw's SVG export renders
 	   embedded media (e.g. video) and links as interactive <a>/<foreignObject>
@@ -174,6 +185,22 @@
 			}
 		}
 
+		// Paint the front-of-embed layer: the elements scene z-order puts in front
+		// of an embeddable, exported separately so they can be stacked above the
+		// media overlays. Appended last, and absolutely positioned, so DOM order
+		// alone puts it on top of both the base SVG and every overlay. The layer
+		// arrives clipped to the embeddables, so the copies of those elements in
+		// the base SVG keep painting everywhere else.
+		function renderFront(front) {
+			if (!front || !front.svg) return;
+			const node = document.createElement("div");
+			node.className = "epr-front";
+			node.style.left = (front.x - minX) + "px";
+			node.style.top = (front.y - minY) + "px";
+			node.innerHTML = front.svg;
+			viewport.appendChild(node);
+		}
+
 		// Receive the board (SVG + scene offset + optional camera) and display it.
 		ipcRenderer.on(CONTENT_CHANNEL, (_e, content) => {
 			content = content || {};
@@ -183,6 +210,7 @@
 			const svgEl = viewport.querySelector("svg");
 			if (!svgEl) return;
 			renderMedia(content.media);
+			renderFront(content.front);
 			if (content.view) {
 				// Match the popout's camera exactly (seamless switch).
 				applySceneView(content.view);

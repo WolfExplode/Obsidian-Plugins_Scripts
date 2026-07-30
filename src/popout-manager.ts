@@ -28,7 +28,13 @@ import {
 	setPrototypeContent,
 	type ReadOnlyKeyMessage,
 } from "./transparent-proto";
-import { renderBoardSvg, getSceneMin, collectMediaOverlays, collectExtensionOverlays } from "./board-render";
+import {
+	renderBoardSvg,
+	renderFrontLayerSvg,
+	getSceneMin,
+	collectMediaOverlays,
+	collectExtensionOverlays,
+} from "./board-render";
 import { markPopupDocument, getPopupFilePath, clearPopupDocumentMarker } from "./document-marker";
 import { attachWindowDrag } from "./window-drag";
 import { applyChromeHiding } from "./chrome-hider";
@@ -352,7 +358,19 @@ export class PopoutManager {
 		// Render the board in Obsidian's context (via the Excalidraw plugin) and
 		// push it — with the scene offset and captured camera — into the
 		// transparent window; setContent waits for load.
-		const [svg, extensionMedia] = await Promise.all([renderBoardSvg(this.plugin, file.path), extensionMediaPromise]);
+		// The elements scene z-order puts in front of an embeddable are rendered a
+		// second time into their own layer, which the window stacks above the media
+		// overlays — otherwise a video or snapshot covers everything drawn on it,
+		// the same way it would in the editable view without front-of-embed
+		// rendering. Exported from the still-live view so image candidates can take
+		// their binaries from its loaded scene files.
+		const [svg, extensionMedia, front] = await Promise.all([
+			renderBoardSvg(this.plugin, file.path),
+			extensionMediaPromise,
+			elements && entry.leaf
+				? renderFrontLayerSvg(this.plugin, entry.leaf.view, elements)
+				: Promise.resolve(null),
+		]);
 		if (svg && isPrototypeOpen() && this.readOnlyFilePath === file.path) {
 			setPrototypeContent({
 				svg,
@@ -360,6 +378,7 @@ export class PopoutManager {
 				minY: min?.minY ?? 0,
 				view: sceneView,
 				media: [...media, ...extensionMedia],
+				front,
 			});
 		}
 		this.refocusReadOnlyWindowAfterClose();

@@ -17,7 +17,7 @@ The rendering surface and element model supplied by the third-party Excalidraw c
 _Avoid_: Excalidraw plugin (when referring only to its drawing surface)
 
 **Front-of-embed rendering**:
-The host plugin's mechanism for making a non-embeddable element (an image, a drawn shape, text) visually appear in front of an embeddable element it overlaps, driven by the same scene z-order that Bring to Front/Send to Back already control. Works around an upstream Excalidraw limitation where embeddables always render above the canvas-drawn layer regardless of z-order.
+The host plugin's behavior of making a non-embeddable element (an image, a drawn shape, text) visually appear in front of an embeddable element it overlaps, driven by the same scene z-order that Bring to Front/Send to Back already control. Works around Excalidraw rendering embeddables above everything else regardless of z-order — on its canvas, and again in its SVG export. One name, one candidate set, two mechanisms: the editable surfaces mask and blit the canvas, the read-only window stacks a second clipped export.
 _Avoid_: Overlay (already means the separate transparent Popout surface in this project), always-on-top layer
 
 **Popout**:
