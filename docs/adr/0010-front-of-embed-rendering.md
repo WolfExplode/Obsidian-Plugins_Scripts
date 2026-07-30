@@ -100,15 +100,34 @@ invalidate, no in-flight export to supersede, and no gesture state.
   pixels it should have drawn. Same reason the rotation pivot comes from
   Excalidraw's bounds.
 
-- Grouped elements, framed elements, and container/bound-text pairs bail out
-  entirely (same precedent as `overlap-aware-zorder.md`) — they're left
-  behind the embeddable as today rather than reimplementing group/frame
-  z-order rules for this feature too.
-- **Bound and elbowed arrows bail out**, one step further along the same
-  reasoning: their `points` are not where Excalidraw draws them (a bound
+- **Framed elements bail out**; grouped elements and labelled shapes do not.
+  The line is whether the element is drawn somewhere the mask can't follow. A
+  frame *clips* its children and the mask has no clip, so a partly-clipped
+  element would blit background from where the frame cut it off. Grouping, by
+  contrast, changes nothing about how or where a member is drawn — and the
+  group bail-out in `overlap-aware-zorder.md` is not precedent here, because
+  that feature **reorders** elements (where upstream's group rules are
+  non-trivial) while this one only reads the order that already exists.
+  Similarly a shape's bound label is kept in absolute scene coordinates by
+  `redrawTextBoundingBox`, so it masks as ordinary text; it rides on its
+  container's verdict so the pair always crosses the embeddable together.
+- **Bound, elbowed, and labelled arrows bail out**, one step further along the
+  same reasoning: their `points` are not where Excalidraw draws them (a bound
   endpoint is pulled back to the bound element's boundary; an elbowed arrow is
   re-routed orthogonally), so a mask built from the points covers empty canvas.
   Verified live — it painted a band of scene background across the embeddable.
+  An arrow *label* is the same problem twice: it is placed by
+  `LinearElementEditor.getBoundTextElementPosition` rather than at its own
+  `x`/`y`, and `drawElementFromCanvas` punches a label-shaped hole in the
+  arrow's own blit that a solid stroke mask would fill with background.
+
+  Both bail-outs are **deferred, not judged impossible** — each was scoped
+  against upstream source on 2026-07-30 and the findings (what it would take,
+  and why frames are the better-value half) are recorded under "Deliberate scope
+  cuts" in
+  [front-of-embed-rendering.md](../behavior/front-of-embed-rendering.md) rather
+  than being re-derived. Read the `mask-image` candidate under "Known
+  limitations" there first: it changes the shape of both.
 - A board with multiple embeddables at interleaved depths (e.g. an element
   meant to sit in front of one embeddable but behind another) is not
   correctly represented — the overlay is a single flat layer above every

@@ -36,20 +36,30 @@ describe("isFrontOfEmbedEligible", () => {
 		}
 	});
 
-	it("excludes grouped elements", () => {
-		assert.equal(isFrontOfEmbedEligible(el({ id: "a", groupIds: ["g1"] })), false);
+	it("includes grouped elements -- grouping changes nothing about how one is drawn", () => {
+		assert.equal(isFrontOfEmbedEligible(el({ id: "a", groupIds: ["g1"] })), true);
 	});
 
-	it("excludes framed elements", () => {
+	it("excludes framed elements, which a frame clips and the mask does not", () => {
 		assert.equal(isFrontOfEmbedEligible(el({ id: "a", frameId: "f1" })), false);
 	});
 
-	it("excludes a container and its bound text as a pair", () => {
-		assert.equal(isFrontOfEmbedEligible(el({ id: "label", type: "text", containerId: "box" })), false);
-		assert.equal(
-			isFrontOfEmbedEligible(el({ id: "box", boundElements: [{ id: "label", type: "text" }] })),
-			false,
-		);
+	it("includes a labelled shape and its label", () => {
+		const box = el({ id: "box", boundElements: [{ id: "label", type: "text" }] });
+		assert.equal(isFrontOfEmbedEligible(box), true);
+		assert.equal(isFrontOfEmbedEligible(el({ id: "label", type: "text", containerId: "box" }), box), true);
+	});
+
+	it("excludes a labelled arrow and its label as a pair", () => {
+		// The label isn't drawn at its own x/y, and Excalidraw punches a label-shaped
+		// hole in the arrow's blit -- neither half can be masked from element data.
+		const arrow = el({ id: "arrow", type: "arrow", boundElements: [{ id: "label", type: "text" }] });
+		assert.equal(isFrontOfEmbedEligible(arrow), false);
+		assert.equal(isFrontOfEmbedEligible(el({ id: "label", type: "text", containerId: "arrow" }), arrow), false);
+	});
+
+	it("excludes a label whose container can't be resolved", () => {
+		assert.equal(isFrontOfEmbedEligible(el({ id: "label", type: "text", containerId: "gone" }), null), false);
 	});
 
 	it("does not exclude a container whose bound elements are only arrows", () => {
@@ -131,17 +141,69 @@ describe("planFrontOfEmbedCandidates", () => {
 		assert.deepEqual(ids(sentToBack), []);
 	});
 
-	it("bails out on grouped or framed elements even if otherwise eligible", () => {
+	it("flags a grouped element, and bails out on a framed one", () => {
 		const elements = [
 			el({ id: "embed", type: "embeddable" }),
 			el({ id: "grouped", type: "image", groupIds: ["g1"] }),
 			el({ id: "framed", type: "image", frameId: "f1" }),
 		];
+		assert.deepEqual(ids(elements), ["grouped"]);
+	});
+
+	it("flags an element in front of a grouped embeddable, but not of a framed one", () => {
+		const grouped = [el({ id: "embed", type: "embeddable", groupIds: ["g1"] }), el({ id: "img", type: "image" })];
+		assert.deepEqual(ids(grouped), ["img"]);
+
+		const framed = [el({ id: "embed", type: "embeddable", frameId: "f1" }), el({ id: "img", type: "image" })];
+		assert.deepEqual(ids(framed), []);
+	});
+
+	it("flags a whole group whose members straddle the embeddable", () => {
+		// Excalidraw keeps a group's members contiguous in the array, so the group's
+		// z-position against the embeddable is just its members' own.
+		const elements = [
+			el({ id: "embed", type: "embeddable" }),
+			el({ id: "over", type: "image", groupIds: ["g1"] }),
+			el({ id: "beside", type: "image", groupIds: ["g1"], x: 1000, y: 1000 }),
+		];
+		assert.deepEqual(ids(elements), ["over"]);
+	});
+
+	it("carries a qualifying container's label across with it", () => {
+		const elements = [
+			el({ id: "embed", type: "embeddable" }),
+			el({ id: "box", boundElements: [{ id: "label", type: "text" }] }),
+			el({ id: "label", type: "text", containerId: "box", x: 20, y: 40, width: 60, height: 25 }),
+		];
+		assert.deepEqual(ids(elements), ["box", "label"]);
+	});
+
+	it("leaves a label behind when its container is behind the embeddable", () => {
+		const elements = [
+			el({ id: "box", boundElements: [{ id: "label", type: "text" }] }),
+			el({ id: "label", type: "text", containerId: "box", x: 20, y: 40, width: 60, height: 25 }),
+			el({ id: "embed", type: "embeddable" }),
+		];
 		assert.deepEqual(ids(elements), []);
 	});
 
-	it("bails out when the embeddable itself is grouped or framed", () => {
-		const elements = [el({ id: "embed", type: "embeddable", frameId: "f1" }), el({ id: "img", type: "image" })];
+	it("takes a label from its container's verdict even when the label itself clears the embeddable", () => {
+		// The container's mask stops at its own outline, so a label inside it that
+		// doesn't happen to overlap still has to travel with it.
+		const elements = [
+			el({ id: "embed", type: "embeddable", x: 0, y: 0, width: 100, height: 100 }),
+			el({ id: "box", x: 50, y: 0, width: 400, height: 100 }),
+			el({ id: "label", type: "text", containerId: "box", x: 300, y: 40, width: 60, height: 25 }),
+		];
+		assert.deepEqual(ids(elements), ["box", "label"]);
+	});
+
+	it("does not flag an arrow's label, nor the labelled arrow", () => {
+		const elements = [
+			el({ id: "embed", type: "embeddable" }),
+			el({ id: "arrow", type: "arrow", points: [[0, 0], [80, 80]], boundElements: [{ id: "label", type: "text" }] }),
+			el({ id: "label", type: "text", containerId: "arrow", x: 20, y: 40, width: 60, height: 25 }),
+		];
 		assert.deepEqual(ids(elements), []);
 	});
 

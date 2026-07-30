@@ -22,10 +22,10 @@ import { roughCurve, roughLinearPath, roughOptionsFor, roughRectangle, roughRoun
 
 /** The minimal element shape the front-of-embed planner and mask builder read. */
 export interface FrontOfEmbedElement extends PackElement {
-	/** Nested Excalidraw group ids; a non-empty list means this element bails out. */
+	/** Nested Excalidraw group ids; grouping changes nothing about how an element is drawn. */
 	groupIds?: readonly string[];
 	frameId?: string | null;
-	/** Mirrors `containerId` on bound text: a labelled container bails out too. */
+	/** Mirrors `containerId` on bound text: what tells a container it carries a label. */
 	boundElements?: readonly { id: string; type: string }[] | null;
 	strokeWidth?: number;
 	/** `"transparent"` (or absent) means the element's interior occludes nothing. */
@@ -197,30 +197,50 @@ function overlaps(a: FrontOfEmbedElement, b: FrontOfEmbedElement): boolean {
 
 /**
  * Whether an element can ever qualify for front-of-embed rendering, ignoring
- * z-order and overlap entirely. Grouped and framed elements are excluded
- * outright -- see the "Deliberate scope cut" in
- * docs/behavior/overlap-aware-zorder.md for the same reasoning: Excalidraw's
- * group/frame z-order semantics are non-trivial and out of proportion to the
- * value of reimplementing them here. A container and its bound text bail out as
- * a pair, so a labelled shape never renders in front of an embeddable with its
- * label left behind it.
+ * z-order and overlap entirely. `container` is the element this one is bound to,
+ * when it carries a `containerId` -- the caller resolves it, since eligibility
+ * for a label depends on what it labels.
  *
- * Bound and elbowed arrows bail out for the same reason, one step further along:
- * their `points` are not where Excalidraw actually draws them. A bound endpoint
- * is pulled back to the bound element's boundary (focus, gap, and `fixedPoint`
- * all feed into where), and an elbowed arrow is re-routed as orthogonal segments
- * entirely. Masking the points instead of the drawn path painted a thick band of
- * scene background along the segment where the stroke wasn't -- verified live
- * (2026-07-29) with an arrow bound `mode: "inside"` to the very embeddable it
- * crossed.
+ * Grouping is deliberately NOT a bail-out, unlike in
+ * docs/behavior/overlap-aware-zorder.md. That feature *reorders* elements, which
+ * is where Excalidraw's group z-order rules get non-trivial; this one only reads
+ * the order that already exists. Excalidraw renders in array order and keeps a
+ * group's members contiguous in that array, so "positioned after the embeddable"
+ * means exactly what it does for a loose element, and grouping changes nothing
+ * about how or where a member is drawn.
+ *
+ * Framed elements do still bail out: a frame clips its children, and the mask
+ * has no clip of its own, so it would copy scene background from wherever the
+ * frame cut the element off.
+ *
+ * Bound and elbowed arrows bail out because their `points` are not where
+ * Excalidraw actually draws them. A bound endpoint is pulled back to the bound
+ * element's boundary (focus, gap, and `fixedPoint` all feed into where), and an
+ * elbowed arrow is re-routed as orthogonal segments entirely. Masking the points
+ * instead of the drawn path painted a thick band of scene background along the
+ * segment where the stroke wasn't -- verified live (2026-07-29) with an arrow
+ * bound `mode: "inside"` to the very embeddable it crossed.
+ *
+ * A *labelled arrow* bails out as a pair, for the same "not drawn where the
+ * element says" reason on both halves: an arrow label's own `x`/`y` are ignored
+ * in favour of `LinearElementEditor.getBoundTextElementPosition`, and Excalidraw
+ * punches a label-shaped hole in the arrow's own blit
+ * (`drawElementFromCanvas`), so masking the arrow's stroke across the label
+ * would copy background out of that hole. A labelled *shape* has neither
+ * problem: `redrawTextBoundingBox` keeps the label's `x`/`y`/`angle` in absolute
+ * scene terms (rotation about the container's centre already baked in), and the
+ * container is blitted whole.
  */
-export function isFrontOfEmbedEligible(element: FrontOfEmbedElement): boolean {
+export function isFrontOfEmbedEligible(
+	element: FrontOfEmbedElement,
+	container?: FrontOfEmbedElement | null,
+): boolean {
 	if (element.isDeleted) return false;
 	if (NON_OCCLUDING_TYPES.has(element.type)) return false;
-	if (element.groupIds && element.groupIds.length > 0) return false;
 	if (element.frameId) return false;
-	if (element.containerId) return false;
-	if (element.boundElements?.some((bound) => bound.type === "text")) return false;
+	// A label whose container can't be resolved is a label that can't be placed.
+	if (element.containerId && (!container || container.type === "arrow")) return false;
+	if (element.type === "arrow" && element.boundElements?.some((bound) => bound.type === "text")) return false;
 	if (element.startBinding || element.endBinding) return false;
 	if (element.elbowed) return false;
 	return true;
@@ -229,7 +249,6 @@ export function isFrontOfEmbedEligible(element: FrontOfEmbedElement): boolean {
 function isEligibleEmbeddable(element: FrontOfEmbedElement): boolean {
 	if (element.isDeleted) return false;
 	if (!EMBEDDABLE_TYPES.has(element.type)) return false;
-	if (element.groupIds && element.groupIds.length > 0) return false;
 	if (element.frameId) return false;
 	return true;
 }
@@ -241,6 +260,13 @@ function isEligibleEmbeddable(element: FrontOfEmbedElement): boolean {
  * copied over the embeddable layer; everything else is already correct in
  * Excalidraw's own canvas.
  *
+ * A bound label rides on its container's verdict rather than being tested on its
+ * own, so a labelled shape and its label always cross the embeddable together --
+ * never the box in front with the words left behind. Its own overlap test would
+ * be the wrong question anyway: a label sitting clear of the embeddable inside a
+ * container that crosses it still has to be masked, because the container's own
+ * mask stops at its outline and does not carry the label with it.
+ *
  * Deliberately does not distinguish *which* embeddable(s) an element is in front
  * of, or slice the overlay by depth -- a board with multiple embeddables at
  * interleaved depths is a documented known limitation. See "Known limitations"
@@ -249,20 +275,33 @@ function isEligibleEmbeddable(element: FrontOfEmbedElement): boolean {
 export function planFrontOfEmbedCandidates(
 	allElements: readonly FrontOfEmbedElement[],
 ): readonly FrontOfEmbedElement[] {
-	const candidates: FrontOfEmbedElement[] = [];
-	const embeddablesSoFar: FrontOfEmbedElement[] = [];
+	const byId = new Map<string, FrontOfEmbedElement>();
+	for (const element of allElements) byId.set(element.id, element);
 
+	// Pass 1: which unbound elements sit in front of an embeddable they overlap.
+	const qualified = new Set<string>();
+	const embeddablesSoFar: FrontOfEmbedElement[] = [];
 	for (const element of allElements) {
 		if (isEligibleEmbeddable(element)) {
 			embeddablesSoFar.push(element);
 			continue;
 		}
+		// Labels are settled in pass 2; a container's own verdict is the answer for both.
+		if (element.containerId) continue;
 		if (!isFrontOfEmbedEligible(element)) continue;
 		if (embeddablesSoFar.length === 0) continue;
-		if (embeddablesSoFar.some((embeddable) => overlaps(element, embeddable))) candidates.push(element);
+		if (embeddablesSoFar.some((embeddable) => overlaps(element, embeddable))) qualified.add(element.id);
 	}
 
-	return candidates;
+	// Pass 2: back to scene order, folding in each qualifying container's label.
+	// A separate pass rather than an inline lookup because nothing guarantees the
+	// label follows its container in the array -- Excalidraw normalizes it that way,
+	// but a candidate set that silently depended on that would be a trap.
+	return allElements.filter((element) => {
+		if (!element.containerId) return qualified.has(element.id);
+		const container = byId.get(element.containerId);
+		return qualified.has(element.containerId) && isFrontOfEmbedEligible(element, container);
+	});
 }
 
 /**

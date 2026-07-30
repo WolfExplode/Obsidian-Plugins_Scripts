@@ -44,6 +44,24 @@ directly rather than left as a pure upstream limitation.
   and no gesture mode: the overlay recomposites every frame from the current
   canvas, so an element being dragged across an embeddable moves over it in real
   time, and a freedraw stroke appears over it as it is drawn.
+- **Grouped elements render in front like any other.** Grouping changes nothing
+  about how or where Excalidraw draws a member, and Excalidraw both renders in
+  array order and keeps a group's members contiguous in that array — so "after
+  the embeddable" means the same thing for a group member as for a loose
+  element. Each member is masked individually, so a group half over an
+  embeddable shows exactly the half that overlaps. This is deliberately *not*
+  the same call as the group bail-out in
+  [overlap-aware-zorder.md](overlap-aware-zorder.md): that feature **reorders**
+  elements, which is where upstream's group rules get non-trivial, while this
+  one only reads the order that already exists.
+- **A labelled shape renders in front with its label.** A rectangle, ellipse or
+  diamond with text inside it qualifies normally, and its bound text travels
+  with it: the label rides on its container's verdict rather than being tested
+  on its own, so the two always cross the embeddable together. `redrawTextBoundingBox`
+  keeps a shape-bound label's `x`/`y`/`angle` in absolute scene terms (rotation
+  about the container's centre already baked in), so it needs no special
+  placement — it masks as ordinary text. **Arrow labels are the exception** and
+  bail out as a pair with their arrow; see the scope cuts below.
 - **Only the element occludes the embeddable, not its bounding box.** An
   unfilled rectangle shows the embeddable through its interior; text occludes
   only its glyphs; a stroke occludes only its own width. A filled shape occludes
@@ -84,12 +102,31 @@ directly rather than left as a pure upstream limitation.
 
 ## Deliberate scope cuts
 
-- **Groups, frames, and container/bound-text pairs bail out entirely** — same
-  precedent as [overlap-aware-zorder.md](overlap-aware-zorder.md). If a
-  candidate has a non-empty `groupIds`, a `frameId`, a `containerId`, or bound
-  text of its own, it's skipped and stays behind the embeddable as before. A
-  labelled shape bails out as a pair, so it never renders in front with its
-  label left behind.
+- **Frames bail out entirely.** A candidate with a `frameId` is skipped and
+  stays behind the embeddable. A frame *clips* its children and the mask has no
+  clip of its own, so masking a partly-clipped element would copy scene
+  background from wherever the frame cut it off. Embeddables inside a frame are
+  likewise not treated as embeddables to be in front of. Groups are **not** a
+  bail-out — see "Behavior" above.
+
+  *Deferred, not blocked* (scoped 2026-07-30). The clip itself is nearly free:
+  `frameClip`
+  ([staticScene.ts:133](../../reference/excalidraw-master/packages/excalidraw/renderer/staticScene.ts#L133))
+  is a translate, `roundRect(0, 0, w, h, FRAME_STYLE.radius / zoom)` and
+  `clip()`, and the paint loop already establishes the scene→viewport transform
+  it would sit inside. Frames can't rotate, so there is no pivot interaction.
+  Three things make it a day's work rather than an hour's:
+  - **Knowing *when* to clip.** `shouldApplyFrameClip`
+    ([frame.ts:911](../../reference/excalidraw-master/packages/element/src/frame.ts#L911))
+    has an easy half (element intersects or contains the frame) and a fiddly
+    half about group members and `selectedElementsAreBeingDragged`. Skipping the
+    fiddly half is not safe-by-default: clipping where Excalidraw didn't makes
+    the overlay *lose* part of an element, which shows as the element being cut
+    off mid-drag out of a frame.
+  - **Framed embeddables** would have to start counting as embeddables to be in
+    front of (`isEligibleEmbeddable` drops them today).
+  - **The frame's own border and name label** are chrome this mechanism never
+    masks, so a frame drawn over an embeddable stays behind it either way.
 - **Text and images keep a reconstructed mask.** Excalidraw exports text as
   `<text>` and images as `<image>`, neither of which is path geometry, so those
   two types are always masked from the shapes derived in `front-of-embed.ts`
@@ -110,11 +147,37 @@ directly rather than left as a pure upstream limitation.
   whether a fill exists but a hatched interior still masks as a slab rather than
   as its lines, because the mask fills the emitted fill path rather than
   following its hatching.
-- **Bound and elbowed arrows bail out.** Excalidraw does not draw these along
-  their own `points` — a bound endpoint is pulled back to the bound element's
-  boundary, and an elbowed arrow is re-routed as orthogonal segments — so their
-  drawn path can't be masked from element data. They stay behind the embeddable.
-  An ordinary unbound arrow works normally.
+- **Bound, elbowed, and labelled arrows bail out.** Excalidraw does not draw
+  these along their own `points` — a bound endpoint is pulled back to the bound
+  element's boundary, and an elbowed arrow is re-routed as orthogonal segments —
+  so their drawn path can't be masked from element data. A *labelled* arrow
+  bails out as a pair with its label, for the same reason on both halves: the
+  label's own `x`/`y` are ignored in favour of
+  `LinearElementEditor.getBoundTextElementPosition`, and `drawElementFromCanvas`
+  punches a label-shaped hole in the arrow's blit, so masking the arrow's stroke
+  across the label would copy background out of that hole. All of these stay
+  behind the embeddable; an ordinary unbound, unlabelled arrow works normally.
+
+  *Deferred as low-value* (scoped 2026-07-30), and the reason is worth recording
+  because the effort estimate is misleading on its own. **Placement is the easy
+  half**: `getCommonBounds` builds its own elements map from whatever array it
+  is handed
+  ([bounds.ts:1017](../../reference/excalidraw-master/packages/element/src/bounds.ts#L1017)),
+  so `getCommonBounds([arrow, label])` resolves the container and returns the
+  label's *drawn* position through `getBoundTextElementPosition` — no port to
+  write, and `maskPlacement`'s shift already has somewhere to put it.
+  (`LinearElementEditor` itself is *not* on `ExcalidrawLib`; verified live
+  2026-07-30, only `getContainerElement`, `getBoundTextMaxWidth` and the bounds
+  helpers are.) **The hole-punch is the hard half**: reproducing it means
+  painting the pair as a unit in a fixed order — arrow mask, clear the label
+  rect in *scene* space, then the label's glyphs — which gives up the paint
+  loop's one-element-at-a-time independence.
+
+  What makes it not worth that: a labelled arrow is usually a *connector*, which
+  means it is also a **bound** arrow, and bound arrows bail out for a separate
+  and much harder reason. So the case this would actually unlock is a labelled,
+  unbound, non-elbowed arrow that happens to cross an embeddable — the narrowest
+  target of any cut on this list, behind the most invasive change.
 
 ## Where the mask geometry comes from
 
@@ -192,7 +255,11 @@ the two can be compared on the same board without a rebuild.
   iframes/videos composite correctly. That approach would also retire the two
   limitations below, since each embeddable would carry its own mask built only
   from the elements above *it*, and nothing would be re-composited against the
-  scene background.
+  scene background. It reshapes the two deferred scope cuts as well: the frame
+  and labelled-arrow bail-outs are both ultimately "the mask would copy the
+  wrong pixels", which stops being a problem once nothing is copied. Weigh that
+  before spending effort hardening either against a mechanism this would
+  replace.
 - **Semi-transparent and hachure-filled elements composite against the scene
   background, not the embeddable.** The copied pixels are Excalidraw's already
   composited output, so a 50%-opacity element over an embeddable shows itself
