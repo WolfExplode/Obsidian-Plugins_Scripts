@@ -48,6 +48,23 @@ directly rather than left as a pure upstream limitation.
   unfilled rectangle shows the embeddable through its interior; text occludes
   only its glyphs; a stroke occludes only its own width. A filled shape occludes
   its interior, as expected.
+- **Selection needs nothing from this mechanism — it already works.** Clicking
+  an element where it overlaps an embeddable selects that element, not the
+  embeddable, and it stays draggable there. This was expected to be a
+  limitation (the overlay is a `pointer-events: none` canvas, and Excalidraw
+  hit-tests on its interactive canvas *below* the embeddable's DOM node), but
+  an inactive embeddable's container is itself `pointer-events: none` (verified
+  live, 2026-07-30), so the click reaches the interactive canvas and Excalidraw
+  hit-tests it in ordinary scene z-order — where the front element already
+  wins. No pointer-event routing or hit-test router is needed.
+- **A stroke's box is where the stroke is, not where it started.** Excalidraw
+  pins a line/arrow/freedraw's `x`/`y` to its *first point*, so a scribble drawn
+  right-to-left or bottom-to-top extends left and up from there. Both the
+  overlap test and the mask's rotation pivot go through `geometryOffset`
+  (`pack-elements.ts`) for this. Taking `x`/`y` as the top-left instead gave a
+  box hanging off the starting point, down and to the right — which is what made
+  a big scribble render in front only when the embeddable happened to sit inside
+  that phantom box (fixed 2026-07-30).
 - **Nothing is persisted to the `.excalidraw` file.** Front-of-embed status is
   recomputed from ordinary element data (array order + bounding-box overlap)
   on load and after every relevant mutation — a file opened in vanilla
@@ -139,14 +156,6 @@ the two can be compared on the same board without a rebuild.
   → Embed B (front)`) will incorrectly render above both. Accepted as a known
   limitation — the common case of a single embeddable with elements in front
   of it is unaffected.
-- **Clicking/selecting an element that's only visually in front via this
-  mechanism still hits the embeddable underneath.** Excalidraw's own
-  selection/pointer handling operates on the interactive canvas layer, which
-  remains below the embeddable DOM node; there is no pointer-event routing
-  yet to detect a click aimed at front-of-embed content and redirect it to
-  the real element instead of the embeddable. No workaround exists today —
-  select the element before it becomes visually occluded, or via Send to Back
-  / Bring to Front toggling, or the outline/selection panel if applicable.
 - **A rim of scene background is copied along with the element** — *known bug,
   deferred.* Excalidraw's static canvas is fully opaque: it is the view
   background with the scene drawn onto it, so every mask pixel that isn't

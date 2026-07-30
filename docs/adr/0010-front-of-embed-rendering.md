@@ -103,11 +103,13 @@ invalidate, no in-flight export to supersede, and no gesture state.
   correctly represented — the overlay is a single flat layer above every
   embeddable, not multiple depth-sliced layers. Accepted as a known
   limitation, not solved here.
-- An element that's only visually in front via the overlay still hits the
-  embeddable underneath for clicks/selection — there is no pointer-event
-  routing yet to redirect a click aimed at overlay content back to the real
-  element. Accepted as a known limitation; a later pass may add a hit-test
-  router if it becomes a real workflow blocker.
+- Selection was expected to need a hit-test router — an element only visually
+  in front would still hit the embeddable underneath — and does not. An
+  inactive embeddable's container is `pointer-events: none` (verified live,
+  2026-07-30), so a click passes through it to the interactive canvas, where
+  Excalidraw hit-tests in scene z-order and the front element already wins.
+  The overlay is `pointer-events: none` too and stays out of it entirely. No
+  routing was written and none is planned.
 - Because the copied pixels are Excalidraw's *composited* output, anything the
   scene already painted underneath a candidate — the view background, or an
   element sitting behind the embeddable — is copied along with it wherever the
