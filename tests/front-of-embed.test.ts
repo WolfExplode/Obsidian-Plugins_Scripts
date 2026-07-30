@@ -7,6 +7,7 @@ import {
 	curveControlPoints,
 	isFrontOfEmbedEligible,
 	maskDilation,
+	maskPlacement,
 	maskShapeFor,
 	planFrontOfEmbedCandidates,
 	type FrontOfEmbedElement,
@@ -441,6 +442,51 @@ describe("maskShapeFor", () => {
 
 		const right = maskShapeFor(el({ id: "t", type: "text", text: "x", width: 80, textAlign: "right" }));
 		assert.equal(right.kind === "text" && right.horizontalOffset, 80);
+	});
+});
+
+describe("maskPlacement", () => {
+	const curve = (over: Partial<FrontOfEmbedElement> = {}) =>
+		el({ id: "curve", type: "line", x: 1000, y: 500, width: 400, height: 200, points: [[0, 0], [400, 200]], ...over });
+
+	it("rotates about the centre of the drawn bounds, not of x/y/width/height", () => {
+		// A stroke whose drawn curve reaches left of its origin: its box centre is
+		// 100 units left of where `width/2` alone would put it.
+		const placement = maskPlacement(curve({ points: [[0, 0], [-200, 200]] }), {
+			minX: 800,
+			minY: 500,
+			maxX: 1200,
+			maxY: 700,
+		});
+		assert.equal(placement.pivotX, 0);
+		assert.equal(placement.pivotY, 100);
+	});
+
+	it("displaces the mask when Excalidraw's own canvas placement displaces the element", () => {
+		// Drawn bounds start 1.5 below the element's y: Excalidraw clamps its canvas
+		// offset to 0 in that case and paints the element that far low, so the mask
+		// has to follow it down.
+		const placement = maskPlacement(curve(), { minX: 1000, minY: 501.5, maxX: 1400, maxY: 701.5 });
+		assert.equal(placement.shiftX, 0);
+		assert.equal(placement.shiftY, 1.5);
+	});
+
+	it("does not displace the mask in the usual case, where the drawn geometry reaches past the origin", () => {
+		const placement = maskPlacement(curve(), { minX: 998, minY: 497.5, maxX: 1400, maxY: 700 });
+		assert.equal(placement.shiftX, 0);
+		assert.equal(placement.shiftY, 0);
+	});
+
+	it("leaves shapes alone -- only linear and freedraw elements go through that canvas", () => {
+		const rect = el({ id: "r", type: "rectangle", x: 1000, y: 500, width: 400, height: 200 });
+		const placement = maskPlacement(rect, { minX: 1002, minY: 502, maxX: 1400, maxY: 700 });
+		assert.equal(placement.shiftX, 0);
+		assert.equal(placement.shiftY, 0);
+	});
+
+	it("falls back to the points' own box when Excalidraw's bounds aren't available", () => {
+		const placement = maskPlacement(curve({ points: [[0, 0], [-400, -200]] }), null);
+		assert.deepEqual(placement, { shiftX: 0, shiftY: 0, pivotX: -200, pivotY: -100 });
 	});
 });
 

@@ -3,9 +3,12 @@ import type ExcalidrawPureRefPlugin from "../main";
 import {
 	curveControlPoints,
 	maskDilation,
+	maskPlacement,
 	maskShapeFor,
 	planFrontOfEmbedCandidates,
+	type AbsoluteBounds,
 	type FrontOfEmbedElement,
+	type MaskPlacement,
 	type MaskShape,
 } from "./front-of-embed";
 import {
@@ -14,7 +17,6 @@ import {
 	hasEmittablePaths,
 	type SvgExporter,
 } from "./emitted-geometry";
-import { geometryOffset } from "./pack-elements";
 import { getExcalidrawApi, readSceneElements } from "./excalidraw-view";
 import { attachPerLeafScanner, leafDocument, type LeafScannerApi, type LeafScannerHandle } from "./leaf-scanner";
 
@@ -71,7 +73,12 @@ interface FrontOfEmbedState {
 	 * `signature` is the element's geometry as of that scan, so a frame can tell a
 	 * cached export apart from a stale one without re-deriving it.
 	 */
-	candidates: ReadonlyArray<{ element: FrontOfEmbedElement; mask: MaskShape; signature: string }>;
+	candidates: ReadonlyArray<{
+		element: FrontOfEmbedElement;
+		mask: MaskShape;
+		placement: MaskPlacement;
+		signature: string;
+	}>;
 	/** Emitted geometry per element id, filled in asynchronously; empty until it resolves. */
 	emitted: Map<string, EmittedEntry>;
 	/** Signatures already being fetched, so a drag doesn't queue the same export repeatedly. */
@@ -83,6 +90,8 @@ interface FrontOfEmbedState {
 
 /** Minimal shape of the `window.ExcalidrawLib` global the Excalidraw plugin injects per-window (PackageManager.ts). */
 interface ExcalidrawLibGlobal {
+	/** `[minX, minY, maxX, maxY]`, rotation-aware -- see `absoluteBoundsOf`. */
+	getCommonBounds?(elements: readonly unknown[]): readonly number[];
 	getFontString?(opts: { fontSize: number; fontFamily: number }): string;
 	getFontMetrics?(
 		fontFamily: number,
@@ -365,7 +374,7 @@ function paint(leaf: WorkspaceLeaf, state: FrontOfEmbedState): void {
 	ctx.lineJoin = "round";
 	ctx.lineCap = "round";
 
-	for (const { element, mask, signature } of state.candidates) {
+	for (const { element, mask, placement, signature } of state.candidates) {
 		// Only a cache entry built from *this* geometry may be drawn. Without the
 		// signature check a resize would keep masking the element's previous size
 		// until its re-export landed, instead of falling back to the shape below.
@@ -379,16 +388,12 @@ function paint(leaf: WorkspaceLeaf, state: FrontOfEmbedState): void {
 		// root (`inset: 0`), so its coordinates are already root-local.
 		ctx.translate((element.x + scrollX) * zoom, (element.y + scrollY) * zoom);
 		ctx.scale(zoom, zoom);
-		// The pivot is the centre of the element's *box*, which for a linear element
-		// is not `width/2, height/2` from its origin -- `points[0]` sits at `x`/`y`
-		// and the rest of the stroke can run left or up from there. See
-		// `geometryOffset`.
-		const [offsetX, offsetY] = geometryOffset(element);
-		const pivotX = offsetX + element.width / 2;
-		const pivotY = offsetY + element.height / 2;
-		ctx.translate(pivotX, pivotY);
+		// Rotate about the centre of the element's drawn bounds, then displace the
+		// mask exactly as Excalidraw displaces the element itself -- see
+		// `maskPlacement`. Neither term is `width/2, height/2` for a linear element.
+		ctx.translate(placement.pivotX, placement.pivotY);
 		ctx.rotate(element.angle ?? 0);
-		ctx.translate(-pivotX, -pivotY);
+		ctx.translate(-placement.pivotX + placement.shiftX, -placement.pivotY + placement.shiftY);
 		if (emitted) paintEmitted(ctx, emitted, zoom);
 		else paintMask(ctx, mask, element, zoom, lib);
 		ctx.restore();
@@ -478,13 +483,29 @@ function refreshEmittedGeometry(leaf: WorkspaceLeaf, state: FrontOfEmbedState): 
 	for (const id of Array.from(state.emitted.keys())) if (!live.has(id)) state.emitted.delete(id);
 }
 
-/** Which elements need masking, and with what shape. Cheap enough to redo per scene change; never per frame. */
+/**
+ * The element's own unrotated bounds, straight from Excalidraw -- the input
+ * `maskPlacement` needs, and the only place they can come from: they're the
+ * bounds of the drawn curve, jitter and all, which nothing outside Excalidraw
+ * knows. `getCommonBounds` is rotation-aware where the canvas placement is not,
+ * so a rotated element is measured through an unrotated copy.
+ */
+function absoluteBoundsOf(lib: ExcalidrawLibGlobal | undefined, element: FrontOfEmbedElement): AbsoluteBounds | null {
+	if (!lib?.getCommonBounds) return null;
+	const bounds = lib.getCommonBounds([element.angle ? { ...element, angle: 0 } : element]);
+	if (!bounds || bounds.length < 4 || bounds.some((value) => !Number.isFinite(value))) return null;
+	return { minX: bounds[0] as number, minY: bounds[1] as number, maxX: bounds[2] as number, maxY: bounds[3] as number };
+}
+
+/** Which elements need masking, with what shape, and placed where. Cheap enough to redo per scene change; never per frame. */
 function planCandidates(leaf: WorkspaceLeaf): FrontOfEmbedState["candidates"] {
 	const elements = readSceneElements(leaf) as readonly FrontOfEmbedElement[] | null;
 	if (!elements) return [];
+	const lib = windowOf(leaf)?.ExcalidrawLib;
 	return planFrontOfEmbedCandidates(elements).map((element) => ({
 		element,
 		mask: maskShapeFor(element),
+		placement: maskPlacement(element, absoluteBoundsOf(lib, element)),
 		signature: geometrySignature(element),
 	}));
 }

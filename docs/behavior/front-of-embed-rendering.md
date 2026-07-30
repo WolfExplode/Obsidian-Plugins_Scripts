@@ -57,6 +57,18 @@ directly rather than left as a pure upstream limitation.
   live, 2026-07-30), so the click reaches the interactive canvas and Excalidraw
   hit-tests it in ordinary scene z-order — where the front element already
   wins. No pointer-event routing or hit-test router is needed.
+- **The mask follows Excalidraw's own placement, quirks included.** Excalidraw
+  renders a line, arrow or freedraw into a per-element canvas and then blits it,
+  and the two halves of that disagree when the drawn geometry starts *after* the
+  element's `x`/`y` on an axis: `generateElementCanvas` clamps its offset to 0
+  (`element.y > y1 ? distance(element.y, y1) : 0`) while `drawElementFromCanvas`
+  blits as though the content began at `y1`, so the element is painted
+  `y1 - element.y` too low. Mostly visible on a dashed or dotted **cartoonist**
+  stroke, which is drawn as a single rough.js pass with unpinned vertices and so
+  can sit entirely below its own first point. Measured live (2026-07-30): 1.41
+  scene units, enough that the mask straddled the stroke — background copied
+  along the top of every dash, the bottom of the stroke left behind. The mask
+  now applies the same displacement, via `maskPlacement`.
 - **A stroke's box is where the stroke is, not where it started.** Excalidraw
   pins a line/arrow/freedraw's `x`/`y` to its *first point*, so a scribble drawn
   right-to-left or bottom-to-top extends left and up from there. Both the

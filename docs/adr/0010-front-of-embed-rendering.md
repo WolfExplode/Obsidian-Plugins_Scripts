@@ -89,6 +89,17 @@ invalidate, no in-flight export to supersede, and no gesture state.
 
 ## Consequences / deliberate scope cuts
 
+- **Correct geometry is not enough; the mask has to be placed the way Excalidraw
+  places the element**, quirks and all. A linear or freedraw element goes through
+  a per-element canvas whose two halves disagree — `generateElementCanvas`
+  computes `canvasOffsetY = element.y > y1 ? distance(element.y, y1) : 0`, while
+  `drawElementFromCanvas` blits that canvas as though its content began at `y1`
+  — so whenever the drawn geometry starts *after* the element's origin the
+  element is painted `y1 - element.y` too low. `maskPlacement` reproduces the
+  displacement rather than trying to be "right" about it: the mask's job is to
+  land on the pixels Excalidraw drew, not on the pixels it should have drawn.
+  Same reason the rotation pivot comes from Excalidraw's bounds.
+
 - Grouped elements, framed elements, and container/bound-text pairs bail out
   entirely (same precedent as `overlap-aware-zorder.md`) — they're left
   behind the embeddable as today rather than reimplementing group/frame

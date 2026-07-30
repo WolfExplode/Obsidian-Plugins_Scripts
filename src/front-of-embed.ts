@@ -17,7 +17,7 @@
  */
 
 import { freehandInputPoints, freehandOptionsFor, getStroke, type FreehandStrokeOptions } from "./freehand";
-import { elementAABB, type PackElement } from "./pack-elements";
+import { elementAABB, geometryOffset, type PackElement } from "./pack-elements";
 import { roughCurve, roughLinearPath, roughOptionsFor, roughRectangle, roughRoundRect, type RoughOp } from "./rough";
 
 /** The minimal element shape the front-of-embed planner and mask builder read. */
@@ -263,6 +263,84 @@ export function planFrontOfEmbedCandidates(
 	}
 
 	return candidates;
+}
+
+/**
+ * An element's unrotated bounds in scene coordinates, as Excalidraw's own
+ * `getElementAbsoluteCoords` reports them -- for a linear element these are the
+ * bounds of the *drawn curve*, hand-drawn jitter included, which is why they
+ * don't line up with `x`/`y` plus `width`/`height`.
+ */
+export interface AbsoluteBounds {
+	minX: number;
+	minY: number;
+	maxX: number;
+	maxY: number;
+}
+
+/**
+ * Element types Excalidraw renders through a per-element canvas that it offsets
+ * before blitting -- the ones affected by the placement quirk `maskPlacement`
+ * compensates for. Mirrors its own `isLinearElement(element) ||
+ * isFreeDrawElement(element)` guard in `generateElementCanvas`.
+ */
+const CANVAS_OFFSET_TYPES = new Set(["line", "arrow", "freedraw"]);
+
+/** Where an element's mask sits inside its own box, in element-local units. */
+export interface MaskPlacement {
+	/** Excalidraw's own displacement of the drawn geometry -- 0 for everything unaffected. */
+	shiftX: number;
+	shiftY: number;
+	/** The point Excalidraw rotates the element about. */
+	pivotX: number;
+	pivotY: number;
+}
+
+/**
+ * How to place an element's mask so it lands on the pixels Excalidraw actually
+ * drew, given the bounds Excalidraw itself computes for it.
+ *
+ * The rotation pivot is the centre of those bounds, which is what
+ * `drawElementFromCanvas` rotates about -- for a linear element that is *not*
+ * the centre of `x`/`y`/`width`/`height`.
+ *
+ * The shift compensates for a placement quirk in Excalidraw's own renderer.
+ * `generateElementCanvas` positions a linear or freedraw element's canvas with
+ *
+ *     canvasOffsetY = element.y > y1 ? distance(element.y, y1) * ... : 0
+ *
+ * while `drawElementFromCanvas` blits that canvas as though its content started
+ * at `y1`. The two agree whenever the drawn geometry reaches up and left past
+ * the element's origin, which is the usual case -- but when it starts *after*
+ * the origin (`element.y < y1`) the guard clamps the offset to 0 and the element
+ * is painted `y1 - element.y` too low. Same on x.
+ *
+ * That mostly happens with a cartoonist-roughness dashed or dotted stroke: those
+ * are drawn as a single rough.js pass with unpinned vertices, so the whole curve
+ * can sit below where its first point is recorded. Measured live (2026-07-30) on
+ * a dashed cartoonist curve: Excalidraw drew it 1.41 scene units below its own
+ * exported geometry, which the mask then straddled -- background copied along the
+ * top of every dash and the bottom of the stroke left behind.
+ */
+export function maskPlacement(element: FrontOfEmbedElement, bounds: AbsoluteBounds | null): MaskPlacement {
+	if (!bounds) {
+		// Excalidraw's bounds are the only source for this; without them, fall back to
+		// the points' own box, which is the same thing to within the jitter.
+		const [offsetX, offsetY] = geometryOffset(element);
+		return {
+			shiftX: 0,
+			shiftY: 0,
+			pivotX: offsetX + element.width / 2,
+			pivotY: offsetY + element.height / 2,
+		};
+	}
+	const offset = CANVAS_OFFSET_TYPES.has(element.type);
+	return {
+		shiftX: offset ? Math.max(0, bounds.minX - element.x) : 0,
+		shiftY: offset ? Math.max(0, bounds.minY - element.y) : 0,
+		pivotX: (bounds.minX + bounds.maxX) / 2 - element.x,
+		pivotY: (bounds.minY + bounds.maxY) / 2 - element.y,
+	};
 }
 
 /**
