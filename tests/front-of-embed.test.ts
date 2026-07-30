@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+	FREEDRAW_SIZE_FACTOR,
 	MASK_ANTIALIAS_ALLOWANCE_PX,
 	MASK_JITTER_ALLOWANCE,
+	curveControlPoints,
 	isFrontOfEmbedEligible,
 	maskDilation,
 	maskShapeFor,
@@ -192,8 +194,55 @@ describe("maskShapeFor", () => {
 	});
 
 	it("masks an ellipse as an ellipse", () => {
-		const shape = maskShapeFor(el({ id: "e", type: "ellipse", strokeWidth: 4 }));
-		assert.deepEqual(shape, { kind: "ellipse", fill: false, strokeWidth: 4 });
+		const shape = maskShapeFor(el({ id: "e", type: "ellipse", strokeWidth: 4, roughness: 1 }));
+		assert.deepEqual(shape, { kind: "ellipse", fill: false, strokeWidth: 4, roughness: 1 });
+	});
+
+	it("masks a freedraw with the stroke outline, not a stroked centerline", () => {
+		// Excalidraw fills the polygon perfect-freehand builds around the stroke. The
+		// recorded points are streamlined before they are drawn, so they are not where
+		// the stroke is, and its width varies with pressure along its length.
+		const points = [
+			[0, 0],
+			[20, 8],
+			[40, 0],
+			[60, 12],
+		];
+		const stroke = maskShapeFor(el({ id: "f", type: "freedraw", points, strokeWidth: 2 }));
+		assert.equal(stroke.kind, "outline");
+		assert.ok(stroke.kind === "outline" && stroke.points.length > points.length);
+
+		// A line goes through rough.js and is drawn along its own points at its own width.
+		const line = maskShapeFor(el({ id: "l", type: "line", points, strokeWidth: 2 }));
+		assert.equal(line.kind, "path");
+		assert.equal(line.kind === "path" && line.strokeWidth, 2);
+	});
+
+	it("scales the freedraw outline with strokeWidth", () => {
+		const points = [
+			[0, 0],
+			[20, 8],
+			[40, 0],
+			[60, 12],
+		];
+		const spanOf = (strokeWidth: number): number => {
+			const shape = maskShapeFor(el({ id: "f", type: "freedraw", points, strokeWidth }));
+			assert.ok(shape.kind === "outline");
+			const ys = shape.kind === "outline" ? shape.points.map((point) => point[1] ?? 0) : [];
+			return Math.max(...ys) - Math.min(...ys);
+		};
+		assert.ok(spanOf(4) > spanOf(1), "a wider stroke should produce a wider outline");
+	});
+
+	it("carries roughness through to the dilation for everything rough.js draws", () => {
+		const points = [
+			[0, 0],
+			[50, 20],
+		];
+		const line = maskShapeFor(el({ id: "l", type: "line", points, roughness: 2 }));
+		assert.equal(line.kind === "path" && line.roughness, 2);
+		const architect = maskShapeFor(el({ id: "a", type: "rectangle", roughness: 0 }));
+		assert.equal(architect.kind === "roundrect" && architect.roughness, 0);
 	});
 
 	it("masks a diamond as its four vertices", () => {
@@ -218,7 +267,8 @@ describe("maskShapeFor", () => {
 		// Closing would mask a chord straight back to the first point -- a band of
 		// scene background across the embeddable, for a stroke that never went there.
 		assert.equal(arrow.kind === "path" && arrow.closed, false);
-		for (const type of ["arrow", "line", "freedraw"]) {
+		// freedraw is excluded: it masks as a closed outline polygon, not a centerline.
+		for (const type of ["arrow", "line"]) {
 			const shape = maskShapeFor(el({ id: "x", type, points }));
 			assert.equal(shape.kind, "path", `${type} should mask along its points`);
 			assert.equal(shape.kind === "path" && shape.closed, false, `${type} should not close its path`);
@@ -282,13 +332,20 @@ describe("maskShapeFor", () => {
 			[100, 0],
 			[2, 3],
 		];
-		for (const type of ["freedraw", "line", "arrow"]) {
+		for (const type of ["line", "arrow"]) {
 			const openShape = maskShapeFor(el({ id: "o", type, points: open, backgroundColor: "#1e1e1e" }));
 			assert.equal(openShape.kind === "path" && openShape.fill, false, `open ${type} should not be filled`);
 
 			const loopShape = maskShapeFor(el({ id: "c", type, points: loop, backgroundColor: "#1e1e1e" }));
 			assert.equal(loopShape.kind === "path" && loopShape.fill, true, `looping ${type} should be filled`);
 		}
+
+		// A freedraw's outline always covers its stroke; the loop test only decides
+		// whether the interior gets masked too.
+		const openStroke = maskShapeFor(el({ id: "of", type: "freedraw", points: open, backgroundColor: "#1e1e1e" }));
+		assert.equal(openStroke.kind === "outline" && openStroke.interior, null);
+		const loopStroke = maskShapeFor(el({ id: "cf", type: "freedraw", points: loop, backgroundColor: "#1e1e1e" }));
+		assert.deepEqual(loopStroke.kind === "outline" ? loopStroke.interior : null, loop);
 
 		// A loop whose background is transparent still isn't filled -- the background
 		// colour remains what decides, the loop test only gates it.
@@ -314,19 +371,83 @@ describe("maskShapeFor", () => {
 });
 
 describe("maskDilation", () => {
-	it("adds the jitter allowance only for rough.js-drawn strokes", () => {
-		assert.equal(maskDilation(1, true) - maskDilation(1, false), MASK_JITTER_ALLOWANCE);
+	it("scales the jitter allowance by roughness, as rough.js scales its own offsets", () => {
+		// Architect style is drawn exactly on the path, so it needs no allowance at
+		// all; a flat one was two scene units of pure background around every edge.
+		assert.equal(maskDilation(1, 0), MASK_ANTIALIAS_ALLOWANCE_PX);
+		assert.equal(maskDilation(1, 1) - maskDilation(1, 0), MASK_JITTER_ALLOWANCE);
+		assert.equal(maskDilation(1, 2) - maskDilation(1, 0), MASK_JITTER_ALLOWANCE * 2);
 	});
 
 	it("shrinks the antialias allowance in scene units as zoom rises, so it stays ~constant on screen", () => {
 		// A fixed scene-space rim would grow on screen when zoomed in, haloing text
 		// in scene background; expressing it in screen pixels keeps it a hairline.
-		assert.equal(maskDilation(1, false), MASK_ANTIALIAS_ALLOWANCE_PX);
-		assert.equal(maskDilation(4, false), MASK_ANTIALIAS_ALLOWANCE_PX / 4);
-		assert.equal(maskDilation(0.25, false), MASK_ANTIALIAS_ALLOWANCE_PX * 4);
+		assert.equal(maskDilation(1, 0), MASK_ANTIALIAS_ALLOWANCE_PX);
+		assert.equal(maskDilation(4, 0), MASK_ANTIALIAS_ALLOWANCE_PX / 4);
+		assert.equal(maskDilation(0.25, 0), MASK_ANTIALIAS_ALLOWANCE_PX * 4);
 	});
 
-	it("stays finite at absurd zoom levels", () => {
-		assert.ok(Number.isFinite(maskDilation(0, true)));
+	it("stays finite at absurd zoom levels, and never shrinks below the antialias allowance", () => {
+		assert.ok(Number.isFinite(maskDilation(0, 1)));
+		assert.equal(maskDilation(1, -5), MASK_ANTIALIAS_ALLOWANCE_PX);
+	});
+});
+
+describe("curveControlPoints", () => {
+	it("passes through every point, first and last included", () => {
+		const points = [
+			[0, 0],
+			[651.6, 95.2],
+			[754.9, 544.4],
+		];
+		const segments = curveControlPoints(points);
+		assert.equal(segments.length, points.length - 1);
+		assert.deepEqual(
+			segments.map((segment) => [...segment.to]),
+			[points[1], points[2]],
+		);
+	});
+
+	it("builds the same control points rough.js does, so the mask tracks the drawn curve", () => {
+		// rough.js duplicates the first and last point and runs a Catmull-Rom spline at
+		// curveTightness 0, giving cp1 = p1 + (p2 - p0)/6 and cp2 = p2 + (p1 - p3)/6.
+		const points = [
+			[0, 0],
+			[60, 0],
+			[60, 60],
+		];
+		const [first, second] = curveControlPoints(points);
+		assert.ok(first && second);
+		// First segment: previous point is the duplicated p0, next is p2.
+		assert.deepEqual([...first.cp1], [10, 0]);
+		assert.deepEqual([...first.cp2], [60 + (0 - 60) / 6, 0 + (0 - 60) / 6]);
+		// Last segment: next point is the duplicated final point.
+		assert.deepEqual([...second.cp1], [60 + (60 - 0) / 6, 0 + (60 - 0) / 6]);
+		assert.deepEqual([...second.cp2], [60, 50]);
+	});
+
+	it("evaluates far from the quadratic-through-midpoints curve it replaces", () => {
+		// The old smoothing put the midpoint of this arrow 210 scene units away from
+		// where rough.js draws, which is why the mask tracked nothing.
+		const points = [
+			[0, 0],
+			[651.6, 95.2],
+			[754.9, 544.4],
+		];
+		const segment = curveControlPoints(points)[0];
+		assert.ok(segment);
+		const midpoint = (a: number, b: number, c: number, d: number) => (a + 3 * b + 3 * c + d) / 8;
+		const x = midpoint(0, segment.cp1[0], segment.cp2[0], segment.to[0]);
+		const y = midpoint(0, segment.cp1[1], segment.cp2[1], segment.to[1]);
+		assert.ok(Math.hypot(x - 501.6, y - 127.55) > 150, `expected a large divergence, got (${x}, ${y})`);
+	});
+
+	it("handles a two-point path as a single segment", () => {
+		const segments = curveControlPoints([
+			[0, 0],
+			[30, 0],
+		]);
+		assert.equal(segments.length, 1);
+		assert.deepEqual([...(segments[0]?.to ?? [])], [30, 0]);
 	});
 });

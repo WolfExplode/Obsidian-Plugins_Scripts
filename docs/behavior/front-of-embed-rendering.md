@@ -58,6 +58,34 @@ directly rather than left as a pure upstream limitation.
   text of its own, it's skipped and stays behind the embeddable as before. A
   labelled shape bails out as a pair, so it never renders in front with its
   label left behind.
+- **A constant-pressure freedraw is masked approximately.** Measured against
+  Excalidraw's own output (2026-07-30, `exportToSvg` on a live 636-point
+  stroke), `freehand.ts` reproduces a **variable**-pressure stroke exactly — a
+  mean deviation of **0.012 scene units**, 1266 outline points against 1267,
+  which is the SVG's own 2-decimal rounding. A **constant**-pressure stroke sits
+  a mean of **0.43** off, with 1268 points against 1345.
+
+  `CONSTANT_VARIABILITY_PRESSURE` is fitted, not read from Excalidraw: pinning
+  pressure to 0 fits far better than the alternatives (`thinning: 0` gives 1.95,
+  an unpinned `simulatePressure: false` gives 3.92), but nothing tried reaches
+  the variable case's exactness, and no combination of `size`, `thinning`,
+  `smoothing`, or `streamline` reproduces the 1345-point count. perfect-freehand
+  is *not* in the Obsidian Excalidraw plugin's `main.js` — `ExcalidrawLib` is
+  supplied from elsewhere — so the port was reconstructed rather than diffed,
+  and closing this means finding that build.
+- **Custom pens are only partly accounted for.** The element's own
+  `strokeOptions` (`variability`, `streamline`) are read, but the Obsidian
+  Excalidraw plugin's pens carry more than that — its highlighter uses
+  `thinning: 1`, `constantPressure`, and an extra `outlineWidth: 4` outline —
+  and those are not stored on the element, so a highlighter stroke will be
+  masked with the wrong profile.
+- **Dashed and dotted strokes mask as solid.** `strokeStyle` is not read, so the
+  mask is continuous where the drawn stroke has gaps, painting scene background
+  into every gap over an embeddable. Same class as the constant-pressure bug:
+  the mask has to copy the element's own draw settings, not assume defaults.
+  Reproducing it means matching rough.js's dash geometry.
+- **Hachure and cross-hatch fills mask as solid.** `fillStyle` is not read
+  either, so a hatched interior masks as a slab rather than as its lines.
 - **Bound and elbowed arrows bail out.** Excalidraw does not draw these along
   their own `points` — a bound endpoint is pulled back to the bound element's
   boundary, and an elbowed arrow is re-routed as orthogonal segments — so their
@@ -90,13 +118,14 @@ directly rather than left as a pure upstream limitation.
   a hairline off every edge), so some rim is unavoidable as long as the
   mechanism copies from an opaque source.
 
-  Measured live on 2026-07-30: at 38% zoom the rim reads as a ~5px dark outline
-  around every stroke, and **39.7% of the overlay's opaque pixels are background
-  rather than element**. `maskDilation` is the immediate lever —
-  `MASK_ANTIALIAS_ALLOWANCE_PX` is 1.5px *per side*, and the flat
-  `MASK_JITTER_ALLOWANCE` of 2 scene units is 100% of a thin stroke's own width.
+  Measured live on 2026-07-30: **39.7% of the overlay's opaque pixels were
+  background rather than element**, reading as a ~5px dark outline around every
+  stroke at 38% zoom. Correcting the mask geometry it was compensating for —
+  rough.js's own curve for curved linear elements, perfect-freehand's real
+  stroke width for freedraw, roughness-scaled jitter, and a 0.5px rather than
+  1.5px antialias allowance — brought that to **13.6%**.
 
-  The rim is inherent to mask-and-blit; tuning the dilation shrinks it but
+  What remains is inherent to mask-and-blit; tuning the dilation shrinks it but
   cannot remove it. The candidate fix is to stop compositing over the
   embeddable and instead **punch holes in it**: give each
   `.excalidraw__embeddable-container` a `mask-image: url(#…)` referencing a live

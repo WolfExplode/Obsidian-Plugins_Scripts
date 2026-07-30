@@ -16,6 +16,7 @@
  * front-of-embed-view.ts does the API glue (mask painting, canvas blit).
  */
 
+import { freehandInputPoints, freehandOptionsFor, getStroke, type FreehandStrokeOptions } from "./freehand";
 import { elementAABB, type PackElement } from "./pack-elements";
 
 /** The minimal element shape the front-of-embed planner and mask builder read. */
@@ -28,8 +29,18 @@ export interface FrontOfEmbedElement extends PackElement {
 	strokeWidth?: number;
 	/** `"transparent"` (or absent) means the element's interior occludes nothing. */
 	backgroundColor?: string;
+	/** rough.js hand-drawn jitter: 0 (architect) draws exactly on the path, 2 (cartoonist) wanders furthest. */
+	roughness?: number;
 	/** Linear elements (line/arrow/freedraw): vertices relative to `x`/`y`. */
 	points?: readonly (readonly number[])[];
+	/** Freedraw: recorded pen pressure per point, when the input device reported any. */
+	pressures?: readonly number[];
+	/** Freedraw: false when pressure was recorded rather than derived from speed. */
+	simulatePressure?: boolean;
+	/** Freedraw: set once the stroke is committed, which pins its final point. */
+	lastCommittedPoint?: unknown;
+	/** Freedraw: the element's own record of the pen it was drawn with -- see `FreehandStrokeOptions`. */
+	strokeOptions?: FreehandStrokeOptions | null;
 	/**
 	 * Non-null when Excalidraw draws the element curved rather than as straight
 	 * segments. On a rectangle it instead means rounded corners, and `value` is the
@@ -59,9 +70,12 @@ const NON_OCCLUDING_TYPES = new Set(["embeddable", "iframe", "frame", "magicfram
 const EMBEDDABLE_TYPES = new Set(["embeddable", "iframe"]);
 
 /**
- * Scene-space slack for rough.js's hand-drawn jitter, which overshoots the
- * mathematical path an element nominally follows by a unit or two. Scene-space
- * because the jitter is part of the drawing, so it scales with the element.
+ * Scene-space slack for rough.js's hand-drawn jitter, per unit of the element's
+ * `roughness`. Scene-space because the jitter is part of the drawing, so it
+ * scales with the element. Scaled by roughness because that is what rough.js
+ * multiplies its own offsets by: an architect-style (roughness 0) element is
+ * drawn exactly on its path and needs no allowance at all, where the flat
+ * allowance this replaces put two units of scene background around it.
  */
 export const MASK_JITTER_ALLOWANCE = 2;
 
@@ -71,19 +85,76 @@ export const MASK_JITTER_ALLOWANCE = 2;
  * folding it into the scene-space allowance instead put a visible halo of scene
  * background around zoomed-in text, since a fixed scene-space rim grows on
  * screen as you zoom in.
+ *
+ * Half a pixel, not the 1.5 this started at: an antialiased edge spans about a
+ * pixel in total, and since the source canvas is opaque every tenth of a pixel
+ * of overshoot is scene background painted onto the embeddable, not a soft edge.
  */
-export const MASK_ANTIALIAS_ALLOWANCE_PX = 1.5;
+export const MASK_ANTIALIAS_ALLOWANCE_PX = 0.5;
+
+/**
+ * Excalidraw's freedraw stroke is not `strokeWidth` wide. It hands
+ * perfect-freehand `size: strokeWidth * 4.25` and fills the variable-width
+ * outline that comes back, tapering with pressure. Masking the nominal
+ * `strokeWidth` therefore covered a quarter of the drawn stroke and relied on
+ * the dilation to cover the rest, which only worked at one stroke width: at
+ * `strokeWidth` 4 the mask clipped the stroke, and at 1 it bled background.
+ *
+ * Confirmed live (2026-07-30) by measuring perpendicular ink runs across a
+ * `strokeWidth` 2 freedraw: median 7.26 scene units, 90th percentile 8.9,
+ * against the 8.5 this factor predicts as the full-pressure maximum.
+ */
+export const FREEDRAW_SIZE_FACTOR = 4.25;
+
+/** Excalidraw's default `roughness` (artist), for elements that predate the field. */
+const DEFAULT_ROUGHNESS = 1;
 
 /**
  * How far to grow a mask beyond the element's exact geometry, in scene units at
- * the given zoom. Growing it bleeds a thin rim of scene background over the
- * embeddable; not growing it clips a hairline off the element's own edge, which
- * is the more visible of the two. `roughStroke` is false for text, which
- * Excalidraw renders as ordinary glyphs with no jitter to accommodate.
+ * the given zoom. Growing it bleeds a rim of scene background over the
+ * embeddable; not growing it clips a hairline off the element's own edge.
+ * `roughness` is 0 for anything Excalidraw draws deterministically -- text
+ * glyphs and freedraw strokes -- and the element's own rough.js roughness
+ * otherwise.
  */
-export function maskDilation(zoom: number, roughStroke: boolean): number {
+export function maskDilation(zoom: number, roughness: number): number {
 	const antialias = MASK_ANTIALIAS_ALLOWANCE_PX / Math.max(zoom, 1e-6);
-	return roughStroke ? MASK_JITTER_ALLOWANCE + antialias : antialias;
+	return MASK_JITTER_ALLOWANCE * Math.max(0, roughness) + antialias;
+}
+
+/**
+ * The cubic Bézier segments rough.js draws a curved linear element as, matching
+ * its `_curve`/`_curveWithOffset` pair: a Catmull-Rom spline through the points
+ * with the first and last duplicated, at the default `curveTightness` of 0.
+ *
+ * The quadratic-through-midpoints smoothing this replaces was not an
+ * approximation of that curve so much as a different curve -- on a three-point
+ * arrow its midpoint sat 210 scene units away from where rough.js actually drew,
+ * so the mask tracked nothing and painted a band of background along a path the
+ * stroke never took.
+ */
+export function curveControlPoints(
+	points: readonly (readonly number[])[],
+): ReadonlyArray<{ cp1: readonly [number, number]; cp2: readonly [number, number]; to: readonly [number, number] }> {
+	const at = (index: number): readonly [number, number] => {
+		const point = points[Math.min(Math.max(index, 0), points.length - 1)];
+		return [point?.[0] ?? 0, point?.[1] ?? 0];
+	};
+	const segments = [];
+	for (let i = 0; i < points.length - 1; i++) {
+		// Duplicated endpoints fall out of the clamping in `at`, which is what makes
+		// the spline pass through the first and last point instead of starting short.
+		const previous = at(i - 1);
+		const from = at(i);
+		const to = at(i + 1);
+		const next = at(i + 2);
+		segments.push({
+			cp1: [from[0] + (to[0] - previous[0]) / 6, from[1] + (to[1] - previous[1]) / 6] as const,
+			cp2: [to[0] + (from[0] - next[0]) / 6, to[1] + (from[1] - next[1]) / 6] as const,
+			to,
+		});
+	}
+	return segments;
 }
 
 const EPS = 1e-6;
@@ -178,20 +249,35 @@ export function planFrontOfEmbedCandidates(
 export type MaskShape =
 	/** Occludes its whole bounding box -- images and anything else opaque by nature. */
 	| { kind: "box" }
-	| { kind: "ellipse"; fill: boolean; strokeWidth: number }
+	| { kind: "ellipse"; fill: boolean; strokeWidth: number; roughness: number }
 	/**
 	 * A rectangle, whose corners Excalidraw rounds by default. `radius` is 0 for a
 	 * sharp-cornered one; masking a rounded rectangle with square corners left four
 	 * triangles of scene background outside the drawn corner arcs (seen live,
 	 * 2026-07-30).
 	 */
-	| { kind: "roundrect"; radius: number; fill: boolean; strokeWidth: number }
+	| { kind: "roundrect"; radius: number; fill: boolean; strokeWidth: number; roughness: number }
+	/**
+	 * A freedraw, masked by the closed polygon perfect-freehand builds around the
+	 * stroke -- the same geometry Excalidraw fills. Not a stroked centerline: the
+	 * points are streamlined before they are drawn, so the recorded points aren't
+	 * where the stroke is, and its width varies with pressure along its length.
+	 */
+	| {
+			kind: "outline";
+			points: readonly (readonly number[])[];
+			/** The raw points, when the stroke loops and carries a background Excalidraw fills too. */
+			interior: readonly (readonly number[])[] | null;
+	  }
 	| {
 			kind: "path";
 			points: readonly (readonly number[])[];
 			closed: boolean;
 			fill: boolean;
+			/** The width Excalidraw *draws* the stroke at, which for freedraw is not `element.strokeWidth`. */
 			strokeWidth: number;
+			/** 0 where Excalidraw draws deterministically, so no jitter allowance is added. */
+			roughness: number;
 			/**
 			 * Whether the points are a curve's control points rather than the drawn
 			 * path itself. A curved arrow bows away from the straight chord between
@@ -278,6 +364,7 @@ function cornerRadius(element: FrontOfEmbedElement): number {
 export function maskShapeFor(element: FrontOfEmbedElement): MaskShape {
 	const strokeWidth = element.strokeWidth ?? 1;
 	const fill = !!element.backgroundColor && element.backgroundColor !== "transparent";
+	const roughness = element.roughness ?? DEFAULT_ROUGHNESS;
 
 	if (element.type === "text") {
 		const fontSize = element.fontSize ?? DEFAULT_FONT_SIZE;
@@ -294,7 +381,19 @@ export function maskShapeFor(element: FrontOfEmbedElement): MaskShape {
 		};
 	}
 
+	if (element.type === "freedraw" && element.points && element.points.length > 0) {
+		const outline = getStroke(freehandInputPoints(element), freehandOptionsFor(element));
+		if (outline.length > 3) {
+			return {
+				kind: "outline",
+				points: outline,
+				interior: fill && isPathALoop(element.points) ? element.points : null,
+			};
+		}
+	}
+
 	if (element.points && element.points.length > 1) {
+		const isFreedraw = element.type === "freedraw";
 		// Never closed: a freedraw stroke's last point is wherever the pen lifted, so
 		// closing the path drew a chord straight back to where it started -- which
 		// masked a black band of background right across the embeddable (seen live,
@@ -311,13 +410,20 @@ export function maskShapeFor(element: FrontOfEmbedElement): MaskShape {
 			// embeddable (seen live, 2026-07-30, on both a 636-point freedraw scribble
 			// and an open line).
 			fill: fill && isPathALoop(element.points),
-			strokeWidth,
+			// perfect-freehand draws a freedraw far wider than its nominal strokeWidth.
+			strokeWidth: isFreedraw ? strokeWidth * FREEDRAW_SIZE_FACTOR : strokeWidth,
+			// A freedraw goes through perfect-freehand, not rough.js, so there is no
+			// hand-drawn jitter to leave room for -- the stroke lands exactly on its
+			// points. The flat allowance this replaces was two units of pure scene
+			// background on both sides of every freedraw, growing on screen with zoom,
+			// which is what made a zoomed-in stroke look edged and jagged.
+			roughness: isFreedraw ? 0 : roughness,
 			// freedraw points are already dense enough to trace the drawn stroke.
-			smooth: !!element.roundness && element.type !== "freedraw",
+			smooth: !!element.roundness && !isFreedraw,
 		};
 	}
 
-	if (element.type === "ellipse") return { kind: "ellipse", fill, strokeWidth };
+	if (element.type === "ellipse") return { kind: "ellipse", fill, strokeWidth, roughness };
 
 	if (element.type === "diamond") {
 		const { width: w, height: h } = element;
@@ -332,12 +438,13 @@ export function maskShapeFor(element: FrontOfEmbedElement): MaskShape {
 			closed: true,
 			fill,
 			strokeWidth,
+			roughness,
 			smooth: false,
 		};
 	}
 
 	if (element.type === "rectangle") {
-		return { kind: "roundrect", radius: cornerRadius(element), fill, strokeWidth };
+		return { kind: "roundrect", radius: cornerRadius(element), fill, strokeWidth, roughness };
 	}
 
 	// image, and any element type this plugin hasn't accounted for: mask the whole

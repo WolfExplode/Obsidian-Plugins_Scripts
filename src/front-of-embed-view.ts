@@ -1,6 +1,13 @@
 import type { WorkspaceLeaf } from "obsidian";
 import type ExcalidrawPureRefPlugin from "../main";
-import { maskDilation, maskShapeFor, planFrontOfEmbedCandidates, type FrontOfEmbedElement, type MaskShape } from "./front-of-embed";
+import {
+	curveControlPoints,
+	maskDilation,
+	maskShapeFor,
+	planFrontOfEmbedCandidates,
+	type FrontOfEmbedElement,
+	type MaskShape,
+} from "./front-of-embed";
 import { getExcalidrawApi, readSceneElements } from "./excalidraw-view";
 import { attachPerLeafScanner, leafDocument, type LeafScannerApi, type LeafScannerHandle } from "./leaf-scanner";
 
@@ -98,6 +105,44 @@ type RoundRectCapableContext = CanvasRenderingContext2D & {
 	roundRect?(x: number, y: number, width: number, height: number, radii: number): void;
 };
 
+/** Straight-segment path through a point list, closed. */
+function tracePolygon(ctx: CanvasRenderingContext2D, points: readonly (readonly number[])[]): void {
+	const first = points[0];
+	if (!first) return;
+	ctx.moveTo(first[0] ?? 0, first[1] ?? 0);
+	for (let i = 1; i < points.length; i++) {
+		const point = points[i];
+		if (point) ctx.lineTo(point[0] ?? 0, point[1] ?? 0);
+	}
+	ctx.closePath();
+}
+
+/**
+ * The freedraw outline as Excalidraw draws it: quadratics whose control point is
+ * each outline point and whose endpoint is the midpoint to the next one. This is
+ * `getSvgPathFromStroke` rewritten in canvas calls -- its `T` (smooth quadratic)
+ * commands reflect to exactly this, since the reflection of the previous control
+ * point about a midpoint is the next point itself.
+ */
+function traceStrokeOutline(ctx: CanvasRenderingContext2D, points: readonly (readonly number[])[]): void {
+	const at = (index: number): readonly [number, number] => {
+		const point = points[index % points.length];
+		return [point?.[0] ?? 0, point?.[1] ?? 0];
+	};
+	const midpoint = (a: readonly [number, number], b: readonly [number, number]): [number, number] => [
+		(a[0] + b[0]) / 2,
+		(a[1] + b[1]) / 2,
+	];
+	const start = at(0);
+	ctx.moveTo(start[0], start[1]);
+	for (let i = 1; i < points.length; i++) {
+		const control = at(i);
+		const end = midpoint(control, at(i + 1));
+		ctx.quadraticCurveTo(control[0], control[1], end[0], end[1]);
+	}
+	ctx.closePath();
+}
+
 /**
  * Paints one element's occluded region, opaque, in element-local coordinates.
  * Only the alpha matters -- the colour is discarded by the `source-in` blit that
@@ -123,13 +168,32 @@ function paintMask(
 		// strokeText over fillText dilates the glyphs enough to cover their
 		// antialiased edges; without it the blit clips a hairline off every letter.
 		// Text carries no rough.js jitter, so it gets the antialias allowance only.
-		ctx.lineWidth = maskDilation(zoom, false) * 2;
+		ctx.lineWidth = maskDilation(zoom, 0) * 2;
 		const baseline = textBaselineOffset(lib, mask.fontFamily, mask.fontSize, mask.lineHeightPx);
 		mask.lines.forEach((line, index) => {
 			const y = index * mask.lineHeightPx + baseline;
 			ctx.fillText(line, mask.horizontalOffset, y);
 			ctx.strokeText(line, mask.horizontalOffset, y);
 		});
+		return;
+	}
+
+	if (mask.kind === "outline") {
+		// Excalidraw fills this polygon as chained quadratics through the midpoints
+		// between successive points (its `getSvgPathFromStroke`), which is what makes
+		// the stroke smooth at any zoom rather than faceted. Tracing the polygon with
+		// straight segments instead would put the mask's own corners back.
+		if (mask.interior) {
+			ctx.beginPath();
+			tracePolygon(ctx, mask.interior);
+			ctx.fill();
+		}
+		ctx.beginPath();
+		traceStrokeOutline(ctx, mask.points);
+		ctx.fill();
+		// The outline is exact, so it needs the antialias allowance only.
+		ctx.lineWidth = maskDilation(zoom, 0) * 2;
+		ctx.stroke();
 		return;
 	}
 
@@ -150,16 +214,12 @@ function paintMask(
 		if (!first || !last) return;
 		ctx.moveTo(first[0], first[1]);
 		if (mask.smooth && points.length > 2) {
-			// Quadratic through the midpoints between successive control points: the
-			// standard smoothing that approximates the cardinal spline rough.js draws
-			// for a curved line/arrow, close enough to stay inside the dilation.
-			for (let i = 1; i < points.length - 1; i++) {
-				const point = points[i];
-				const next = points[i + 1];
-				if (!point || !next) continue;
-				ctx.quadraticCurveTo(point[0], point[1], (point[0] + next[0]) / 2, (point[1] + next[1]) / 2);
+			// The exact Catmull-Rom-to-Bezier conversion rough.js draws a curved linear
+			// element with, so the mask follows the stroke rather than merely resembling
+			// it -- see `curveControlPoints`.
+			for (const { cp1, cp2, to } of curveControlPoints(points)) {
+				ctx.bezierCurveTo(cp1[0], cp1[1], cp2[0], cp2[1], to[0], to[1]);
 			}
-			ctx.lineTo(last[0], last[1]);
 		} else {
 			for (let i = 1; i < points.length; i++) {
 				const point = points[i];
@@ -169,7 +229,7 @@ function paintMask(
 		if (mask.closed) ctx.closePath();
 	}
 	if (mask.fill) ctx.fill();
-	ctx.lineWidth = mask.strokeWidth + maskDilation(zoom, true) * 2;
+	ctx.lineWidth = mask.strokeWidth + maskDilation(zoom, mask.roughness) * 2;
 	ctx.stroke();
 }
 
