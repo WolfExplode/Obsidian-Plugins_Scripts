@@ -230,7 +230,12 @@ function paintMask(
 	}
 	if (mask.fill) ctx.fill();
 	ctx.lineWidth = mask.strokeWidth + maskDilation(zoom, mask.roughness) * 2;
+	// A dashed or dotted stroke leaves real gaps; masking it solid paints scene
+	// background into every one of them. The pattern is in scene units, and the
+	// context is already scaled by zoom, so it needs no conversion.
+	if (mask.dash) ctx.setLineDash(mask.dash as number[]);
 	ctx.stroke();
+	if (mask.dash) ctx.setLineDash([]);
 }
 
 /**

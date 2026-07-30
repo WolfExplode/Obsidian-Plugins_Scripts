@@ -79,11 +79,27 @@ directly rather than left as a pure upstream limitation.
   `thinning: 1`, `constantPressure`, and an extra `outlineWidth: 4` outline —
   and those are not stored on the element, so a highlighter stroke will be
   masked with the wrong profile.
-- **Dashed and dotted strokes mask as solid.** `strokeStyle` is not read, so the
-  mask is continuous where the drawn stroke has gaps, painting scene background
-  into every gap over an embeddable. Same class as the constant-pressure bug:
-  the mask has to copy the element's own draw settings, not assume defaults.
-  Reproducing it means matching rough.js's dash geometry.
+- **A dashed mask's phase can drift against the drawn dashes.** `strokeStyle` is
+  read and the mask carries Excalidraw's own pattern and width, but rough.js
+  draws each edge and corner as a separate subpath, restarting the dash phase at
+  each one, where the mask traces a shape as a single continuous path. On a
+  shape with many segments the two can fall out of step, masking a gap and
+  leaving part of a dash uncovered. The dilation's round caps absorb some of it.
+- **Hand-drawn jitter is still an allowance, not the real path.** At `roughness`
+  0 the mask is exact — rough.js emits zero offsets and `maskDilation` adds no
+  jitter allowance — but at 1 and 2 the mask is widened by
+  `MASK_JITTER_ALLOWANCE` per unit of roughness rather than following where
+  rough.js actually drew. That band is scene background wherever the stroke
+  didn't wander, and it is what remains of the rim on lines, arrows, rectangles
+  and ellipses.
+
+  rough.js is deterministic given the element's `seed`, so this is reproducible
+  in principle: a seeded LCG (`Math.imul(48271, seed)`) plus its per-shape
+  offset logic. The cost is that its random draws are *stateful and ordered*, so
+  a port has to match rough's exact call sequence per shape type, including its
+  SVG-path renderer — Excalidraw draws rounded rectangles by handing rough a
+  path string. A wrong draw order yields visibly wrong jitter rather than a
+  slightly wrong width.
 - **Hachure and cross-hatch fills mask as solid.** `fillStyle` is not read
   either, so a hatched interior masks as a slab rather than as its lines.
 - **Bound and elbowed arrows bail out.** Excalidraw does not draw these along

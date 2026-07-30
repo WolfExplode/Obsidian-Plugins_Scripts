@@ -31,6 +31,8 @@ export interface FrontOfEmbedElement extends PackElement {
 	backgroundColor?: string;
 	/** rough.js hand-drawn jitter: 0 (architect) draws exactly on the path, 2 (cartoonist) wanders furthest. */
 	roughness?: number;
+	/** `"solid"` (or absent), `"dashed"`, or `"dotted"` -- a dashed stroke leaves gaps a solid mask would cover. */
+	strokeStyle?: string;
 	/** Linear elements (line/arrow/freedraw): vertices relative to `x`/`y`. */
 	points?: readonly (readonly number[])[];
 	/** Freedraw: recorded pen pressure per point, when the input device reported any. */
@@ -108,6 +110,31 @@ export const FREEDRAW_SIZE_FACTOR = 4.25;
 
 /** Excalidraw's default `roughness` (artist), for elements that predate the field. */
 const DEFAULT_ROUGHNESS = 1;
+
+/**
+ * Excalidraw's dash patterns, in scene units, mirroring its own
+ * `getDashArrayDashed` / `getDashArrayDotted`. A dashed stroke leaves real gaps,
+ * and a solid mask over one paints scene background into every gap.
+ *
+ * Verified live (2026-07-30) against `exportToSvg` on a `strokeWidth` 2
+ * rectangle: `stroke-dasharray="8 10"` when dashed and `"1.5 8"` when dotted.
+ */
+export function dashArrayFor(strokeStyle: string | undefined, strokeWidth: number): readonly number[] | null {
+	if (strokeStyle === "dashed") return [8, 8 + strokeWidth];
+	if (strokeStyle === "dotted") return [1.5, 6 + strokeWidth];
+	return null;
+}
+
+/**
+ * The width Excalidraw hands rough.js. A non-solid stroke is drawn half a unit
+ * wider -- and as a single pass rather than rough's usual two, which is why it
+ * needs the extra width to read as solidly. Same source as `dashArrayFor`: the
+ * exported `stroke-width` is 2.5 for a `strokeWidth` 2 dashed or dotted stroke,
+ * and 2 when solid.
+ */
+export function drawnStrokeWidth(strokeStyle: string | undefined, strokeWidth: number): number {
+	return strokeStyle && strokeStyle !== "solid" ? strokeWidth + 0.5 : strokeWidth;
+}
 
 /**
  * How far to grow a mask beyond the element's exact geometry, in scene units at
@@ -249,14 +276,14 @@ export function planFrontOfEmbedCandidates(
 export type MaskShape =
 	/** Occludes its whole bounding box -- images and anything else opaque by nature. */
 	| { kind: "box" }
-	| { kind: "ellipse"; fill: boolean; strokeWidth: number; roughness: number }
+	| { kind: "ellipse"; fill: boolean; strokeWidth: number; roughness: number; dash: readonly number[] | null }
 	/**
 	 * A rectangle, whose corners Excalidraw rounds by default. `radius` is 0 for a
 	 * sharp-cornered one; masking a rounded rectangle with square corners left four
 	 * triangles of scene background outside the drawn corner arcs (seen live,
 	 * 2026-07-30).
 	 */
-	| { kind: "roundrect"; radius: number; fill: boolean; strokeWidth: number; roughness: number }
+	| { kind: "roundrect"; radius: number; fill: boolean; strokeWidth: number; roughness: number; dash: readonly number[] | null }
 	/**
 	 * A freedraw, masked by the closed polygon perfect-freehand builds around the
 	 * stroke -- the same geometry Excalidraw fills. Not a stroked centerline: the
@@ -278,6 +305,8 @@ export type MaskShape =
 			strokeWidth: number;
 			/** 0 where Excalidraw draws deterministically, so no jitter allowance is added. */
 			roughness: number;
+			/** Excalidraw's dash pattern in scene units, or null for a solid stroke. */
+			dash: readonly number[] | null;
 			/**
 			 * Whether the points are a curve's control points rather than the drawn
 			 * path itself. A curved arrow bows away from the straight chord between
@@ -362,7 +391,9 @@ function cornerRadius(element: FrontOfEmbedElement): number {
 }
 
 export function maskShapeFor(element: FrontOfEmbedElement): MaskShape {
-	const strokeWidth = element.strokeWidth ?? 1;
+	const nominalStrokeWidth = element.strokeWidth ?? 1;
+	const strokeWidth = drawnStrokeWidth(element.strokeStyle, nominalStrokeWidth);
+	const dash = dashArrayFor(element.strokeStyle, nominalStrokeWidth);
 	const fill = !!element.backgroundColor && element.backgroundColor !== "transparent";
 	const roughness = element.roughness ?? DEFAULT_ROUGHNESS;
 
@@ -418,12 +449,13 @@ export function maskShapeFor(element: FrontOfEmbedElement): MaskShape {
 			// background on both sides of every freedraw, growing on screen with zoom,
 			// which is what made a zoomed-in stroke look edged and jagged.
 			roughness: isFreedraw ? 0 : roughness,
+			dash,
 			// freedraw points are already dense enough to trace the drawn stroke.
 			smooth: !!element.roundness && !isFreedraw,
 		};
 	}
 
-	if (element.type === "ellipse") return { kind: "ellipse", fill, strokeWidth, roughness };
+	if (element.type === "ellipse") return { kind: "ellipse", fill, strokeWidth, roughness, dash };
 
 	if (element.type === "diamond") {
 		const { width: w, height: h } = element;
@@ -439,12 +471,13 @@ export function maskShapeFor(element: FrontOfEmbedElement): MaskShape {
 			fill,
 			strokeWidth,
 			roughness,
+			dash,
 			smooth: false,
 		};
 	}
 
 	if (element.type === "rectangle") {
-		return { kind: "roundrect", radius: cornerRadius(element), fill, strokeWidth, roughness };
+		return { kind: "roundrect", radius: cornerRadius(element), fill, strokeWidth, roughness, dash };
 	}
 
 	// image, and any element type this plugin hasn't accounted for: mask the whole

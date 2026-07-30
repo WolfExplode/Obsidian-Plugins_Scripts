@@ -195,7 +195,32 @@ describe("maskShapeFor", () => {
 
 	it("masks an ellipse as an ellipse", () => {
 		const shape = maskShapeFor(el({ id: "e", type: "ellipse", strokeWidth: 4, roughness: 1 }));
-		assert.deepEqual(shape, { kind: "ellipse", fill: false, strokeWidth: 4, roughness: 1 });
+		assert.deepEqual(shape, { kind: "ellipse", fill: false, strokeWidth: 4, roughness: 1, dash: null });
+	});
+
+	it("masks a dashed or dotted stroke with Excalidraw's own dash pattern and width", () => {
+		// A solid mask over a dashed stroke paints scene background into every gap.
+		const solid = maskShapeFor(el({ id: "s", type: "ellipse", strokeWidth: 2, strokeStyle: "solid" }));
+		assert.equal(solid.kind === "ellipse" && solid.dash, null);
+		assert.equal(solid.kind === "ellipse" && solid.strokeWidth, 2);
+
+		// Verified against exportToSvg: stroke-dasharray "8 10", stroke-width 2.5.
+		const dashed = maskShapeFor(el({ id: "d", type: "ellipse", strokeWidth: 2, strokeStyle: "dashed" }));
+		assert.deepEqual(dashed.kind === "ellipse" ? dashed.dash : null, [8, 10]);
+		assert.equal(dashed.kind === "ellipse" && dashed.strokeWidth, 2.5);
+
+		// ...and "1.5 8" when dotted.
+		const dotted = maskShapeFor(el({ id: "o", type: "ellipse", strokeWidth: 2, strokeStyle: "dotted" }));
+		assert.deepEqual(dotted.kind === "ellipse" ? dotted.dash : null, [1.5, 8]);
+		assert.equal(dotted.kind === "ellipse" && dotted.strokeWidth, 2.5);
+
+		// The pattern reaches every stroked shape, not just ellipses.
+		const rect = maskShapeFor(el({ id: "r", type: "rectangle", strokeWidth: 1, strokeStyle: "dashed" }));
+		assert.deepEqual(rect.kind === "roundrect" ? rect.dash : null, [8, 9]);
+		const line = maskShapeFor(
+			el({ id: "l", type: "line", strokeWidth: 1, strokeStyle: "dotted", points: [[0, 0], [10, 10]] }),
+		);
+		assert.deepEqual(line.kind === "path" ? line.dash : null, [1.5, 7]);
 	});
 
 	it("masks a freedraw with the stroke outline, not a stroked centerline", () => {
