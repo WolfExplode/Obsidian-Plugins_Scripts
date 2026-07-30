@@ -61,3 +61,9 @@ materially riskier and more invasive than the input-layer patches in
 [Excalidraw shortcut interception](excalidraw-shortcut-interception.md), and
 liable to break on every Excalidraw version bump. Treated as an accepted
 known limitation unless it starts actively blocking a specific workflow.
+
+It started blocking one: see
+[Front-of-embed rendering](../behavior/front-of-embed-rendering.md) and
+[ADR 0010](../adr/0010-front-of-embed-rendering.md) for the plugin-owned
+mechanism (a separate DOM overlay layer, not a patch to this pipeline) that
+now works around it for the annotate-over-media workflow.

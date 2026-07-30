@@ -14,6 +14,7 @@ find the right context before changing code or investigating behavior.
 | Work with vault images or an Excalidraw image element's `fileId` | [Generated-image lifecycle](integrations/obsidian-excalidraw-generated-images.md) | — |
 | Load a vault file into a `<video>`/`<img>` by URL | [Media URL schemes](integrations/obsidian-media-url-schemes.md) | — |
 | Check whether a rendering quirk is an accepted upstream limitation before investigating it as a bug | [Excalidraw embeddable z-order limitation](integrations/excalidraw-embeddable-z-order-limitation.md), [Obsidian Canvas image-embed stretch fix](integrations/obsidian-canvas-image-stretch-fix.md) | — |
+| Understand how elements render in front of embeddables (video/PDF/markdown/web embeds) | [Front-of-embed rendering](behavior/front-of-embed-rendering.md) | [ADR 0010](adr/0010-front-of-embed-rendering.md) |
 | Research a known problem, failed experiment, or paused direction | [Investigations](investigations/) | Treat findings as context, not an implementation plan |
 | Measure real interaction cost instead of guessing from reading code | [Performance profiling](perf-profiling.md) | — |
 

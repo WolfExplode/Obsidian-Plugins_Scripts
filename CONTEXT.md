@@ -16,6 +16,10 @@ _Avoid_: Scene (conflicts with Excalidraw's scene model), Canvas (conflicts with
 The rendering surface and element model supplied by the third-party Excalidraw community plugin.
 _Avoid_: Excalidraw plugin (when referring only to its drawing surface)
 
+**Front-of-embed rendering**:
+The host plugin's mechanism for making a non-embeddable element (an image, a drawn shape, text) visually appear in front of an embeddable element it overlaps, driven by the same scene z-order that Bring to Front/Send to Back already control. Works around an upstream Excalidraw limitation where embeddables always render above the canvas-drawn layer regardless of z-order.
+_Avoid_: Overlay (already means the separate transparent Popout surface in this project), always-on-top layer
+
 **Popout**:
 An always-on-top secondary OS window that presents exactly one Board. A Popout is distinct from the Board's view in the main Obsidian window.
 _Avoid_: Window (too generic), tab, PureRef mode
