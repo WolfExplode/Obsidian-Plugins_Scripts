@@ -1,7 +1,7 @@
 {
 	"id": "excalidraw-pureref",
 	"name": "Excalidraw PureRef",
-	"version": "1.0.0",
+	"version": "1.1.0",
 	"minAppVersion": "1.13.0",
 	"description": "Turn an Excalidraw board into a chrome-free, always-on-top PureRef-style reference popout with F11.",
 	"author": "WolfExplode",
