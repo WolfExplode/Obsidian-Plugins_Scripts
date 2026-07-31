@@ -71,3 +71,31 @@ body.epr-popout-mode .view-content {
 	object-fit: cover !important;
 	display: block !important;
 }
+
+/*
+ * Front-of-embed overlay canvas (src/front-of-embed-view.ts): an absolutely
+ * positioned, click-through layer painted on top of Excalidraw's own canvas
+ * so elements in front of embeddables render above them.
+ *
+ * z-index 2 ties with Excalidraw's own embeddable containers (also z-index 2,
+ * verified live) and with its interactive canvas, so DOM order decides --
+ * which is why the overlay is kept as the *last* child of the `.excalidraw`
+ * root (see `ensureMounted` in front-of-embed-view.ts). Deliberately NOT 3:
+ * `--zIndex-svgLayer` and `--zIndex-wysiwyg` are 3, and a later-in-DOM overlay
+ * at that level paints over the in-place text editor.
+ *
+ * Selector is scoped to `.excalidraw canvas.epr-front-of-embed-overlay`
+ * (not just the bare class) because Excalidraw's own `.excalidraw canvas`
+ * rule sets `z-index: var(--zIndex-canvas)` at equal-or-higher specificity;
+ * the bare class lost that fight for z-index in the normal (non-popout)
+ * editor, which is exactly what broke rendering there. The extra `canvas`
+ * and `.excalidraw` in the selector outrank it without needing `!important`.
+ */
+.excalidraw canvas.epr-front-of-embed-overlay {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	pointer-events: none;
+	z-index: 2;
+}

@@ -52,16 +52,6 @@ import { attachPerLeafScanner, leafDocument, type LeafScannerApi, type LeafScann
  * attaching to views as they mount and detaching as they close.
  */
 
-/**
- * Ties with Excalidraw's own embeddable containers (also z-index 2, verified
- * live) and with its interactive canvas, so DOM order decides -- which is why
- * the overlay is kept as the *last* child of the `.excalidraw` root (see
- * `ensureMounted`). Deliberately NOT 3: `--zIndex-svgLayer` and
- * `--zIndex-wysiwyg` are 3, and a later-in-DOM overlay at that level paints over
- * the in-place text editor.
- */
-const OVERLAY_Z_INDEX = "2";
-
 /** Excalidraw's own static scene canvas -- the source of every blitted pixel this overlay draws. */
 const STATIC_CANVAS_SELECTOR = "canvas.static";
 
@@ -457,7 +447,7 @@ function absoluteBoundsOf(lib: ExcalidrawLibGlobal | undefined, element: FrontOf
 	if (!lib?.getCommonBounds) return null;
 	const bounds = lib.getCommonBounds([element.angle ? { ...element, angle: 0 } : element]);
 	if (!bounds || bounds.length < 4 || bounds.some((value) => !Number.isFinite(value))) return null;
-	return { minX: bounds[0] as number, minY: bounds[1] as number, maxX: bounds[2] as number, maxY: bounds[3] as number };
+	return { minX: bounds[0], minY: bounds[1], maxX: bounds[2], maxY: bounds[3] };
 }
 
 /** Which elements go in front, how each is painted and placed, and where they're allowed to paint. Cheap enough to redo per scene change; never per frame. */
@@ -485,12 +475,6 @@ function setup(leaf: WorkspaceLeaf, _api: LeafScannerApi, scanner: LeafScannerHa
 
 	const canvas = win.document.createElement("canvas");
 	canvas.className = "epr-front-of-embed-overlay";
-	canvas.style.position = "absolute";
-	canvas.style.inset = "0";
-	canvas.style.width = "100%";
-	canvas.style.height = "100%";
-	canvas.style.pointerEvents = "none";
-	canvas.style.zIndex = OVERLAY_Z_INDEX;
 	root.appendChild(canvas);
 
 	const ctx = canvas.getContext("2d");

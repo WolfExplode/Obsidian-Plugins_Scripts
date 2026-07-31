@@ -73,8 +73,8 @@ export function syncObsidianHotkeys(plugin: ExcalidrawPureRefPlugin, store: Hotk
 		if (!action.commandId) continue;
 		const fullId = `${plugin.manifest.id}:${action.commandId}`;
 		const bindings = store.get(action.id)
-			.filter((binding) => binding.key !== null)
-			.map((binding) => ({ modifiers: binding.modifiers as string[], key: binding.key as string }));
+			.filter((binding): binding is typeof binding & { key: string } => binding.key !== null)
+			.map((binding) => ({ modifiers: binding.modifiers, key: binding.key }));
 		try {
 			hm.setHotkeys(fullId, bindings);
 		} catch {
