@@ -14,10 +14,10 @@ for the upstream root cause this works around.
 The editable surfaces and the read-only window reach the same result by
 different means, because they are different kinds of surface: one is a live
 canvas, the other a static SVG export with live media laid over it. Everything
-up to "Where the mask geometry comes from" describes the editable surfaces; the
-read-only window has its own section below. **The candidate set — which elements
-render in front — is shared**, so a Board looks the same either side of the F10
-switch.
+up to "The read-only transparent window" describes the editable surfaces; that
+section covers the read-only window on its own terms. **The candidate set —
+which elements render in front — is shared**, so a Board looks the same either
+side of the F10 switch.
 
 ## Problem this solves
 
@@ -38,11 +38,11 @@ directly rather than left as a pure upstream limitation.
   embeddable is driven entirely by existing scene z-order plus whether its
   bounds overlap the embeddable — there is nothing new for the user to turn
   on, and no plugin setting to disable it in v1.
-- **Sloppiness, stroke style and pen settings are honoured.** The mask follows
-  the path Excalidraw actually drew, so architect, artist and cartoonist all mask
-  correctly, dashed and dotted strokes mask as dashes and dots rather than as a
-  solid line, and a stroke drawn with a custom pen masks with that pen's own
-  profile.
+- **Sloppiness, stroke style and pen settings are honoured.** The paint follows
+  the path Excalidraw actually drew, so architect, artist and cartoonist all
+  render correctly, dashed and dotted strokes render as dashes and dots rather
+  than as a solid line, and a stroke drawn with a custom pen keeps that pen's
+  own profile.
 - **What appears in front is the real element, not an approximation.** The
   mechanism draws Excalidraw's own emitted paths in Excalidraw's own colours, so
   what shows over the embeddable is what Excalidraw drew — same colours, same
@@ -56,7 +56,7 @@ directly rather than left as a pure upstream limitation.
   about how or where Excalidraw draws a member, and Excalidraw both renders in
   array order and keeps a group's members contiguous in that array — so "after
   the embeddable" means the same thing for a group member as for a loose
-  element. Each member is masked individually, so a group half over an
+  element. Each member is painted individually, so a group half over an
   embeddable shows exactly the half that overlaps. This is deliberately *not*
   the same call as the group bail-out in
   [overlap-aware-zorder.md](overlap-aware-zorder.md): that feature **reorders**
@@ -68,7 +68,7 @@ directly rather than left as a pure upstream limitation.
   on its own, so the two always cross the embeddable together. `redrawTextBoundingBox`
   keeps a shape-bound label's `x`/`y`/`angle` in absolute scene terms (rotation
   about the container's centre already baked in), so it needs no special
-  placement — it masks as ordinary text. **Arrow labels are the exception** and
+  placement — it paints as ordinary text. **Arrow labels are the exception** and
   bail out as a pair with their arrow; see the scope cuts below.
 - **Only the element occludes the embeddable, not its bounding box.** An
   unfilled rectangle shows the embeddable through its interior; text occludes
@@ -76,31 +76,28 @@ directly rather than left as a pure upstream limitation.
   its interior, as expected.
 - **Selection needs nothing from this mechanism — it already works.** Clicking
   an element where it overlaps an embeddable selects that element, not the
-  embeddable, and it stays draggable there. This was expected to be a
-  limitation (the overlay is a `pointer-events: none` canvas, and Excalidraw
+  embeddable, and it stays draggable there. This looked like it would need a
+  hit-test router (the overlay is `pointer-events: none`, and Excalidraw
   hit-tests on its interactive canvas *below* the embeddable's DOM node), but
-  an inactive embeddable's container is itself `pointer-events: none` (verified
-  live, 2026-07-30), so the click reaches the interactive canvas and Excalidraw
-  hit-tests it in ordinary scene z-order — where the front element already
-  wins. No pointer-event routing or hit-test router is needed.
-- **The mask follows Excalidraw's own placement, quirks included.** Excalidraw
+  an inactive embeddable's container is itself `pointer-events: none`, so the
+  click reaches the interactive canvas and Excalidraw hit-tests it in ordinary
+  scene z-order — where the front element already wins. No pointer-event
+  routing was needed.
+- **The paint follows Excalidraw's own placement, quirks included.** Excalidraw
   paints a line, arrow or freedraw a little low and/or right of the geometry it
   generates for it, whenever the drawn stroke starts after the element's own
   `x`/`y` — an upstream bug, documented in full in
   [Excalidraw linear-element canvas offset](../integrations/excalidraw-linear-element-canvas-offset.md).
-  It shows up on dashed and dotted **cartoonist** strokes, and at 1.41 scene
-  units (measured live, 2026-07-30) it was enough for the mask to straddle the
-  stroke: background copied along the top of every dash, the bottom of the
-  stroke left behind. `maskPlacement` applies the same displacement, so the mask
-  lands on the pixels Excalidraw actually drew.
+  It shows up on dashed and dotted **cartoonist** strokes clearly enough to
+  visibly straddle the stroke. `elementPlacement` applies the same
+  displacement, so the paint lands on the pixels Excalidraw actually drew.
 - **A stroke's box is where the stroke is, not where it started.** Excalidraw
   pins a line/arrow/freedraw's `x`/`y` to its *first point*, so a scribble drawn
   right-to-left or bottom-to-top extends left and up from there. Both the
-  overlap test and the mask's rotation pivot go through `geometryOffset`
-  (`pack-elements.ts`) for this. Taking `x`/`y` as the top-left instead gave a
-  box hanging off the starting point, down and to the right — which is what made
-  a big scribble render in front only when the embeddable happened to sit inside
-  that phantom box (fixed 2026-07-30).
+  overlap test and the rotation pivot go through `geometryOffset`
+  (`pack-elements.ts`) for this — taking `x`/`y` as the top-left instead gave a
+  box hanging off the starting point, which made a big scribble render in front
+  only when the embeddable happened to sit inside that phantom box.
 - **Nothing is persisted to the `.excalidraw` file.** Front-of-embed status is
   recomputed from ordinary element data (array order + bounding-box overlap)
   on load and after every relevant mutation — a file opened in vanilla
@@ -111,82 +108,56 @@ directly rather than left as a pure upstream limitation.
 ## Deliberate scope cuts
 
 - **Frames bail out entirely.** A candidate with a `frameId` is skipped and
-  stays behind the embeddable. A frame *clips* its children and the mask has no
-  clip of its own, so masking a partly-clipped element would copy scene
+  stays behind the embeddable. A frame *clips* its children and this mechanism
+  has no clip of its own, so painting a partly-clipped element would show scene
   background from wherever the frame cut it off. Embeddables inside a frame are
   likewise not treated as embeddables to be in front of. Groups are **not** a
   bail-out — see "Behavior" above.
 
-  *Deferred, not blocked* (scoped 2026-07-30). The clip itself is nearly free:
-  `frameClip`
-  ([staticScene.ts:133](../../reference/excalidraw-master/packages/excalidraw/renderer/staticScene.ts#L133))
-  is a translate, `roundRect(0, 0, w, h, FRAME_STYLE.radius / zoom)` and
-  `clip()`, and the paint loop already establishes the scene→viewport transform
-  it would sit inside. Frames can't rotate, so there is no pivot interaction.
-  Three things make it a day's work rather than an hour's:
-  - **Knowing *when* to clip.** `shouldApplyFrameClip`
-    ([frame.ts:911](../../reference/excalidraw-master/packages/element/src/frame.ts#L911))
-    has an easy half (element intersects or contains the frame) and a fiddly
-    half about group members and `selectedElementsAreBeingDragged`. Skipping the
-    fiddly half is not safe-by-default: clipping where Excalidraw didn't makes
-    the overlay *lose* part of an element, which shows as the element being cut
-    off mid-drag out of a frame.
-  - **Framed embeddables** would have to start counting as embeddables to be in
-    front of (`isEligibleEmbeddable` drops them today).
-  - **The frame's own border and name label** are chrome this mechanism never
-    masks, so a frame drawn over an embeddable stays behind it either way.
+  *Deferred, not blocked.* Reproducing the frame's clip is cheap on its own
+  (`frameClip` is a translate + `roundRect` + `clip()`, and frames can't
+  rotate), but three things make it more than an hour's work: knowing exactly
+  *when* Excalidraw applies the clip (`shouldApplyFrameClip` has a fiddly half
+  about group members and in-progress drags that isn't safe to skip), framed
+  embeddables would need to start counting as embeddables to be in front of,
+  and a frame's own border/label are chrome this mechanism never paints anyway.
 - **Text and images have no emitted paths.** Excalidraw exports text as `<text>`
   and images as `<image>`, neither of which is path geometry, so neither can be
   drawn from emitted paths. They diverge from there: text is *drawn* as glyphs
   in the element's own colour, placed by Excalidraw's own `getVerticalOffset`
   maths, while an image is *blitted* through a box mask, since its pixels can
   only come from the canvas.
-- **The reconstructed fallback is approximate where it is used.** For the frame
-  or two before an element's geometry has been fetched, it is blitted through a
-  mask from the ports, and a few of their cases are known to be imperfect: a
-  constant-pressure freedraw sits a mean of 0.43 scene units off (see
-  `CONSTANT_VARIABILITY_PRESSURE`, a fitted constant), ellipses and rounded
-  diamonds are not reproduced at all and fall back to a jitter allowance, the
-  Obsidian plugin's custom pen options are not stored on the element so a
-  highlighter stroke gets the wrong profile, and a dashed mask's phase can drift
-  because rough.js restarts it per subpath where the fallback traces one
-  continuous path. None of these persist: once the fetched geometry lands it
-  replaces all of them.
-- **Hachure and cross-hatch fills mask as solid.** `fillStyle` is read for
-  whether a fill exists but a hatched interior still masks as a slab rather than
-  as its lines, because the mask fills the emitted fill path rather than
-  following its hatching.
+- **A candidate with no export yet is simply not painted, for that frame.** The
+  emitted-geometry cache is asynchronous (see "How candidates are painted"
+  below), so a freshly-drawn or just-resized element has nothing to draw from
+  for a frame or two, and it stays behind the embeddable until its geometry
+  arrives. An earlier reconstruction fallback (rough.js/perfect-freehand ports
+  in `rough.ts`/`freehand.ts`) covered that gap but was later dropped — live
+  testing found no visible flash or flicker without it, and the ports were
+  reconstructions of code not in this plugin's bundle, liable to drift silently
+  on an Excalidraw update.
+- **Hachure and cross-hatch fills paint as solid.** `fillStyle` is read for
+  whether a fill exists but a hatched interior still fills as a slab rather than
+  as its lines, because the fill follows the emitted fill path rather than its
+  hatching.
 - **Bound, elbowed, and labelled arrows bail out.** Excalidraw does not draw
   these along their own `points` — a bound endpoint is pulled back to the bound
   element's boundary, and an elbowed arrow is re-routed as orthogonal segments —
-  so their drawn path can't be masked from element data. A *labelled* arrow
-  bails out as a pair with its label, for the same reason on both halves: the
-  label's own `x`/`y` are ignored in favour of
+  so their drawn path can't be reconstructed from element data. A *labelled*
+  arrow bails out as a pair with its label, for the same reason on both halves:
+  the label's own `x`/`y` are ignored in favour of
   `LinearElementEditor.getBoundTextElementPosition`, and `drawElementFromCanvas`
-  punches a label-shaped hole in the arrow's blit, so masking the arrow's stroke
-  across the label would copy background out of that hole. All of these stay
+  punches a label-shaped hole in the arrow's own render. All of these stay
   behind the embeddable; an ordinary unbound, unlabelled arrow works normally.
 
-  *Deferred as low-value* (scoped 2026-07-30), and the reason is worth recording
-  because the effort estimate is misleading on its own. **Placement is the easy
-  half**: `getCommonBounds` builds its own elements map from whatever array it
-  is handed
-  ([bounds.ts:1017](../../reference/excalidraw-master/packages/element/src/bounds.ts#L1017)),
-  so `getCommonBounds([arrow, label])` resolves the container and returns the
-  label's *drawn* position through `getBoundTextElementPosition` — no port to
-  write, and `maskPlacement`'s shift already has somewhere to put it.
-  (`LinearElementEditor` itself is *not* on `ExcalidrawLib`; verified live
-  2026-07-30, only `getContainerElement`, `getBoundTextMaxWidth` and the bounds
-  helpers are.) **The hole-punch is the hard half**: reproducing it means
-  painting the pair as a unit in a fixed order — arrow mask, clear the label
-  rect in *scene* space, then the label's glyphs — which gives up the paint
-  loop's one-element-at-a-time independence.
-
-  What makes it not worth that: a labelled arrow is usually a *connector*, which
-  means it is also a **bound** arrow, and bound arrows bail out for a separate
-  and much harder reason. So the case this would actually unlock is a labelled,
-  unbound, non-elbowed arrow that happens to cross an embeddable — the narrowest
-  target of any cut on this list, behind the most invasive change.
+  *Deferred as low-value.* Placing a labelled arrow's label correctly would be
+  cheap (`getCommonBounds([arrow, label])` already resolves it through
+  `getBoundTextElementPosition`), but reproducing the hole-punch means painting
+  the pair as a fixed-order unit, which gives up the paint loop's
+  one-element-at-a-time independence — and a labelled arrow is usually also a
+  *bound* one, which bails out for the harder reason anyway. So the case this
+  would unlock (a labelled, unbound, non-elbowed arrow crossing an embeddable)
+  is narrow enough that it isn't worth the change.
 
 ## How candidates are painted
 
@@ -197,76 +168,50 @@ Each candidate is either **drawn** or **blitted**, and drawn is the good path:
   drawn as glyphs in the element's own `strokeColor`, since Excalidraw exports
   `<text>` rather than path geometry. Nothing is copied, so no scene background
   can come with it, and the element composites onto the embed itself — which is
-  what makes a semi-transparent annotation show the video through it. No
-  dilation is involved anywhere: that existed only to stop the blit clipping an
-  antialiased edge, and an edge antialiasing against transparency needs no
-  allowance.
-- **Blitted** — the mask-and-blit path this mechanism started as: paint an alpha
-  mask of the element, then `source-in` a copy of Excalidraw's static canvas
-  through it. Now used only for **images**, whose pixels can't come from
-  anywhere else, and for the frame or two before an element's export lands. An
-  image is masked as its whole opaque box, so the rim the blit is prone to never
-  applies to it.
+  what makes a semi-transparent annotation show the video through it.
+- **Blitted** — paint an alpha mask of the element, then `source-in` a copy of
+  Excalidraw's static canvas through it. Used only for **images**, whose pixels
+  can't come from anywhere else — masked as their whole opaque box, so there's
+  no antialiased edge to leave a rim. Nothing else is ever blitted: a non-image
+  candidate with no export yet is skipped for that frame instead (see the scope
+  cuts above), not blitted as an approximation.
 
 The two share one paint, in that order: the blitted stencil is composited first,
-then the drawn candidates go over the top with `source-over`. Splitting it that
-way is what keeps the `source-in` from consuming anything but its own stencil.
+then the drawn candidates go over the top with `source-over` — which keeps the
+`source-in` from consuming anything but its own stencil.
 
 **Dark theme has to be applied by hand on the drawn path.** Excalidraw implements
-dark theme as `DARK_THEME_FILTER` (`invert(93%) hue-rotate(180deg)`) over
-everything it draws, and it is **baked into the canvas pixels rather than applied
-as CSS** — verified live (2026-07-31): nothing from the static canvas up to the
-workspace leaf has a computed `filter`, yet `viewBackgroundColor` `#ffffff` reads
-back as `18,18,18` and a `#1e1e1e` glyph as `211,211,211`, exactly `invert(93%)`
-of each. So the blit inherits the theme for free and the drawn path must set
-`ctx.filter` itself; without it a dark-theme board showed **black text over the
-embed where Excalidraw had drawn white**. The filter is set for pass 2 only —
-pass 1's pixels have already been through it, and filtering them twice would
-undo it. Confirmed after the fix: drawn glyphs read `211,211,211`, byte-identical
-to the static canvas.
+dark theme as `DARK_THEME_FILTER` (`invert(93%) hue-rotate(180deg)`), baked
+into the canvas pixels rather than applied as CSS. So the blit inherits the
+theme for free, but the drawn path must set `ctx.filter` itself — without it a
+dark-theme board showed black text over the embed where Excalidraw had drawn
+white. The filter is set for the drawn pass only; the blitted pixels have
+already been through it.
 
-The rest of this section is about where the geometry itself comes from — which
-both paths need, one to draw and one to mask.
+**Where the geometry comes from.** The paint needs to know exactly where
+Excalidraw drew each element, and it gets that from Excalidraw itself —
+`exportToSvg` on a single element returns the real path data, which
+`new Path2D(d)` parses directly, at element-local coordinates. Each path is
+filled or stroked exactly as Excalidraw marked it, at the width and dash
+pattern it marked, so no shape knowledge is involved on this plugin's side.
+See `emitted-geometry.ts`.
 
-The mask needs to know exactly where Excalidraw drew each element. It gets that
-from Excalidraw itself, with a plugin-side reconstruction as a fallback.
-
-**Primary: what Excalidraw emits.** `exportToSvg` on a single element returns
-the real path data, which `new Path2D(d)` parses directly, and its coordinates
-are already element-local — the `<g>` transform is SVG layout only. Each path is
-filled or stroked exactly as Excalidraw marked it, at the width and dash pattern
-it marked, so no shape knowledge and no jitter allowance are involved. See
-`emitted-geometry.ts`.
-
-This is asynchronous and there is no alternative: of `ExcalidrawLib`'s 105
-exports none expose per-element geometry synchronously, the Obsidian plugin's
-`ExcalidrawAutomate` has nothing shape-related, and Excalidraw's internal
-`ShapeCache` is unreachable. So it is necessarily a cache. Two things keep that
-cheap enough to be invisible:
+This is asynchronous and there is no synchronous alternative (no `ExcalidrawLib`
+export exposes per-element geometry synchronously, and Excalidraw's internal
+`ShapeCache` is unreachable), so it is necessarily a cache:
 
 - **The cache key is the element's geometry, not its `version`.** Moving,
   rotating and re-ordering leave it untouched, so no re-export happens; only
-  drawing, resizing and **recolouring** invalidate it. This matters because a
-  scene change fires on every pointer move of a drag — where a recolour fires
-  once, on commit. Colours are in the key because the emitted paths now carry
-  the colours they are painted in. `opacity` deliberately is not: the paint
-  applies it live from the element, so dragging the opacity slider re-exports
-  nothing.
-- **A cached path is only drawn if its signature still matches the element.** A
-  resize therefore falls back to the blit for a frame rather than drawing the
-  element's previous size.
+  drawing, resizing and **recolouring** invalidate it — colours are in the key
+  because the emitted paths carry the colours they're painted in. `opacity` is
+  deliberately not: the paint applies it live, so dragging the opacity slider
+  re-exports nothing.
+- **A cached path is only drawn if its signature still matches the element.**
+  A resize therefore leaves the element unpainted for a frame rather than
+  drawing its previous size or approximating the new one.
 
-Measured on a live board (2026-07-30): 0.72 ms per element to export, and no
-perceptible lag while drawing or resizing.
-
-**Fallback: reconstruction.** `rough.ts` and `freehand.ts` port rough.js's and
-perfect-freehand's geometry so a frame with nothing cached yet still masks
-correctly instead of flashing. They are validated against `exportToSvg` output
-rather than against upstream source, and several match it exactly — but they are
-reconstructions of code that is not in the Obsidian Excalidraw plugin's bundle,
-so they can drift silently when upstream changes. That is tolerable for a
-fallback and would not be as the primary path; see the scope cuts above for
-where they are known to be imperfect.
+Exporting a single element costs well under a millisecond, with no perceptible
+lag while drawing or resizing.
 
 ## The read-only transparent window
 
@@ -274,64 +219,53 @@ The read-only window (F10) has no Excalidraw canvas at all. It displays a static
 SVG export of the Board, with live `<video>`/`<img>` overlays placed over the
 regions local-media embeddables export to (see `board-render.ts`). So z-order
 breaks there for two reasons that have nothing to do with the canvas one:
-
-- Excalidraw's SVG exporter renders iframe-like elements in a **second pass
-  after every other element** — `renderSceneToSvg`'s "render embeddables on top"
-  ([staticSvgScene.ts:780](../../reference/excalidraw-master/packages/excalidraw/renderer/staticSvgScene.ts#L780)).
-  Confirmed live on the export the read-only window actually receives
-  (2026-07-30): both embeddables came back as the last two children of the
-  `<svg>`, in scene order, whatever their z-order.
-- This plugin's own media overlays are appended after the SVG, so a playing
-  video covers the whole Board regardless.
+Excalidraw's SVG exporter renders iframe-like elements in a second pass after
+every other element (`renderSceneToSvg`'s "render embeddables on top"), and
+this plugin's own media overlays are appended after the SVG, so a playing video
+covers the whole Board regardless.
 
 **The mechanism: a second export, clipped.** The candidates
-(`planFrontOfEmbedCandidates`, the same set the editable view masks) are
+(`planFrontOfEmbedCandidates`, the same set the editable view uses) are
 exported a second time into their own SVG —
 `ea.copyViewElementsToEAforEditing(candidates, true)` followed by `createSVG()`
-with no template path, which renders exactly the elements the instance holds —
-and that layer is appended last inside `#viewport`, above both the base SVG and
-every media overlay. Nothing is masked and nothing is approximated: it is
+with no template path — and that layer is appended last inside `#viewport`,
+above both the base SVG and every media overlay. Nothing is approximated: it is
 Excalidraw's own renderer drawing the same elements at vector resolution.
 
 - **It is clipped to the embeddables.** The base export already drew these
   elements, so an unclipped second copy would paint every one of them twice —
   invisible for an opaque element, but a semi-transparent one would composite
-  against itself, and a candidate would cover any later element that overlaps it
-  away from the embeddable. Clipped, the two copies own disjoint regions: the
-  front one over the embeddable, the base one everywhere else. The clip
-  rectangles are the same rotation-aware AABBs (`elementAABB`) the overlap test
-  used to admit the candidate, so the clip can never be tighter than the test.
+  against itself, and a candidate would cover any later element it overlaps
+  away from the embeddable. Clipped, the two copies own disjoint regions. The
+  clip rectangles are the same rotation-aware AABBs (`elementAABB`) the overlap
+  test used to admit the candidate, so the clip can never be tighter than the
+  test.
 - **Positioned by its own bounding box.** Each export is normalized to its
-  content's bounds and records no absolute position, so the layer ships the scene
-  coordinate its local (0,0) maps to, exactly as the base SVG ships `minX`/`minY`.
-  `ea.getBoundingBox` is the same bounds math the exporter uses — verified live
-  (2026-07-30): a rectangle at scene x 28520 in a subset whose box starts at
-  25580 exported at `translate(2940 …)`.
+  content's bounds and records no absolute position, so the layer ships the
+  scene coordinate its local (0,0) maps to, exactly as the base SVG ships
+  `minX`/`minY` (`ea.getBoundingBox` is the same bounds math the exporter
+  uses).
 - **Its ids are namespaced.** Both layers go into the same document, and an
-  export names its masks and clip paths after the element ids they belong to — so
-  the layers, which by design share elements, would collide. `url(#id)` resolves
-  to the first match in document order and these masks are `userSpaceOnUse`, so
-  the front layer's labelled arrow would have been masked by the base layer's
-  copy of that mask, in the base layer's coordinates.
+  export names its masks and clip paths after the element ids they belong to —
+  so the layers, which by design share elements, would collide on
+  `userSpaceOnUse` mask ids that `url(#id)` resolves to the first match for.
 - **Images come from the live view.** `copyViewElementsToEAforEditing`'s
-  `copyImages` pulls each image candidate's binary out of the view's loaded scene
-  files, which is why the layer is rendered while the editable Popout is still
-  alive rather than from the file on disk.
-- **Web embeds are covered too.** An absolutely-positioned sibling appended after
-  the SVG paints above a live `<iframe>` inside a `foreignObject` — verified live
-  (2026-07-30), so annotations land in front of a YouTube embed as readily as in
-  front of a video file.
+  `copyImages` pulls each image candidate's binary out of the view's loaded
+  scene files, which is why the layer is rendered while the editable Popout is
+  still alive rather than from the file on disk.
+- **Web embeds are covered too.** An absolutely-positioned sibling appended
+  after the SVG paints above a live `<iframe>` inside a `foreignObject`, so
+  annotations land in front of a YouTube embed as readily as in front of a
+  video file.
 - **It costs nothing on a Board with no candidates.** No candidates, no second
   export, no layer in the payload.
 
-This is deliberately *not* the mask-and-blit mechanism ported: there is no canvas
-to blit from. It is also deliberately not surgery on the single existing export
-(moving the embeddable nodes back to their z-order position), which would need a
-node→element mapping the export doesn't publish — `data-id` is set only under
-`isTestEnv()` — and would have to be re-derived from render-order rules that are
-genuinely intricate (masks emitted as siblings, frames emitting two nodes,
-`<a>` wrappers swallowing an element's nodes when it has a link) and would break
-silently on an upstream change.
+This is deliberately not the mask-and-blit mechanism ported (there is no canvas
+to blit from), and deliberately not surgery on the single existing export
+(moving embeddable nodes back to their z-order position) — that would need a
+node→element mapping the export doesn't publish, re-derived from render-order
+rules (mask siblings, frame double-nodes, link-wrapper `<a>` tags) that are
+liable to break silently on an upstream change.
 
 **Two limitations of the editable mechanism don't apply here.** There is no rim
 of scene background, because nothing is copied from an opaque canvas — the layer
@@ -359,61 +293,26 @@ it, because its only copy over the embeddable is drawn over the media itself.
 
 - **Multiple embeddables at interleaved depths aren't correctly represented** —
   on every surface. Each mechanism is a single flat layer rendered above *every*
-  embeddable, not one sliced in at each embeddable's actual depth. An element meant to sit in
-  front of one embeddable but behind another (e.g. `Embed A (back) → Image X
-  → Embed B (front)`) will incorrectly render above both. Accepted as a known
-  limitation — the common case of a single embeddable with elements in front
-  of it is unaffected.
-- **A rim of scene background is copied along with the element** — **fixed**
-  (2026-07-30) by not copying. Kept here because the fix reshapes the rest of
-  this section, and because the reasoning is easy to re-derive wrongly.
-
-  Excalidraw's static canvas is fully opaque: it is the view background with the
-  scene drawn onto it, so every mask pixel that wasn't exactly on the element
-  blitted board background over the embed. Since the mask had to be grown past
-  the element's geometry to keep the blit from clipping the antialiased edge,
-  some rim was unavoidable *as long as the mechanism copied from an opaque
-  source*. It measured 39.7% of the overlay's opaque pixels, then 13.6% after
-  the mask geometry was corrected, then effectively zero at working zooms once
-  `fbb3eab` took the geometry from Excalidraw's own emitted paths — but it
-  survived at low zoom, where `MASK_ANTIALIAS_ALLOWANCE_PX / zoom` is a
-  screen-space half-pixel around an element that is itself sub-pixel. A dotted
-  cartoonist line at 29% zoom rendered as **black dots instead of orange ones**:
-  not rimmed, replaced.
-
-  The fix was to stop blitting. Candidates are now **drawn** — the emitted paths
-  stroked and filled in the colours Excalidraw emitted them with, text as glyphs
-  in the element's own `strokeColor` — so nothing is copied and there is no
-  background to deposit. Dilation is gone with it: it only ever existed to cover
-  the blit's seam, and an edge antialiasing against transparency needs no
-  allowance. See "How candidates are painted" below.
-
-  Measured over the embeddable's rect on the same board, before and after:
-
-  | zoom | before (opaque / alpha-weighted) | after |
-  | ---: | ---: | ---: |
-  |   5% | 19.0% / 28.3% | 0% / 0.4% |
-  |  15% |  4.7% / 11.1% | 0% / 0% |
-  |  29% |  ~0% /  ~5% | 0% / 0% |
-  | 100% |    0% /  1.2% | 0% / 0% |
-
-  The 0.4% residue at 5% is sub-threshold noise, not rim: below about alpha 32
-  the colour read back from `getImageData` is wrecked by unpremultiply rounding
-  (a 3%-alpha orange dot reads as pure `255,0,0`), so those pixels are counted
-  as ink but not classified.
-
-  **The `mask-image` hole-punch would not have fixed this** — worth recording,
-  because it was written here as the candidate fix and is an easy idea to have
-  again. Punching a hole in `.excalidraw__embeddable-container` reveals the
-  static canvas underneath, which is the *same opaque pixels* the overlay was
-  copying: view background plus element. Identical rim. What it would genuinely
-  fix is the interleaved-depth limitation above, since each embeddable could
-  carry a mask built only from the elements above *it*.
+  embeddable, not one sliced in at each embeddable's actual depth. An element
+  meant to sit in front of one embeddable but behind another (e.g. `Embed A
+  (back) → Image X → Embed B (front)`) will incorrectly render above both.
+  Accepted as a known limitation — the common case of a single embeddable with
+  elements in front of it is unaffected. A `mask-image` hole-punch on the
+  embeddable container (each embeddable carrying a mask built from only the
+  elements above *it*) is the candidate fix, not yet built.
 - **Semi-transparent and hachure-filled elements composite against the scene
-  background, not the embeddable** — **fixed for drawn candidates** by the same
-  change, and still true for blitted ones (images). A drawn element composites
-  onto the overlay's transparent canvas and therefore onto the embed itself, so
-  a 50%-opacity annotation now shows the video through it, and a hachure fill's
-  gaps show embed content. Element opacity is applied live from `element.opacity`
-  rather than being baked into the export, so dragging the opacity slider
-  re-exports nothing.
+  background, not the embeddable — for blitted candidates only (images).** A
+  drawn element composites onto the overlay's transparent canvas and therefore
+  onto the embed itself, so a 50%-opacity annotation shows the video through
+  it, and a hachure fill's gaps show embed content. This only fails for images,
+  whose pixels have to come from the opaque static canvas. Element opacity is
+  applied live from `element.opacity` rather than baked into the export, so
+  dragging the opacity slider re-exports nothing.
+
+Earlier revisions of this mechanism masked-and-blitted every candidate from
+Excalidraw's static canvas, which left a rim of scene background around thin
+elements (worst at low zoom, where it could replace a stroke's colour outright
+rather than just fringe it). Switching to drawing emitted paths directly
+removed the rim entirely for every candidate except images, which still blit
+because their pixels have nowhere else to come from. See
+[ADR 0010](../adr/0010-front-of-embed-rendering.md) for that history.

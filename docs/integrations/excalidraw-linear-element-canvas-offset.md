@@ -13,7 +13,7 @@ way.
 
 Documented here so it isn't rediscovered as a plugin bug: it looks exactly like
 "our geometry is wrong", and it is not. This plugin compensates for it in one
-place only — the front-of-embed mask (`maskPlacement` in
+place only — the front-of-embed paint (`elementPlacement` in
 `src/front-of-embed.ts`).
 
 Affects `line`, `arrow`, and `freedraw` elements. Shapes, text and images go
@@ -96,9 +96,9 @@ Dashed, cartoonist, curved `line`, `strokeWidth` 4:
 
 ## How this plugin handles it
 
-`maskPlacement` (`src/front-of-embed.ts`) reproduces the displacement rather
-than correcting it: the mask's job is to land on the pixels Excalidraw drew, not
-the ones it should have drawn.
+`elementPlacement` (`src/front-of-embed.ts`) reproduces the displacement rather
+than correcting it: the paint's job is to land on the pixels Excalidraw drew,
+not the ones it should have drawn.
 
 ```
 shift = type is line/arrow/freedraw ? max(0, boundsMin - elementOrigin) : 0
@@ -110,7 +110,7 @@ compute. That call is rotation-aware where the canvas placement is not, so a
 rotated element is measured through an unrotated copy. The same bounds give the
 rotation pivot, which `drawElementFromCanvas` takes as their centre.
 
-If the bug is ever fixed upstream, `maskPlacement`'s shift silently becomes 0
+If the bug is ever fixed upstream, `elementPlacement`'s shift silently becomes 0
 for the fixed cases only if Excalidraw also changes what its bounds report;
 otherwise the shift must be removed at the same time. It is one branch, gated on
 `CANVAS_OFFSET_TYPES`, with unit tests in `tests/front-of-embed.test.ts`.

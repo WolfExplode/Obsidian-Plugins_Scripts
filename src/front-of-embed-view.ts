@@ -438,7 +438,7 @@ function refreshEmittedGeometry(leaf: WorkspaceLeaf, state: FrontOfEmbedState): 
 				});
 			})
 			.catch(() => {
-				// Leave the entry absent; the synchronous mask keeps covering it.
+				// Leave the entry absent; the candidate is simply skipped until a later export succeeds.
 			})
 			.finally(() => state.inFlight.delete(key));
 	}
@@ -448,7 +448,7 @@ function refreshEmittedGeometry(leaf: WorkspaceLeaf, state: FrontOfEmbedState): 
 
 /**
  * The element's own unrotated bounds, straight from Excalidraw -- the input
- * `maskPlacement` needs, and the only place they can come from: they're the
+ * `elementPlacement` needs, and the only place they can come from: they're the
  * bounds of the drawn curve, jitter and all, which nothing outside Excalidraw
  * knows. `getCommonBounds` is rotation-aware where the canvas placement is not,
  * so a rotated element is measured through an unrotated copy.
