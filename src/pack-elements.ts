@@ -27,6 +27,11 @@ export interface PackElement {
 	height: number;
 	/** Rotation in radians, about the element's center. */
 	angle?: number;
+	/**
+	 * Linear elements (line/arrow/freedraw): vertices relative to `x`/`y`. Read
+	 * only for their extent -- see `geometryOffset`.
+	 */
+	points?: readonly (readonly number[])[];
 	/** Set on text bound to a container; such text must follow its owner. */
 	containerId?: string | null;
 	isDeleted?: boolean;
@@ -76,6 +81,36 @@ export function isPackable(el: PackElement): boolean {
 }
 
 /**
+ * Where an element's box starts relative to its own `x`/`y`. Zero for a shape,
+ * image or text, whose `x`/`y` *is* the top-left corner -- but not for a linear
+ * element (line/arrow/freedraw), where Excalidraw pins `points[0]` to `x`/`y`
+ * and lets the rest of the stroke run in any direction. A stroke drawn leftwards
+ * or upwards therefore has negative points, and its box begins that far before
+ * its origin; `width`/`height` still span the full point extent either way.
+ *
+ * Without this an element's box was taken as `x`/`y` extending right and down by
+ * `width`/`height` -- for a big scribble drawn right-to-left, a box the size of
+ * the scribble hanging off its *starting point*, overlapping embeddables it
+ * doesn't touch and missing the ones it covers (seen live, 2026-07-30, on a
+ * 3483x3378 freedraw whose points reach 2258 units to the left of its origin).
+ *
+ * Excalidraw rotates such an element about the centre of this same box (verified
+ * 2026-07-30 against the `rotate(...)` origin `exportToSvg` emits for a rotated
+ * line), so the rotation below stays correct.
+ */
+export function geometryOffset(el: PackElement): readonly [number, number] {
+	const points = el.points;
+	if (!points || points.length === 0) return [0, 0];
+	let minX = Infinity;
+	let minY = Infinity;
+	for (const point of points) {
+		minX = Math.min(minX, point[0] ?? 0);
+		minY = Math.min(minY, point[1] ?? 0);
+	}
+	return [Number.isFinite(minX) ? minX : 0, Number.isFinite(minY) ? minY : 0];
+}
+
+/**
  * The axis-aligned bounding box of a (possibly rotated) element. Excalidraw
  * stores x/y/width/height for the *unrotated* box and rotates about the center,
  * so the visible extent of a rotated element is wider; packing against the true
@@ -83,8 +118,9 @@ export function isPackable(el: PackElement): boolean {
  * this box rigidly, so a delta computed here applies directly to x/y.
  */
 export function elementAABB(el: PackElement): Rect {
-	const cx = el.x + el.width / 2;
-	const cy = el.y + el.height / 2;
+	const [offsetX, offsetY] = geometryOffset(el);
+	const cx = el.x + offsetX + el.width / 2;
+	const cy = el.y + offsetY + el.height / 2;
 	const a = el.angle ?? 0;
 	const cos = Math.abs(Math.cos(a));
 	const sin = Math.abs(Math.sin(a));

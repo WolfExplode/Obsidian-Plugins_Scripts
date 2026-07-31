@@ -10,6 +10,7 @@ import { attachInsertModalAutoConfirm } from "src/insert-modal-autoconfirm";
 import { attachAnimatedImageEmbedConversion } from "src/animated-image-drop";
 import { attachVideoAspectCorrector } from "src/video-aspect";
 import { attachMediaAutoPack } from "src/media-auto-pack";
+import { attachFrontOfEmbedRendering } from "src/front-of-embed-view";
 import { installCropDebugHook } from "src/crop-drag";
 import { attachAltRHotkey } from "src/alt-r";
 import { installKeyRelay, removeKeyRelay, cleanupOrphanPrototypes } from "src/transparent-proto";
@@ -80,6 +81,13 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 		// media newly created by an import; it seeds existing Board content first.
 		this.register(attachMediaAutoPack(this));
 		this.register(attachPopoutDropBridge(window.document, { alwaysBridge: false }));
+		// Makes elements already in front of an embeddable per scene z-order
+		// actually render in front of it, by copying Excalidraw's own static canvas
+		// onto a DOM overlay through a mask of those elements' shapes -- see
+		// docs/behavior/front-of-embed-rendering.md and ADR 0010. Spans the main
+		// window and every Popout via the same leaf-scanner lifecycle as the
+		// correctors above.
+		this.register(attachFrontOfEmbedRendering(this));
 
 		// The console hook (window.__eprCropDebug) stays available to drive the
 		// hold-C crop primitive (bound above via attachBoardGestures) without a

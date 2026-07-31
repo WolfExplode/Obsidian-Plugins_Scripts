@@ -41,13 +41,29 @@ export interface MediaOverlay {
 	angle: number;
 }
 
-/** What we push into the transparent window: the board SVG, its scene offset, a camera, and any live-media overlays. */
+/**
+ * The Board's front-of-embed layer: a second SVG holding only the elements that
+ * scene z-order puts in front of an embeddable they overlap, already clipped to
+ * those embeddables. The window stacks it above the media overlays, which is the
+ * whole point — see docs/behavior/front-of-embed-rendering.md. `x`/`y` are the
+ * scene coordinate this SVG's local (0,0) maps to, the same convention as
+ * `minX`/`minY` for the base SVG (and not the same values: each export is
+ * normalized to its own content's bounding box).
+ */
+export interface FrontLayer {
+	svg: string;
+	x: number;
+	y: number;
+}
+
+/** What we push into the transparent window: the board SVG, its scene offset, a camera, any live-media overlays, and the front-of-embed layer. */
 export interface BoardContent {
 	svg: string;
 	minX: number;
 	minY: number;
 	view?: SceneViewPayload | null;
 	media?: MediaOverlay[];
+	front?: FrontLayer | null;
 }
 
 /** F10/F11 relayed out of the transparent window; F10 carries the window's current camera. */

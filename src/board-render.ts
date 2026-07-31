@@ -1,6 +1,8 @@
 import type { TFile } from "obsidian";
 import type ExcalidrawPureRefPlugin from "../main";
-import type { MediaOverlay } from "./transparent-proto";
+import type { FrontLayer, MediaOverlay } from "./transparent-proto";
+import { frontLayerClipPath, planReadOnlyFrontLayer } from "./front-of-embed-layer";
+import type { FrontOfEmbedElement } from "./front-of-embed";
 
 /**
  * Renders a Board file to a standalone, background-less SVG string, using the
@@ -33,6 +35,12 @@ interface ExcalidrawAutomateLike {
 	reset?(): void;
 	getExportSettings?(withBackground: boolean, withTheme: boolean, isMask?: boolean): ExportSettingsLike;
 	getBoundingBox?(elements: readonly unknown[]): BoundingBoxLike;
+	/**
+	 * Loads scene elements into this instance's own workbench so `createSVG` with
+	 * no template path renders exactly them. `copyImages` is what brings each
+	 * image element's binary along, from the view's loaded scene files.
+	 */
+	copyViewElementsToEAforEditing?(elements: readonly unknown[], copyImages?: boolean): void;
 	createSVG(
 		templatePath?: string,
 		embedFont?: boolean,
@@ -55,6 +63,23 @@ function getExcalidrawAutomate(plugin: ExcalidrawPureRefPlugin): ExcalidrawAutom
 }
 
 /**
+ * An ExcalidrawAutomate instance of our own, so nothing here clobbers the shared
+ * automate state (its elements, images and reset are all mutable instance
+ * state). `view`, when given, becomes the instance's target view — which is what
+ * lets `copyViewElementsToEAforEditing` reach that view's loaded scene files.
+ */
+function isolatedAutomate(plugin: ExcalidrawPureRefPlugin, view?: unknown): ExcalidrawAutomateLike | null {
+	const base = getExcalidrawAutomate(plugin);
+	if (!base) return null;
+	try {
+		if (typeof base.getAPI === "function") return base.getAPI(view);
+	} catch {
+		/* older API surface: fall back to the shared instance */
+	}
+	return base;
+}
+
+/**
  * The scene coordinate that maps to the exported SVG's local (0,0): the top-left
  * of the elements' common bounding box. The SVG normalizes content to start at
  * (0,0) and records no absolute position, so this must come from the elements.
@@ -65,15 +90,9 @@ export function getSceneMin(
 	plugin: ExcalidrawPureRefPlugin,
 	elements: readonly unknown[],
 ): { minX: number; minY: number } | null {
-	const base = getExcalidrawAutomate(plugin);
-	if (!base || elements.length === 0) return null;
+	const ea = elements.length > 0 ? isolatedAutomate(plugin) : null;
+	if (!ea) return null;
 	try {
-		let ea = base;
-		try {
-			if (typeof base.getAPI === "function") ea = base.getAPI();
-		} catch {
-			ea = base;
-		}
 		const bb = ea.getBoundingBox?.(elements);
 		if (!bb) return null;
 		return { minX: bb.topX, minY: bb.topY };
@@ -387,19 +406,12 @@ async function renderBoardSvgNow(
 	plugin: ExcalidrawPureRefPlugin,
 	filePath: string,
 ): Promise<string | null> {
-	const base = getExcalidrawAutomate(plugin);
-	if (!base) {
+	const ea = isolatedAutomate(plugin);
+	if (!ea) {
 		console.error("[Excalidraw PureRef] ExcalidrawAutomate is unavailable — is the Excalidraw plugin enabled?");
 		return null;
 	}
 	try {
-		// An isolated instance so we never clobber the shared automate state.
-		let ea = base;
-		try {
-			if (typeof base.getAPI === "function") ea = base.getAPI();
-		} catch {
-			ea = base;
-		}
 		try {
 			ea.reset?.();
 		} catch {
@@ -437,10 +449,147 @@ export function renderBoardSvg(
 	plugin: ExcalidrawPureRefPlugin,
 	filePath: string,
 ): Promise<string | null> {
-	const render = renderQueue.then(() => renderBoardSvgNow(plugin, filePath));
-	renderQueue = render.then(
+	return enqueueRender(() => renderBoardSvgNow(plugin, filePath));
+}
+
+function enqueueRender<T>(render: () => Promise<T>): Promise<T> {
+	const next = renderQueue.then(render);
+	renderQueue = next.then(
 		() => undefined,
 		() => undefined,
 	);
-	return render;
+	return next;
+}
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+/** Every id in the front layer carries this, so it can share a document with the base SVG. */
+const FRONT_ID_PREFIX = "epr-front-";
+const FRONT_CLIP_ID = "epr-front-clip";
+
+/**
+ * Renames every id in `svg` and rewrites the references to them.
+ *
+ * Both layers are injected into the *same* document, and an Excalidraw export
+ * names its masks and clip paths after the element ids they belong to — so the
+ * two layers, which by design contain some of the same elements, would collide
+ * on those names. `url(#id)` resolves to the first match in document order, and
+ * these masks are `userSpaceOnUse`: the front layer's arrow would have been
+ * masked by the base layer's copy of that mask, positioned in the base layer's
+ * coordinates.
+ */
+function namespaceSvgIds(svg: SVGSVGElement, prefix: string): void {
+	const renamed = new Map<string, string>();
+	svg.querySelectorAll<SVGElement>("[id]").forEach((node) => {
+		const previous = node.id;
+		if (!previous || previous.startsWith(prefix)) return;
+		renamed.set(previous, prefix + previous);
+		node.id = prefix + previous;
+	});
+	if (renamed.size === 0) return;
+
+	const substitute = (value: string): string =>
+		value.replace(/url\(\s*#([^)\s]+)\s*\)/g, (whole, id: string) => {
+			const next = renamed.get(id);
+			return next ? `url(#${next})` : whole;
+		});
+
+	svg.querySelectorAll<SVGElement>("*").forEach((node) => {
+		for (const attribute of Array.from(node.attributes)) {
+			if (attribute.value.includes("url(")) {
+				node.setAttribute(attribute.name, substitute(attribute.value));
+				continue;
+			}
+			// A fragment-only href (`#id`) is the other way an export points at a
+			// node it defined -- `<use>`, and gradient inheritance.
+			if (!attribute.value.startsWith("#")) continue;
+			if (attribute.name !== "href" && attribute.name !== "xlink:href") continue;
+			const next = renamed.get(attribute.value.slice(1));
+			if (next) node.setAttribute(attribute.name, `#${next}`);
+		}
+	});
+}
+
+/**
+ * Confines everything the front layer draws to `clipPathData` — see
+ * `frontLayerClipPath` for why a second copy of an element must not paint
+ * outside the embeddable it exists to cover.
+ *
+ * `<metadata>` and `<defs>` stay where they are; every other child moves into
+ * the clipped group. That includes the export's `<mask>` siblings, which are
+ * referenced by id and never rendered in place, so where they sit is immaterial.
+ */
+function clipFrontLayer(svg: SVGSVGElement, clipPathData: string): void {
+	const doc = svg.ownerDocument;
+	let defs = svg.querySelector("defs");
+	if (!defs) {
+		defs = doc.createElementNS(SVG_NS, "defs");
+		svg.insertBefore(defs, svg.firstChild);
+	}
+	const clipPath = doc.createElementNS(SVG_NS, "clipPath");
+	clipPath.id = FRONT_CLIP_ID;
+	clipPath.setAttribute("clipPathUnits", "userSpaceOnUse");
+	const path = doc.createElementNS(SVG_NS, "path");
+	path.setAttribute("d", clipPathData);
+	clipPath.appendChild(path);
+	defs.appendChild(clipPath);
+
+	const clipped = doc.createElementNS(SVG_NS, "g");
+	clipped.setAttribute("clip-path", `url(#${FRONT_CLIP_ID})`);
+	for (const child of Array.from(svg.children)) {
+		const tag = child.tagName.toLowerCase();
+		if (tag === "metadata" || tag === "defs") continue;
+		clipped.appendChild(child);
+	}
+	svg.appendChild(clipped);
+}
+
+async function renderFrontLayerNow(
+	plugin: ExcalidrawPureRefPlugin,
+	view: unknown,
+	elements: readonly unknown[],
+): Promise<FrontLayer | null> {
+	const plan = planReadOnlyFrontLayer(elements as readonly FrontOfEmbedElement[]);
+	if (!plan) return null;
+	const ea = isolatedAutomate(plugin, view);
+	if (!ea?.copyViewElementsToEAforEditing || !ea.getBoundingBox) return null;
+	try {
+		ea.reset?.();
+		// copyImages: the candidates are usually reference images, and without their
+		// binaries the layer would export them as empty boxes over the embeddable.
+		ea.copyViewElementsToEAforEditing(plan.candidates, true);
+		const bounds = ea.getBoundingBox(plan.candidates);
+		if (!bounds) return null;
+		const isDark = document.body.classList.contains("theme-dark");
+		// Font inlining embeds whole font files, and the base SVG already carries
+		// them; pay for it again only when this layer actually draws glyphs.
+		const embedFont = plan.candidates.some((element) => element.type === "text");
+		const exportSettings = ea.getExportSettings?.(false, true);
+		const svg = await ea.createSVG(undefined, embedFont, exportSettings, undefined, isDark ? "dark" : "light", 0);
+		if (!svg) return null;
+		namespaceSvgIds(svg, FRONT_ID_PREFIX);
+		clipFrontLayer(svg, frontLayerClipPath(plan.clip, bounds.topX, bounds.topY));
+		return { svg: svg.outerHTML, x: bounds.topX, y: bounds.topY };
+	} catch (error) {
+		console.error("[Excalidraw PureRef] front-of-embed layer render failed.", error);
+		return null;
+	}
+}
+
+/**
+ * The Board's front-of-embed layer: a second export of just the elements that
+ * sit in front of an embeddable they overlap, to be stacked above the read-only
+ * window's media overlays. `x`/`y` are the scene coordinate its local (0,0) maps
+ * to, like `getSceneMin` for the base SVG. Null when the Board has nothing that
+ * qualifies.
+ *
+ * `view` is the live Excalidraw view the elements came from — the export reads
+ * its loaded scene files for image candidates. Shares the base render's queue
+ * because both drive ExcalidrawAutomate's mutable working state.
+ */
+export function renderFrontLayerSvg(
+	plugin: ExcalidrawPureRefPlugin,
+	view: unknown,
+	elements: readonly unknown[],
+): Promise<FrontLayer | null> {
+	return enqueueRender(() => renderFrontLayerNow(plugin, view, elements));
 }

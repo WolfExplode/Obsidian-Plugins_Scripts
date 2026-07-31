@@ -79,6 +79,43 @@ describe("elementAABB", () => {
 		const box = elementAABB(el({ id: "a", width: 100, height: 100, angle: Math.PI / 4 }));
 		assert.ok(Math.abs(box.maxX - box.minX - 100 * Math.SQRT2) < 1e-9);
 	});
+
+	it("starts a linear element's box at its leftmost/topmost point, not at its origin", () => {
+		// A stroke drawn up and to the left: `points[0]` is at x/y, everything else
+		// is behind it, so the box hangs off the origin's top-left.
+		const box = elementAABB(
+			el({
+				id: "a",
+				type: "freedraw",
+				x: 1000,
+				y: 1000,
+				width: 60,
+				height: 40,
+				points: [[0, 0], [-60, -40], [-20, -10]],
+			}),
+		);
+		assert.deepEqual(box, { id: "a", minX: 940, minY: 960, maxX: 1000, maxY: 1000 });
+	});
+
+	it("rotates a linear element about its box centre, not its origin", () => {
+		const box = elementAABB(
+			el({
+				id: "a",
+				type: "line",
+				x: 0,
+				y: 0,
+				width: 100,
+				height: 20,
+				points: [[0, 0], [-100, -20]],
+				angle: Math.PI / 2,
+			}),
+		);
+		// Centre stays at the box centre (-50, -10) with the extents swapped.
+		assert.ok(Math.abs((box.minX + box.maxX) / 2 + 50) < 1e-9);
+		assert.ok(Math.abs((box.minY + box.maxY) / 2 + 10) < 1e-9);
+		assert.ok(Math.abs(box.maxX - box.minX - 20) < 1e-9);
+		assert.ok(Math.abs(box.maxY - box.minY - 100) < 1e-9);
+	});
 });
 
 describe("planPack (PureRef gravity pack)", () => {
