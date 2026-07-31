@@ -45,12 +45,12 @@ describe("isFrontOfEmbedEligible", () => {
 		assert.equal(isFrontOfEmbedEligible(el({ id: "label", type: "text", containerId: "box" }), box), true);
 	});
 
-	it("excludes a labelled arrow and its label as a pair", () => {
-		// The label isn't drawn at its own x/y, and Excalidraw punches a label-shaped
-		// hole in the arrow's blit -- neither half can be masked from element data.
+	it("includes a labelled arrow and its label", () => {
+		// The label's stored x/y aren't trusted -- the view layer repositions it via
+		// computeArrowLabelPosition -- but eligibility itself no longer excludes it.
 		const arrow = el({ id: "arrow", type: "arrow", boundElements: [{ id: "label", type: "text" }] });
-		assert.equal(isFrontOfEmbedEligible(arrow), false);
-		assert.equal(isFrontOfEmbedEligible(el({ id: "label", type: "text", containerId: "arrow" }), arrow), false);
+		assert.equal(isFrontOfEmbedEligible(arrow), true);
+		assert.equal(isFrontOfEmbedEligible(el({ id: "label", type: "text", containerId: "arrow" }), arrow), true);
 	});
 
 	it("excludes a label whose container can't be resolved", () => {
@@ -192,13 +192,13 @@ describe("planFrontOfEmbedCandidates", () => {
 		assert.deepEqual(ids(elements), ["box", "label"]);
 	});
 
-	it("does not flag an arrow's label, nor the labelled arrow", () => {
+	it("flags a labelled arrow together with its label", () => {
 		const elements = [
 			el({ id: "embed", type: "embeddable" }),
 			el({ id: "arrow", type: "arrow", points: [[0, 0], [80, 80]], boundElements: [{ id: "label", type: "text" }] }),
 			el({ id: "label", type: "text", containerId: "arrow", x: 20, y: 40, width: 60, height: 25 }),
 		];
-		assert.deepEqual(ids(elements), []);
+		assert.deepEqual(ids(elements), ["arrow", "label"]);
 	});
 
 	it("returns candidates in scene order", () => {

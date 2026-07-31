@@ -34,6 +34,12 @@ export interface FrontOfEmbedElement extends PackElement {
 	strokeColor?: string;
 	/** Excalidraw's 0-100 element opacity, applied live so changing it re-exports nothing. */
 	opacity?: number;
+	/** Set on an arrow Excalidraw routes as orthogonal segments rather than through its points. */
+	elbowed?: boolean;
+	/** Truthy for rounded corners between an arrow's points -- Excalidraw's default. See arrow-label-position.ts. */
+	roundness?: unknown;
+	/** Seeds rough.js's line/curve generation; read only when reconstructing a rounded arrow's drawn segment. */
+	seed?: number;
 	text?: string;
 	fontSize?: number;
 	fontFamily?: number;
@@ -93,15 +99,16 @@ function overlaps(a: FrontOfEmbedElement, b: FrontOfEmbedElement): boolean {
  * or elbowed arrow too; re-verified live (2026-07-31) against a real bound
  * arrow and a real bound *elbowed* arrow.
  *
- * A *labelled arrow* bails out as a pair, for the same "not drawn where the
- * element says" reason on both halves: an arrow label's own `x`/`y` are ignored
- * in favour of `LinearElementEditor.getBoundTextElementPosition`, and Excalidraw
- * punches a label-shaped hole in the arrow's own blit
- * (`drawElementFromCanvas`), so masking the arrow's stroke across the label
- * would copy background out of that hole. A labelled *shape* has neither
- * problem: `redrawTextBoundingBox` keeps the label's `x`/`y`/`angle` in absolute
- * scene terms (rotation about the container's centre already baked in), and the
- * container is blitted whole.
+ * A *labelled arrow* no longer bails out either. Its label's own `x`/`y` are
+ * unreliable -- Excalidraw ignores them in favour of
+ * `LinearElementEditor.getBoundTextElementPosition`, computed live from the
+ * arrow's current `points` and only occasionally written back to the label's
+ * stored `x`/`y` (unlike the arrow's own `points`, which get resynced on
+ * every drag) -- so the view layer computes the label's real position itself
+ * via `computeArrowLabelPosition` (`arrow-label-position.ts`) and paints the
+ * label there instead of at its stored coordinates. A labelled *shape* never
+ * needed this: `redrawTextBoundingBox` keeps its label's `x`/`y`/`angle` in
+ * absolute scene terms already.
  */
 export function isFrontOfEmbedEligible(
 	element: FrontOfEmbedElement,
@@ -111,8 +118,7 @@ export function isFrontOfEmbedEligible(
 	if (NON_OCCLUDING_TYPES.has(element.type)) return false;
 	if (element.frameId) return false;
 	// A label whose container can't be resolved is a label that can't be placed.
-	if (element.containerId && (!container || container.type === "arrow")) return false;
-	if (element.type === "arrow" && element.boundElements?.some((bound) => bound.type === "text")) return false;
+	if (element.containerId && !container) return false;
 	return true;
 }
 
@@ -137,8 +143,9 @@ export function isFrontOfEmbedEmbeddable(element: FrontOfEmbedElement): boolean 
  * Excalidraw's own canvas.
  *
  * A bound label rides on its container's verdict rather than being tested on its
- * own, so a labelled shape and its label always cross the embeddable together --
- * never the box in front with the words left behind. Its own overlap test would
+ * own, so a labelled shape or arrow and its label always cross the embeddable
+ * together -- never the container in front with the words left behind. Its own
+ * overlap test would
  * be the wrong question anyway: a label sitting clear of the embeddable inside a
  * container that crosses it still has to be masked, because the container's own
  * mask stops at its outline and does not carry the label with it.

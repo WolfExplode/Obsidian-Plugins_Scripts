@@ -10,6 +10,7 @@ import {
 	type FrontOfEmbedElement,
 	type PaintPlan,
 } from "./front-of-embed";
+import { computeArrowLabelPosition } from "./arrow-label-position";
 import {
 	fetchEmittedGeometry,
 	geometrySignature,
@@ -450,17 +451,48 @@ function absoluteBoundsOf(lib: ExcalidrawLibGlobal | undefined, element: FrontOf
 	return { minX: bounds[0], minY: bounds[1], maxX: bounds[2], maxY: bounds[3] };
 }
 
+type Candidate = { element: FrontOfEmbedElement; plan: PaintPlan; placement: ElementPlacement; signature: string };
+
+/**
+ * An arrow-bound label's stored `x`/`y`/`angle` aren't trustworthy (see
+ * `isFrontOfEmbedEligible` in front-of-embed.ts) -- this returns a copy
+ * repositioned onto the arrow's real, currently-drawn midpoint, or `null` when
+ * that can't be computed this frame (the caller drops the candidate rather
+ * than paint it at a stale position). Every other element passes through
+ * unchanged.
+ */
+function resolveCandidateElement(
+	element: FrontOfEmbedElement,
+	byId: ReadonlyMap<string, FrontOfEmbedElement>,
+	lib: ExcalidrawLibGlobal | undefined,
+): FrontOfEmbedElement | null {
+	if (!element.containerId) return element;
+	const container = byId.get(element.containerId);
+	if (container?.type !== "arrow") return element;
+	const containerBounds = absoluteBoundsOf(lib, container);
+	if (!containerBounds) return null;
+	const position = computeArrowLabelPosition(container, containerBounds, element);
+	if (!position) return null;
+	return { ...element, x: position.x, y: position.y, angle: 0 };
+}
+
 /** Which elements go in front, how each is painted and placed, and where they're allowed to paint. Cheap enough to redo per scene change; never per frame. */
 function planCandidates(leaf: WorkspaceLeaf): Pick<FrontOfEmbedState, "candidates" | "clip"> {
 	const elements = readSceneElements(leaf) as readonly FrontOfEmbedElement[] | null;
 	if (!elements) return { candidates: [], clip: [] };
 	const lib = windowOf(leaf)?.ExcalidrawLib;
-	const candidates = planFrontOfEmbedCandidates(elements).map((element) => ({
-		element,
-		plan: paintPlanFor(element),
-		placement: elementPlacement(element, absoluteBoundsOf(lib, element)),
-		signature: geometrySignature(element),
-	}));
+	const byId = new Map(elements.map((element) => [element.id, element] as const));
+	const candidates: Candidate[] = [];
+	for (const element of planFrontOfEmbedCandidates(elements)) {
+		const resolved = resolveCandidateElement(element, byId, lib);
+		if (!resolved) continue;
+		candidates.push({
+			element: resolved,
+			plan: paintPlanFor(resolved),
+			placement: elementPlacement(resolved, absoluteBoundsOf(lib, resolved)),
+			signature: geometrySignature(resolved),
+		});
+	}
 	// Same rule as `frontLayerClipPath`: a candidate exists only because it sits in
 	// front of one of these, so an empty clip here would mean the two disagree --
 	// paint nothing rather than paint unclipped.

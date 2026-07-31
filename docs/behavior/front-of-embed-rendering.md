@@ -62,14 +62,17 @@ directly rather than left as a pure upstream limitation.
   [overlap-aware-zorder.md](overlap-aware-zorder.md): that feature **reorders**
   elements, which is where upstream's group rules get non-trivial, while this
   one only reads the order that already exists.
-- **A labelled shape renders in front with its label.** A rectangle, ellipse or
-  diamond with text inside it qualifies normally, and its bound text travels
-  with it: the label rides on its container's verdict rather than being tested
-  on its own, so the two always cross the embeddable together. `redrawTextBoundingBox`
-  keeps a shape-bound label's `x`/`y`/`angle` in absolute scene terms (rotation
-  about the container's centre already baked in), so it needs no special
-  placement — it paints as ordinary text. **Arrow labels are the exception** and
-  bail out as a pair with their arrow; see the scope cuts below.
+- **A labelled shape or arrow renders in front with its label.** A rectangle,
+  ellipse or diamond with text inside it, or an arrow with a label on it,
+  qualifies normally, and its bound text travels with it: the label rides on
+  its container's verdict rather than being tested on its own, so the two
+  always cross the embeddable together. Placement differs by container,
+  though: `redrawTextBoundingBox` keeps a *shape*-bound label's `x`/`y`/`angle`
+  in absolute scene terms already (rotation about the container's centre baked
+  in), so it needs no special handling — it paints as ordinary text. An
+  *arrow*-bound label's stored `x`/`y` are not trustworthy the same way (see
+  "How an arrow's label is placed" below), so the view layer computes its real
+  position itself rather than trusting what's stored.
 - **Only the element occludes the embeddable, not its bounding box.** An
   unfilled rectangle shows the embeddable through its interior; text occludes
   only its glyphs; a stroke occludes only its own width. A filled shape occludes
@@ -140,33 +143,27 @@ directly rather than left as a pure upstream limitation.
   whether a fill exists but a hatched interior still fills as a slab rather than
   as its lines, because the fill follows the emitted fill path rather than its
   hatching.
-- **Only a labelled arrow bails out — bound and elbowed arrows don't.** An
-  arrow bound to another element (its endpoint pulled back to that element's
-  boundary, `mode`/focus/gap/`fixedPoint` and all) and an **elbowed** arrow
-  (re-routed as orthogonal segments) both render in front like any other
-  arrow — Excalidraw writes both the pull-back and the routed segments
-  straight into the arrow's own `points`, and the shape generator behind both
-  the live canvas and `exportToSvg` (`packages/element/src/shape.ts`) reads
-  nothing but the element's own fields: no binding lookup, no elbow-specific
-  routing of its own. So the emitted path is exactly what a bound or elbowed
-  arrow draws, the same as for an ordinary one. (An earlier revision of this
-  mechanism excluded both, on the strength of a live regression against the
-  *old* mask-and-blit approach's points-based mask — that reasoning didn't
-  carry over once the mechanism switched to drawing Excalidraw's own emitted
-  paths; re-verified live, separately, against a real bound arrow and a real
-  bound *elbowed* arrow after removing each exclusion.) A **labelled** arrow
-  still bails out as a pair with its label, for an unrelated reason: the
-  label's own `x`/`y` are ignored in favour of
-  `LinearElementEditor.getBoundTextElementPosition`, and `drawElementFromCanvas`
-  punches a label-shaped hole in the arrow's own render, so masking the arrow
-  alone would leave a rectangular gap.
-
-  *Labelled-arrow support deferred as low-value.* Placing a labelled arrow's
-  label correctly would be cheap (`getCommonBounds([arrow, label])` already
-  resolves it through `getBoundTextElementPosition`), but reproducing the
-  hole-punch means painting the pair as a fixed-order unit, which gives up the
-  paint loop's one-element-at-a-time independence. Narrow enough — a labelled
-  arrow crossing an embeddable — that it isn't worth the change.
+- **Nothing about being bound, elbowed or labelled bails an arrow out
+  anymore.** An arrow bound to another element (its endpoint pulled back to
+  that element's boundary, `mode`/focus/gap/`fixedPoint` and all) and an
+  **elbowed** arrow (re-routed as orthogonal segments) both render in front
+  like any other arrow — Excalidraw writes both the pull-back and the routed
+  segments straight into the arrow's own `points`, and the shape generator
+  behind both the live canvas and `exportToSvg`
+  (`packages/element/src/shape.ts`) reads nothing but the element's own
+  fields: no binding lookup, no elbow-specific routing of its own. So the
+  emitted path is exactly what a bound or elbowed arrow draws, the same as for
+  an ordinary one. (An earlier revision of this mechanism excluded both, on
+  the strength of a live regression against the *old* mask-and-blit
+  approach's points-based mask — that reasoning didn't carry over once the
+  mechanism switched to drawing Excalidraw's own emitted paths; re-verified
+  live, separately, against a real bound arrow and a real bound *elbowed*
+  arrow after removing each exclusion.) A **labelled** arrow no longer bails
+  out either, for the reason and mechanism in "How an arrow's label is placed"
+  below; re-verified live against a real labelled arrow crossing an
+  embeddable, including a case where its label's own stored position was
+  deliberately left stale to confirm the live recompute actually runs rather
+  than coasting on data that happened to already be right.
 
 ## How candidates are painted
 
@@ -221,6 +218,60 @@ export exposes per-element geometry synchronously, and Excalidraw's internal
 
 Exporting a single element costs well under a millisecond, with no perceptible
 lag while drawing or resizing.
+
+## How an arrow's label is placed
+
+An arrow-bound label's stored `x`/`y` are not kept live the way the arrow's
+own `points` are. Excalidraw's canvas render path calls
+`LinearElementEditor.getBoundTextElementPosition` fresh on every frame instead
+of trusting the label's stored coordinates, and only writes a *fresh* position
+back to the label element at specific commit points (`redrawTextBoundingBox`,
+called from property edits, text edits and a few other actions) — not on
+every drag of the arrow or the element it's bound to, the way
+`updateBoundElements` keeps the arrow's own `points` continuously in sync.
+Mid-drag, the label's stored `x`/`y` can be stale even though the arrow's
+`points` are current.
+
+So this mechanism computes the label's real position itself,
+`computeArrowLabelPosition` in `arrow-label-position.ts` — a port of
+`LinearElementEditor.getBoundTextElementPosition`, since neither it nor
+`LinearElementEditor` is exposed on `window.ExcalidrawLib` (checked live: the
+global has the general-purpose helpers `elementPlacement`/`paintTextElement`
+already use, `getCommonBounds`/`getFontString`/`getFontMetrics` among them,
+but nothing binding- or linear-element-editor-specific). The view layer
+resolves this before the label ever reaches `elementPlacement`: when a
+candidate's `containerId` points at an arrow, its `x`/`y` are replaced with
+the computed position and its `angle` forced to `0` (Excalidraw never rotates
+an arrow's label, even when the arrow itself is rotated — enforced upstream
+as an invariant), and if the position can't be computed the label is dropped
+from that frame's candidates entirely rather than painted at its stale
+coordinates.
+
+The position depends on the arrow's `points` parity:
+
+- **Odd count** — the label centres on the actual middle point, rotated about
+  the arrow's own bounds centre. Cheap, exact, no curve involved.
+- **Even count, elbow arrow** — the label centres on the average of the two
+  points either side of the midpoint. No rotation: elbow arrows don't rotate.
+- **Even count, sharp corners (`!roundness`)** — the segment between those two
+  points is drawn straight, so the label centres on their arithmetic midpoint.
+- **Even count, rounded corners (Excalidraw's default)** — the segment is
+  actually a rough.js-generated bezier shaped by the neighbouring points, and
+  the label sits at that curve's *arc-length* midpoint, not its parametric
+  one. This is the one case with real curve math behind it, built from two
+  pieces chosen specifically to avoid reconstructing anything: the real
+  `roughjs` package (added as a proper dependency, pinned to `4.6.4` — the
+  exact version Excalidraw itself bundles — rather than approximated), called
+  with the same options `generateLinearCollisionShape` uses
+  (`roughness: 0, preserveVertices: true`, which makes it deterministic); and
+  a standard 24-point Legendre-Gauss quadrature for the arc-length search, the
+  same one `packages/math/src/curve.ts` uses, copied verbatim since it's
+  textbook numerical integration rather than Excalidraw-specific logic. This
+  is a different risk profile from the rough.js/perfect-freehand
+  reconstruction ports mentioned above, which approximated undocumented
+  internal behaviour by hand and were dropped for it — here the curve
+  generation is the real library, and the only hand-written part is standard
+  math.
 
 ## The read-only transparent window
 
