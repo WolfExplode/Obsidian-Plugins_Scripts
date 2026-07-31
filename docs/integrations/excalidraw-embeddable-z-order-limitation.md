@@ -60,10 +60,25 @@ element in front of an embeddable.
 
 ## Upstream status
 
-Confirmed, open, unresolved as of 2026-07-26:
+Confirmed, open, unresolved as of 2026-07-26, against Excalidraw core:
 
 - [Web embeds are always on top of all other drawing elements · Issue #9431](https://github.com/excalidraw/excalidraw/issues/9431) — exact match for this symptom, filed against Excalidraw core.
 - [\[TODO\] z-index support · Issue #21](https://github.com/excalidraw/excalidraw/issues/21) — the original, years-old request for general z-index controls.
+
+Users have also hit this against `obsidian-excalidraw-plugin` itself, and the
+maintainer's responses there confirm it's the same upstream limitation rather
+than anything Obsidian-specific:
+
+- [FR: Allow drawing on top of embedded files · Issue #2089](https://github.com/zsviczian/obsidian-excalidraw-plugin/issues/2089) —
+  closed same-day, labelled `Can't fix` / `transfer to excalidraw.com`: "the
+  root cause is outside this plugin."
+- [BUG: ...canvas elements cannot be placed on the topmost layer · Issue #2628](https://github.com/zsviczian/obsidian-excalidraw-plugin/issues/2628) —
+  closed as not-a-bug: "a consequence of how interactive embeds are solved. If
+  your objective is to draw on top of a markdown embed, embed it as an image
+  not as an interactive embeddable" — i.e. the only workaround upstream
+  offers is opting out of the interactive embeddable entirely, which is
+  exactly the workflow this plugin's front-of-embed mechanism removes the
+  need for.
 
 ## Why this plugin doesn't patch it
 
