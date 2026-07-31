@@ -140,24 +140,33 @@ directly rather than left as a pure upstream limitation.
   whether a fill exists but a hatched interior still fills as a slab rather than
   as its lines, because the fill follows the emitted fill path rather than its
   hatching.
-- **Bound, elbowed, and labelled arrows bail out.** Excalidraw does not draw
-  these along their own `points` — a bound endpoint is pulled back to the bound
-  element's boundary, and an elbowed arrow is re-routed as orthogonal segments —
-  so their drawn path can't be reconstructed from element data. A *labelled*
-  arrow bails out as a pair with its label, for the same reason on both halves:
-  the label's own `x`/`y` are ignored in favour of
+- **Only a labelled arrow bails out — bound and elbowed arrows don't.** An
+  arrow bound to another element (its endpoint pulled back to that element's
+  boundary, `mode`/focus/gap/`fixedPoint` and all) and an **elbowed** arrow
+  (re-routed as orthogonal segments) both render in front like any other
+  arrow — Excalidraw writes both the pull-back and the routed segments
+  straight into the arrow's own `points`, and the shape generator behind both
+  the live canvas and `exportToSvg` (`packages/element/src/shape.ts`) reads
+  nothing but the element's own fields: no binding lookup, no elbow-specific
+  routing of its own. So the emitted path is exactly what a bound or elbowed
+  arrow draws, the same as for an ordinary one. (An earlier revision of this
+  mechanism excluded both, on the strength of a live regression against the
+  *old* mask-and-blit approach's points-based mask — that reasoning didn't
+  carry over once the mechanism switched to drawing Excalidraw's own emitted
+  paths; re-verified live, separately, against a real bound arrow and a real
+  bound *elbowed* arrow after removing each exclusion.) A **labelled** arrow
+  still bails out as a pair with its label, for an unrelated reason: the
+  label's own `x`/`y` are ignored in favour of
   `LinearElementEditor.getBoundTextElementPosition`, and `drawElementFromCanvas`
-  punches a label-shaped hole in the arrow's own render. All of these stay
-  behind the embeddable; an ordinary unbound, unlabelled arrow works normally.
+  punches a label-shaped hole in the arrow's own render, so masking the arrow
+  alone would leave a rectangular gap.
 
-  *Deferred as low-value.* Placing a labelled arrow's label correctly would be
-  cheap (`getCommonBounds([arrow, label])` already resolves it through
-  `getBoundTextElementPosition`), but reproducing the hole-punch means painting
-  the pair as a fixed-order unit, which gives up the paint loop's
-  one-element-at-a-time independence — and a labelled arrow is usually also a
-  *bound* one, which bails out for the harder reason anyway. So the case this
-  would unlock (a labelled, unbound, non-elbowed arrow crossing an embeddable)
-  is narrow enough that it isn't worth the change.
+  *Labelled-arrow support deferred as low-value.* Placing a labelled arrow's
+  label correctly would be cheap (`getCommonBounds([arrow, label])` already
+  resolves it through `getBoundTextElementPosition`), but reproducing the
+  hole-punch means painting the pair as a fixed-order unit, which gives up the
+  paint loop's one-element-at-a-time independence. Narrow enough — a labelled
+  arrow crossing an embeddable — that it isn't worth the change.
 
 ## How candidates are painted
 
@@ -278,10 +287,10 @@ it, because its only copy over the embeddable is drawn over the media itself.
 - Interleaved depths are wrong the same way (see "Known limitations"): the layer
   is one flat surface above every embeddable, and the clip is the union of them
   all.
-- The shared candidate rules' bail-outs still earn their keep even though nothing
-  is masked. A framed element re-exported without its frame would lose the
-  frame's clip, and a bound or elbowed arrow re-exported without the element it
-  binds to is re-routed by Excalidraw as it exports.
+- The shared candidate rules' remaining bail-out still earns its keep even
+  though nothing is masked: a framed element re-exported without its frame
+  would lose the frame's clip. A bound or elbowed arrow is fine re-exported
+  alone — see "Deliberate scope cuts" above.
 - A candidate stroke that crosses an embeddable's edge is drawn as two clipped
   halves that meet there, each antialiased against transparency, so the seam can
   read a hair light under magnification. Not dilated to hide it: overlapping the

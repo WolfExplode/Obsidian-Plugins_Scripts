@@ -34,11 +34,6 @@ export interface FrontOfEmbedElement extends PackElement {
 	strokeColor?: string;
 	/** Excalidraw's 0-100 element opacity, applied live so changing it re-exports nothing. */
 	opacity?: number;
-	/** Set on an arrow whose endpoint is attached to another element, which moves where it's drawn. */
-	startBinding?: unknown;
-	endBinding?: unknown;
-	/** Set on an arrow Excalidraw routes as orthogonal segments rather than through its points. */
-	elbowed?: boolean;
 	text?: string;
 	fontSize?: number;
 	fontFamily?: number;
@@ -82,13 +77,21 @@ function overlaps(a: FrontOfEmbedElement, b: FrontOfEmbedElement): boolean {
  * has no clip of its own, so it would copy scene background from wherever the
  * frame cut the element off.
  *
- * Bound and elbowed arrows bail out because their `points` are not where
- * Excalidraw actually draws them. A bound endpoint is pulled back to the bound
- * element's boundary (focus, gap, and `fixedPoint` all feed into where), and an
- * elbowed arrow is re-routed as orthogonal segments entirely. Masking the points
- * instead of the drawn path painted a thick band of scene background along the
- * segment where the stroke wasn't -- verified live (2026-07-29) with an arrow
- * bound `mode: "inside"` to the very embeddable it crossed.
+ * Neither a *bound* nor an *elbowed* arrow bails out for being either. Both
+ * used to be blanket excluded on the theory that their `points` aren't where
+ * Excalidraw actually draws them -- true of the mask-and-blit approach this
+ * mechanism used to use, verified live (2026-07-29) with an arrow bound
+ * `mode: "inside"` to the very embeddable it crossed. But `points` is the
+ * *only* place either a bound endpoint's pull-back (focus/gap/`fixedPoint`)
+ * or an elbow-routed segment ever gets written to --
+ * `packages/element/src/shape.ts` (both the canvas shape generator and
+ * `exportToSvg` run through it) reads nothing but the element's own fields, no
+ * binding lookups and no elbow-specific routing of its own -- and
+ * `updateBoundElements`/`updateElbowArrowPoints` keep `points` in sync on
+ * every drag/resize of the bound element or the arrow's own endpoints. So the
+ * emitted path drawn since `c357f095` is exactly what's on screen for a bound
+ * or elbowed arrow too; re-verified live (2026-07-31) against a real bound
+ * arrow and a real bound *elbowed* arrow.
  *
  * A *labelled arrow* bails out as a pair, for the same "not drawn where the
  * element says" reason on both halves: an arrow label's own `x`/`y` are ignored
@@ -110,8 +113,6 @@ export function isFrontOfEmbedEligible(
 	// A label whose container can't be resolved is a label that can't be placed.
 	if (element.containerId && (!container || container.type === "arrow")) return false;
 	if (element.type === "arrow" && element.boundElements?.some((bound) => bound.type === "text")) return false;
-	if (element.startBinding || element.endBinding) return false;
-	if (element.elbowed) return false;
 	return true;
 }
 

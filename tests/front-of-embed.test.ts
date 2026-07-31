@@ -61,13 +61,12 @@ describe("isFrontOfEmbedEligible", () => {
 		assert.equal(isFrontOfEmbedEligible(el({ id: "box", boundElements: [{ id: "a1", type: "arrow" }] })), true);
 	});
 
-	it("excludes bound and elbowed arrows, whose points aren't where they're drawn", () => {
+	it("includes bound and elbowed arrows -- their points ARE where they're drawn", () => {
+		// A bound endpoint's pull-back and an elbow's routed segments are both
+		// written into `points` by Excalidraw's own binding/routing maintenance,
+		// and its shape generator reads nothing but `points`.
 		const arrow = { id: "a", type: "arrow", points: [[0, 0], [10, 10]] } as const;
-		assert.equal(isFrontOfEmbedEligible(el({ ...arrow, startBinding: { elementId: "box" } })), false);
-		assert.equal(isFrontOfEmbedEligible(el({ ...arrow, endBinding: { elementId: "box" } })), false);
-		assert.equal(isFrontOfEmbedEligible(el({ ...arrow, elbowed: true })), false);
-		// An unbound, non-elbowed arrow is drawn through its own points, so it stays.
-		assert.equal(isFrontOfEmbedEligible(el({ ...arrow, startBinding: null, endBinding: null })), true);
+		assert.equal(isFrontOfEmbedEligible(el({ ...arrow })), true);
 	});
 
 	it("includes ordinary images, shapes, and text", () => {

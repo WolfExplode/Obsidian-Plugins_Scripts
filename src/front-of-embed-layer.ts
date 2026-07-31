@@ -13,10 +13,11 @@
  *
  * The candidate set is deliberately `planFrontOfEmbedCandidates`, the same one
  * the editable view uses, so a Board looks the same either side of the F10
- * switch. Its bail-outs earn their keep here too even though nothing is being
- * masked: a framed element re-exported without its frame would lose the frame's
- * clip, and a bound or elbowed arrow re-exported without the element it binds to
- * is re-routed by Excalidraw as it exports.
+ * switch. Its remaining bail-out earns its keep here too even though nothing
+ * is being masked: a framed element re-exported without its frame would lose
+ * the frame's clip. A *bound or elbowed* arrow is fine re-exported alone --
+ * see `isFrontOfEmbedEligible` in `front-of-embed.ts` for why its `points`
+ * don't need the bound element present to be correct.
  */
 
 import { isFrontOfEmbedEmbeddable, planFrontOfEmbedCandidates, type FrontOfEmbedElement } from "./front-of-embed";
