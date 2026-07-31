@@ -29,8 +29,17 @@ export interface EmittedPath {
 	d: string;
 	/** Whether Excalidraw fills this path -- its fill paths and its stroke paths are separate. */
 	filled: boolean;
+	/**
+	 * The colour Excalidraw fills this path with, when it fills it. Taken from the
+	 * export rather than from the element because the mapping is not one-to-one: a
+	 * hachure fill is emitted as *stroked* paths in the background colour, so
+	 * "stroked path means `strokeColor`" would paint hachuring the wrong colour.
+	 */
+	fill: string | null;
 	/** Set when Excalidraw strokes this path, at the width it strokes it. */
 	strokeWidth: number | null;
+	/** The colour Excalidraw strokes this path with. Same reasoning as `fill`. */
+	stroke: string | null;
 	dash: readonly number[] | null;
 }
 
@@ -52,9 +61,15 @@ function field(element: GeometryElement, name: string): unknown {
 
 /**
  * The element fields that change what Excalidraw *draws*, as opposed to where it
- * puts it. Deliberately excludes `x`, `y`, `angle`, `version` and every colour:
- * a drag would otherwise re-export on every frame, which is the cost that would
- * sink this approach.
+ * puts it. Deliberately excludes `x`, `y`, `angle` and `version`: a drag would
+ * otherwise re-export on every frame, which is the cost that would sink this
+ * approach.
+ *
+ * Colours *are* included, because the emitted paths carry the colours they are
+ * painted in -- see `EmittedPath.fill`. That makes a recolour a re-export, which
+ * a drag is not: it fires once per commit rather than once per pointer move.
+ * `opacity` is deliberately still excluded; the view layer applies it live from
+ * the element, so dragging the opacity slider re-exports nothing.
  */
 const GEOMETRY_FIELDS = [
 	"type",
@@ -71,15 +86,13 @@ const GEOMETRY_FIELDS = [
 	"roundness",
 	"seed",
 	"fillStyle",
-	// Not the colour itself, only whether there is a fill at all -- that changes
-	// whether Excalidraw emits a fill path.
+	"strokeColor",
+	"backgroundColor",
 ] as const;
 
 export function geometrySignature(element: GeometryElement): string {
 	const parts: unknown[] = [];
 	for (const name of GEOMETRY_FIELDS) parts.push(field(element, name) ?? null);
-	const background = field(element, "backgroundColor");
-	parts.push(typeof background === "string" && background !== "transparent");
 	return JSON.stringify(parts);
 }
 
@@ -123,10 +136,13 @@ export async function fetchEmittedGeometry(
 		const fill = node.getAttribute("fill");
 		const stroke = node.getAttribute("stroke");
 		const width = Number(node.getAttribute("stroke-width"));
+		const strokes = !!stroke && stroke !== "none" && Number.isFinite(width);
 		paths.push({
 			d,
 			filled: !!fill && fill !== "none",
-			strokeWidth: stroke && stroke !== "none" && Number.isFinite(width) ? width : null,
+			fill: fill && fill !== "none" ? fill : null,
+			strokeWidth: strokes ? width : null,
+			stroke: strokes ? stroke : null,
 			dash: parseDash(node.getAttribute("stroke-dasharray")),
 		});
 	}

@@ -77,6 +77,12 @@ export interface ExcalidrawApi {
 		selectedElementIds?: Record<string, boolean>;
 		/** Non-null while Excalidraw is editing inside a group's constituents. */
 		editingGroupId?: string | null;
+		/**
+		 * `"dark"` means Excalidraw renders the whole scene through
+		 * `DARK_THEME_FILTER`, baked into the canvas pixels rather than applied as
+		 * CSS -- so anything drawn alongside its canvas has to apply it too.
+		 */
+		theme?: string;
 	};
 	getSceneElements?(): readonly SceneElement[];
 	/** The scene's binary files, keyed by an image element's `fileId`. */

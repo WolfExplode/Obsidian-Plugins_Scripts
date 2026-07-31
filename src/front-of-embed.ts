@@ -5,11 +5,13 @@
  * z-order. See docs/behavior/front-of-embed-rendering.md and
  * docs/adr/0010-front-of-embed-rendering.md.
  *
- * The mechanism does NOT re-render those elements: Excalidraw has already
- * rendered them, this frame, into its own static canvas, so the view layer
- * copies that canvas through an alpha mask built from the shapes described here.
- * That makes this module's job purely geometric -- eligibility plus "what region
- * does this element occlude" -- with no rendering fidelity to reproduce.
+ * The view layer paints those elements onto an overlay canvas: normally by
+ * drawing the paths Excalidraw itself emitted, in the colours it emitted them
+ * with, and for images by copying Excalidraw's static canvas through an alpha
+ * mask built from the shapes described here. This module's job is the same
+ * either way -- eligibility plus "what region does this element occlude" -- and
+ * the mask shapes below now serve the copying path and the pre-export frames
+ * rather than every element.
  *
  * Deliberately free of Obsidian/Excalidraw imports, like pack-elements.ts and
  * zorder.ts, so the rules can be reasoned about and unit-tested in isolation;
@@ -30,6 +32,14 @@ export interface FrontOfEmbedElement extends PackElement {
 	strokeWidth?: number;
 	/** `"transparent"` (or absent) means the element's interior occludes nothing. */
 	backgroundColor?: string;
+	/**
+	 * What Excalidraw strokes the element with, and what it fills text glyphs with.
+	 * Read only by the view layer, which paints text directly rather than copying
+	 * it -- every other type takes its colours from its emitted paths.
+	 */
+	strokeColor?: string;
+	/** Excalidraw's 0-100 element opacity, applied live so changing it re-exports nothing. */
+	opacity?: number;
 	/** rough.js hand-drawn jitter: 0 (architect) draws exactly on the path, 2 (cartoonist) wanders furthest. */
 	roughness?: number;
 	/** `"solid"` (or absent), `"dashed"`, or `"dotted"` -- a dashed stroke leaves gaps a solid mask would cover. */
@@ -94,6 +104,14 @@ export const MASK_JITTER_ALLOWANCE = 2;
  * Half a pixel, not the 1.5 this started at: an antialiased edge spans about a
  * pixel in total, and since the source canvas is opaque every tenth of a pixel
  * of overshoot is scene background painted onto the embeddable, not a soft edge.
+ *
+ * Being screen-space cuts the other way when zoomed *out*: it is a floor with no
+ * lower bound on screen, so once the element's own drawn width falls below about
+ * a pixel the allowance is wider than the element it protects and the mask
+ * deposits more background than element. Measured 2026-07-30 (see the rim entry
+ * in docs/behavior/front-of-embed-rendering.md): negligible from ~20% zoom up,
+ * 28% of the mask's alpha-weighted coverage at 5%. Not tunable away -- shrinking
+ * this to fix 5% zoom re-clips the antialiased edge at every other zoom.
  */
 export const MASK_ANTIALIAS_ALLOWANCE_PX = 0.5;
 

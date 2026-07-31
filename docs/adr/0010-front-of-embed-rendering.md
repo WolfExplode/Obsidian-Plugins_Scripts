@@ -1,8 +1,15 @@
 ---
-status: accepted
+status: amended
 ---
 
 # Front-of-embed rendering masks and blits Excalidraw's own canvas
+
+> **Amended 2026-07-30 — candidates are now drawn, not blitted.** The decision
+> below still describes the overlay, the candidate rules and the read-only
+> window correctly, but its central mechanism has been narrowed: the blit is now
+> the *fallback* path (images, and the frame before an export lands) and the
+> normal path draws Excalidraw's emitted paths in Excalidraw's own colours. See
+> "Amendment: drawing the emitted paths" at the end.
 
 Excalidraw's embeddable elements (video/PDF/markdown/web embeds) always render
 above canvas-drawn elements regardless of scene z-order — a confirmed upstream
@@ -181,4 +188,59 @@ Rejected there:
   scene already painted underneath a candidate — the view background, or an
   element sitting behind the embeddable — is copied along with it wherever the
   mask covers. This is invisible for opaque elements and shows as a faint rim
-  around thin ones; see "Known limitations" in the behavior doc.
+  around thin ones; see "Known limitations" in the behavior doc. **This is what
+  the amendment below fixes**, and it now applies only to images.
+
+## Amendment: drawing the emitted paths (2026-07-30)
+
+The rim above turned out to have no floor at low zoom. `maskDilation`'s
+antialias term is a screen-space half-pixel, so in scene units it grows without
+bound as zoom falls; once an element's own drawn width is sub-pixel, the mask is
+wider than the element and the blit copies mostly board background. A dotted
+cartoonist line at 29% zoom rendered as black dots instead of orange ones — not
+rimmed, replaced.
+
+`fbb3eab` had already made the fix available without anyone noticing: once the
+mask geometry came from `exportToSvg`, the export was also carrying each path's
+`stroke`, `fill`, `stroke-width` and `stroke-dasharray`, and the code was
+reading them as booleans and discarding the rest. Painting those paths *as
+themselves* rather than as a stencil removes the copy, and with it the rim, the
+dilation, and the composite-against-the-board limitation.
+
+So the decision is narrowed:
+
+- **Drawn** (the normal path): stroke and fill each emitted path in its emitted
+  colours; draw text as glyphs in the element's `strokeColor`. No dilation.
+- **Blitted** (the fallback): images, whose pixels can only come from the canvas
+  and whose box mask never had a rim, and any element whose export has not
+  landed yet.
+
+**This does not revive the rejected "re-render via `exportToBlob`" alternative
+above**, and the distinction is the reason this is viable at all. That one was
+rejected for being an *async raster snapshot* — a bitmap and bounds that could
+desync mid-drag, a cache to supersede in-flight exports, gesture suppression,
+PNG blur. Emitted paths are element-local *vector* data drawn synchronously
+under the live transform, exactly as the mask already was: the only async part
+is the geometry fetch that already existed, and a stale signature falls back to
+the blit rather than to a wrong-sized bitmap.
+
+Three consequences worth stating:
+
+- **The theme stops being free.** Blitted pixels came off a canvas Excalidraw had
+  already drawn through `DARK_THEME_FILTER`; drawn ones have not, so the paint
+  applies that filter itself on the drawn pass only. Missing it showed as black
+  text over the embed on a dark-theme board where Excalidraw had drawn white.
+  This is the one thing the blit genuinely got for free that drawing does not.
+
+- **Recolouring now invalidates the geometry cache**, because the emitted paths
+  carry their colours. It fires once per commit, unlike a drag. `opacity` is
+  kept out of the key and applied live.
+- **The fallback's fidelity matters more than it did.** A reconstruction that
+  was merely a loose mask over correct pixels is now, for a frame, a blit with
+  its old rim — the same behaviour as before this amendment, and self-correcting
+  once the export lands.
+
+The `mask-image` hole-punch recorded in the behavior doc as the candidate fix
+for the rim **would not have fixed it**: a hole in the embeddable reveals the
+same opaque static-canvas pixels the overlay was copying. It remains the
+candidate fix for interleaved depths only.

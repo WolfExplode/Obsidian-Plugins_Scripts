@@ -44,10 +44,10 @@ directly rather than left as a pure upstream limitation.
   solid line, and a stroke drawn with a custom pen masks with that pen's own
   profile.
 - **What appears in front is the real element, not an approximation.** The
-  mechanism copies Excalidraw's own rendered pixels through a mask of the
-  element's shape, so what shows over the embeddable is identical to what
-  Excalidraw drew — same colours, same theme, same hand-drawn stroke, crisp at
-  any zoom.
+  mechanism draws Excalidraw's own emitted paths in Excalidraw's own colours, so
+  what shows over the embeddable is what Excalidraw drew — same colours, same
+  hand-drawn stroke, crisp at any zoom. Images are the exception and are copied
+  from Excalidraw's canvas instead; see "How candidates are painted".
 - **Drawing, dragging, resizing, and rotating are live.** There is no snapshot
   and no gesture mode: the overlay recomposites every frame from the current
   canvas, so an element being dragged across an embeddable moves over it in real
@@ -135,14 +135,15 @@ directly rather than left as a pure upstream limitation.
     front of (`isEligibleEmbeddable` drops them today).
   - **The frame's own border and name label** are chrome this mechanism never
     masks, so a frame drawn over an embeddable stays behind it either way.
-- **Text and images keep a reconstructed mask.** Excalidraw exports text as
-  `<text>` and images as `<image>`, neither of which is path geometry, so those
-  two types are always masked from the shapes derived in `front-of-embed.ts`
-  rather than from emitted paths. Text is masked glyph-accurately; an image
-  masks as its whole box.
+- **Text and images have no emitted paths.** Excalidraw exports text as `<text>`
+  and images as `<image>`, neither of which is path geometry, so neither can be
+  drawn from emitted paths. They diverge from there: text is *drawn* as glyphs
+  in the element's own colour, placed by Excalidraw's own `getVerticalOffset`
+  maths, while an image is *blitted* through a box mask, since its pixels can
+  only come from the canvas.
 - **The reconstructed fallback is approximate where it is used.** For the frame
-  or two before an element's geometry has been fetched, the mask comes from the
-  ports, and a few of their cases are known to be imperfect: a
+  or two before an element's geometry has been fetched, it is blitted through a
+  mask from the ports, and a few of their cases are known to be imperfect: a
   constant-pressure freedraw sits a mean of 0.43 scene units off (see
   `CONSTANT_VARIABILITY_PRESSURE`, a fitted constant), ellipses and rounded
   diamonds are not reproduced at all and fall back to a jitter allowance, the
@@ -187,7 +188,45 @@ directly rather than left as a pure upstream limitation.
   unbound, non-elbowed arrow that happens to cross an embeddable — the narrowest
   target of any cut on this list, behind the most invasive change.
 
-## Where the mask geometry comes from
+## How candidates are painted
+
+Each candidate is either **drawn** or **blitted**, and drawn is the good path:
+
+- **Drawn** — the element's emitted paths, stroked and filled in the colours
+  Excalidraw emitted them with, straight onto the transparent overlay. Text is
+  drawn as glyphs in the element's own `strokeColor`, since Excalidraw exports
+  `<text>` rather than path geometry. Nothing is copied, so no scene background
+  can come with it, and the element composites onto the embed itself — which is
+  what makes a semi-transparent annotation show the video through it. No
+  dilation is involved anywhere: that existed only to stop the blit clipping an
+  antialiased edge, and an edge antialiasing against transparency needs no
+  allowance.
+- **Blitted** — the mask-and-blit path this mechanism started as: paint an alpha
+  mask of the element, then `source-in` a copy of Excalidraw's static canvas
+  through it. Now used only for **images**, whose pixels can't come from
+  anywhere else, and for the frame or two before an element's export lands. An
+  image is masked as its whole opaque box, so the rim the blit is prone to never
+  applies to it.
+
+The two share one paint, in that order: the blitted stencil is composited first,
+then the drawn candidates go over the top with `source-over`. Splitting it that
+way is what keeps the `source-in` from consuming anything but its own stencil.
+
+**Dark theme has to be applied by hand on the drawn path.** Excalidraw implements
+dark theme as `DARK_THEME_FILTER` (`invert(93%) hue-rotate(180deg)`) over
+everything it draws, and it is **baked into the canvas pixels rather than applied
+as CSS** — verified live (2026-07-31): nothing from the static canvas up to the
+workspace leaf has a computed `filter`, yet `viewBackgroundColor` `#ffffff` reads
+back as `18,18,18` and a `#1e1e1e` glyph as `211,211,211`, exactly `invert(93%)`
+of each. So the blit inherits the theme for free and the drawn path must set
+`ctx.filter` itself; without it a dark-theme board showed **black text over the
+embed where Excalidraw had drawn white**. The filter is set for pass 2 only —
+pass 1's pixels have already been through it, and filtering them twice would
+undo it. Confirmed after the fix: drawn glyphs read `211,211,211`, byte-identical
+to the static canvas.
+
+The rest of this section is about where the geometry itself comes from — which
+both paths need, one to draw and one to mask.
 
 The mask needs to know exactly where Excalidraw drew each element. It gets that
 from Excalidraw itself, with a plugin-side reconstruction as a fallback.
@@ -206,12 +245,16 @@ exports none expose per-element geometry synchronously, the Obsidian plugin's
 cheap enough to be invisible:
 
 - **The cache key is the element's geometry, not its `version`.** Moving,
-  rotating, re-colouring and re-ordering leave it untouched, so no re-export
-  happens; only drawing and resizing invalidate it. This matters because a scene
-  change fires on every pointer move of a drag.
+  rotating and re-ordering leave it untouched, so no re-export happens; only
+  drawing, resizing and **recolouring** invalidate it. This matters because a
+  scene change fires on every pointer move of a drag — where a recolour fires
+  once, on commit. Colours are in the key because the emitted paths now carry
+  the colours they are painted in. `opacity` deliberately is not: the paint
+  applies it live from the element, so dragging the opacity slider re-exports
+  nothing.
 - **A cached path is only drawn if its signature still matches the element.** A
-  resize therefore falls back to the reconstruction for a frame rather than
-  masking the element's previous size.
+  resize therefore falls back to the blit for a frame rather than drawing the
+  element's previous size.
 
 Measured on a live board (2026-07-30): 0.72 ms per element to export, and no
 perceptible lag while drawing or resizing.
@@ -324,40 +367,56 @@ it, because its only copy over the embeddable is drawn over the media itself.
   → Embed B (front)`) will incorrectly render above both. Accepted as a known
   limitation — the common case of a single embeddable with elements in front
   of it is unaffected.
-- **A rim of scene background is copied along with the element** — *known bug,
-  deferred*, and specific to the editable surfaces (the read-only layer copies
-  nothing). Excalidraw's static canvas is fully opaque: it is the view
-  background with the scene drawn onto it, so every mask pixel that isn't
-  exactly on the element blits board background over the embed. The mask must
-  be grown past the element's exact geometry (hand-drawn strokes overshoot their
-  nominal path, and the rendered pixels are antialiased — masking exactly clips
-  a hairline off every edge), so some rim is unavoidable as long as the
-  mechanism copies from an opaque source.
+- **A rim of scene background is copied along with the element** — **fixed**
+  (2026-07-30) by not copying. Kept here because the fix reshapes the rest of
+  this section, and because the reasoning is easy to re-derive wrongly.
 
-  Measured live on 2026-07-30: **39.7% of the overlay's opaque pixels were
-  background rather than element**, reading as a ~5px dark outline around every
-  stroke at 38% zoom. Correcting the mask geometry it was compensating for —
-  rough.js's own curve for curved linear elements, perfect-freehand's real
-  stroke width for freedraw, roughness-scaled jitter, and a 0.5px rather than
-  1.5px antialias allowance — brought that to **13.6%**.
+  Excalidraw's static canvas is fully opaque: it is the view background with the
+  scene drawn onto it, so every mask pixel that wasn't exactly on the element
+  blitted board background over the embed. Since the mask had to be grown past
+  the element's geometry to keep the blit from clipping the antialiased edge,
+  some rim was unavoidable *as long as the mechanism copied from an opaque
+  source*. It measured 39.7% of the overlay's opaque pixels, then 13.6% after
+  the mask geometry was corrected, then effectively zero at working zooms once
+  `fbb3eab` took the geometry from Excalidraw's own emitted paths — but it
+  survived at low zoom, where `MASK_ANTIALIAS_ALLOWANCE_PX / zoom` is a
+  screen-space half-pixel around an element that is itself sub-pixel. A dotted
+  cartoonist line at 29% zoom rendered as **black dots instead of orange ones**:
+  not rimmed, replaced.
 
-  What remains is inherent to mask-and-blit; tuning the dilation shrinks it but
-  cannot remove it. The candidate fix is to stop compositing over the
-  embeddable and instead **punch holes in it**: give each
-  `.excalidraw__embeddable-container` a `mask-image: url(#…)` referencing a live
-  in-document `<svg><mask>` holding the element shapes, so Excalidraw's own
-  canvas — already below the embeddable — shows through unaltered. Verified that
-  Chromium accepts the reference (2026-07-30); not verified that masked
-  iframes/videos composite correctly. That approach would also retire the two
-  limitations below, since each embeddable would carry its own mask built only
-  from the elements above *it*, and nothing would be re-composited against the
-  scene background. It reshapes the two deferred scope cuts as well: the frame
-  and labelled-arrow bail-outs are both ultimately "the mask would copy the
-  wrong pixels", which stops being a problem once nothing is copied. Weigh that
-  before spending effort hardening either against a mechanism this would
-  replace.
+  The fix was to stop blitting. Candidates are now **drawn** — the emitted paths
+  stroked and filled in the colours Excalidraw emitted them with, text as glyphs
+  in the element's own `strokeColor` — so nothing is copied and there is no
+  background to deposit. Dilation is gone with it: it only ever existed to cover
+  the blit's seam, and an edge antialiasing against transparency needs no
+  allowance. See "How candidates are painted" below.
+
+  Measured over the embeddable's rect on the same board, before and after:
+
+  | zoom | before (opaque / alpha-weighted) | after |
+  | ---: | ---: | ---: |
+  |   5% | 19.0% / 28.3% | 0% / 0.4% |
+  |  15% |  4.7% / 11.1% | 0% / 0% |
+  |  29% |  ~0% /  ~5% | 0% / 0% |
+  | 100% |    0% /  1.2% | 0% / 0% |
+
+  The 0.4% residue at 5% is sub-threshold noise, not rim: below about alpha 32
+  the colour read back from `getImageData` is wrecked by unpremultiply rounding
+  (a 3%-alpha orange dot reads as pure `255,0,0`), so those pixels are counted
+  as ink but not classified.
+
+  **The `mask-image` hole-punch would not have fixed this** — worth recording,
+  because it was written here as the candidate fix and is an easy idea to have
+  again. Punching a hole in `.excalidraw__embeddable-container` reveals the
+  static canvas underneath, which is the *same opaque pixels* the overlay was
+  copying: view background plus element. Identical rim. What it would genuinely
+  fix is the interleaved-depth limitation above, since each embeddable could
+  carry a mask built only from the elements above *it*.
 - **Semi-transparent and hachure-filled elements composite against the scene
-  background, not the embeddable** — again editable-only. The copied pixels are Excalidraw's already
-  composited output, so a 50%-opacity element over an embeddable shows itself
-  blended with the view background rather than with the video underneath, and a
-  hachure fill's gaps show background rather than embed content.
+  background, not the embeddable** — **fixed for drawn candidates** by the same
+  change, and still true for blitted ones (images). A drawn element composites
+  onto the overlay's transparent canvas and therefore onto the embed itself, so
+  a 50%-opacity annotation now shows the video through it, and a hachure fill's
+  gaps show embed content. Element opacity is applied live from `element.opacity`
+  rather than being baked into the export, so dragging the opacity slider
+  re-exports nothing.

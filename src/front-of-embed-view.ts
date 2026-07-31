@@ -27,13 +27,23 @@ import { attachPerLeafScanner, leafDocument, type LeafScannerApi, type LeafScann
  * front-of-embed.ts (pure, dependency-free) decides WHICH elements need the
  * treatment and WHAT SHAPE each one occludes; this file does the compositing.
  *
- * The whole mechanism is: Excalidraw has already rendered every one of those
- * elements into its own static canvas, this frame, at the current zoom, in the
- * current theme. So the overlay paints an alpha mask of the qualifying elements,
- * then copies Excalidraw's static canvas through it with `source-in`. Nothing is
- * re-rendered and nothing is cached -- the overlay is a masked copy of live
- * pixels, so it tracks drags, resizes, rotations, zooming and theme changes for
- * free, with no gesture handling of its own.
+ * The whole mechanism is: paint the qualifying elements onto an overlay canvas
+ * that sits above the embeddables, every frame, under the live scene transform.
+ * Two ways of painting, see `paint`:
+ *
+ * - **Drawn** -- the paths Excalidraw itself emitted for the element, stroked
+ *   and filled in the colours it emitted them with (plus text as glyphs). This
+ *   copies nothing, which is the whole point: the overlay carries the element
+ *   and nothing else, so it deposits no scene background over the embed and
+ *   composites against the embed rather than against the board.
+ * - **Blitted** -- the original mechanism, kept for images and for the frame or
+ *   two before an element's export lands: paint an alpha mask, then copy
+ *   Excalidraw's own static canvas through it with `source-in`. Its cost is that
+ *   the static canvas is opaque, so a mask wider than the element brings board
+ *   background with it -- harmless for an image, whose mask is its own box.
+ *
+ * Neither path holds a rendered snapshot, so drags, resizes, rotations and
+ * zooming need no gesture handling: the transform is re-read every frame.
  *
  * Rides the same attach/prune/reconcile lifecycle as video-aspect.ts,
  * animated-image-drop.ts, and media-auto-pack.ts (attachPerLeafScanner in
@@ -51,8 +61,24 @@ import { attachPerLeafScanner, leafDocument, type LeafScannerApi, type LeafScann
  */
 const OVERLAY_Z_INDEX = "2";
 
-/** Excalidraw's own static scene canvas -- the source of every pixel this overlay draws. */
+/** Excalidraw's own static scene canvas -- the source of every blitted pixel this overlay draws. */
 const STATIC_CANVAS_SELECTOR = "canvas.static";
+
+/**
+ * Excalidraw's `DARK_THEME_FILTER`
+ * ([constants.ts:194](../reference/excalidraw-master/packages/common/src/constants.ts#L194)),
+ * which is how dark theme is implemented: not as a palette, but as a filter over
+ * everything the scene draws. It is **baked into the canvas pixels**, not applied
+ * as CSS -- verified live (2026-07-31): no element from the static canvas up to
+ * the workspace leaf has a computed `filter`, yet `viewBackgroundColor` `#ffffff`
+ * reads back as `18,18,18` and a `#1e1e1e` glyph reads back as `211,211,211`,
+ * which is exactly `invert(93%)` of each.
+ *
+ * So the blit path inherits the theme for free (it copies pixels that already
+ * went through it) and the drawn path must apply it itself, or a dark-theme board
+ * gets black text where Excalidraw drew white.
+ */
+const DARK_THEME_FILTER = "invert(93%) hue-rotate(180deg)";
 
 /**
  * EXPERIMENT (see emitted-geometry.ts): one element's geometry as Excalidraw
@@ -61,7 +87,14 @@ const STATIC_CANVAS_SELECTOR = "canvas.static";
  */
 interface EmittedEntry {
 	signature: string;
-	paths: Array<{ path: Path2D; filled: boolean; strokeWidth: number | null; dash: readonly number[] | null }>;
+	paths: Array<{
+		path: Path2D;
+		filled: boolean;
+		fill: string | null;
+		strokeWidth: number | null;
+		stroke: string | null;
+		dash: readonly number[] | null;
+	}>;
 }
 
 interface FrontOfEmbedState {
@@ -295,20 +328,50 @@ function paintMask(
 }
 
 /**
- * EXPERIMENT (see emitted-geometry.ts): masks an element from the paths
- * Excalidraw itself emitted, rather than from a reconstruction. Each path is
- * filled or stroked exactly as Excalidraw marked it, so this needs no shape
- * knowledge at all -- and no jitter allowance, since the path is the drawing.
+ * Draws an element from the paths Excalidraw itself emitted, in the colours it
+ * emitted them with -- the element itself, not a stencil. Each path is filled or
+ * stroked exactly as Excalidraw marked it, so this needs no shape knowledge at
+ * all, and **no dilation**: dilation only ever existed to cover an opaque blit's
+ * seam, and nothing is copied here. The edge antialiases against transparency
+ * and composites onto the embed the way any drawn element would.
  */
-function paintEmitted(ctx: CanvasRenderingContext2D, entry: EmittedEntry, zoom: number): void {
-	for (const { path, filled, strokeWidth, dash } of entry.paths) {
-		if (filled) ctx.fill(path);
+function paintEmittedElement(ctx: CanvasRenderingContext2D, entry: EmittedEntry): void {
+	for (const { path, filled, fill, strokeWidth, stroke, dash } of entry.paths) {
+		if (filled) {
+			ctx.fillStyle = fill ?? "#000";
+			ctx.fill(path);
+		}
 		if (strokeWidth === null) continue;
-		ctx.lineWidth = strokeWidth + maskDilation(zoom, 0) * 2;
+		ctx.strokeStyle = stroke ?? "#000";
+		ctx.lineWidth = strokeWidth;
 		if (dash) ctx.setLineDash(dash as number[]);
 		ctx.stroke(path);
 		if (dash) ctx.setLineDash([]);
 	}
+}
+
+/**
+ * Draws text as glyphs in the element's own colour. Excalidraw has no path
+ * geometry to emit for text (it exports `<text>`), so this is the one type drawn
+ * from reconstructed placement rather than from emitted paths -- but the
+ * placement is Excalidraw's own (`textBaselineOffset` mirrors `getVerticalOffset`)
+ * and the font string comes from `getFontString`, so the glyphs land where
+ * Excalidraw put them. No `strokeText` pass and no dilation: that existed to stop
+ * the blit clipping a hairline off each letter, and there is no blit here.
+ */
+function paintTextElement(
+	ctx: CanvasRenderingContext2D,
+	mask: Extract<MaskShape, { kind: "text" }>,
+	element: FrontOfEmbedElement,
+	lib: ExcalidrawLibGlobal | undefined,
+): void {
+	ctx.fillStyle = element.strokeColor ?? "#000";
+	ctx.font = lib?.getFontString?.({ fontSize: mask.fontSize, fontFamily: mask.fontFamily }) ?? `${mask.fontSize}px sans-serif`;
+	ctx.textAlign = mask.textAlign;
+	const baseline = textBaselineOffset(lib, mask.fontFamily, mask.fontSize, mask.lineHeightPx);
+	mask.lines.forEach((line, index) => {
+		ctx.fillText(line, mask.horizontalOffset, index * mask.lineHeightPx + baseline);
+	});
 }
 
 /**
@@ -366,26 +429,12 @@ function paint(leaf: WorkspaceLeaf, state: FrontOfEmbedState): void {
 	const dpr = (windowOf(leaf) ?? window).devicePixelRatio || 1;
 	const lib = windowOf(leaf)?.ExcalidrawLib;
 
-	ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-	ctx.globalCompositeOperation = "source-over";
-	ctx.clearRect(0, 0, cssWidth, cssHeight);
-	ctx.fillStyle = "#000";
-	ctx.strokeStyle = "#000";
-	ctx.lineJoin = "round";
-	ctx.lineCap = "round";
-
-	for (const { element, mask, placement, signature } of state.candidates) {
-		// Only a cache entry built from *this* geometry may be drawn. Without the
-		// signature check a resize would keep masking the element's previous size
-		// until its re-export landed, instead of falling back to the shape below.
-		const cached = useEmittedGeometry ? state.emitted.get(element.id) : undefined;
-		const emitted = cached?.signature === signature ? cached : undefined;
-		ctx.save();
-		// Element-local -> viewport: place the element's origin, scale to zoom, then
-		// rotate about its centre, matching how Excalidraw itself transforms it.
-		// Note there is no offsetLeft/offsetTop term: appState's offsets are the
-		// `.excalidraw` root's own page position, and this canvas is a child of that
-		// root (`inset: 0`), so its coordinates are already root-local.
+	// Element-local -> viewport: place the element's origin, scale to zoom, then
+	// rotate about its centre, matching how Excalidraw itself transforms it.
+	// Note there is no offsetLeft/offsetTop term: appState's offsets are the
+	// `.excalidraw` root's own page position, and this canvas is a child of that
+	// root (`inset: 0`), so its coordinates are already root-local.
+	const placeElement = (element: FrontOfEmbedElement, placement: MaskPlacement): void => {
 		ctx.translate((element.x + scrollX) * zoom, (element.y + scrollY) * zoom);
 		ctx.scale(zoom, zoom);
 		// Rotate about the centre of the element's drawn bounds, then displace the
@@ -394,17 +443,72 @@ function paint(leaf: WorkspaceLeaf, state: FrontOfEmbedState): void {
 		ctx.translate(placement.pivotX, placement.pivotY);
 		ctx.rotate(element.angle ?? 0);
 		ctx.translate(-placement.pivotX + placement.shiftX, -placement.pivotY + placement.shiftY);
-		if (emitted) paintEmitted(ctx, emitted, zoom);
-		else paintMask(ctx, mask, element, zoom, lib);
+	};
+
+	// Each candidate is either DRAWN (its own geometry, in its own colours) or
+	// BLITTED (masked, then filled with a copy of Excalidraw's canvas). Drawing is
+	// the good path -- it copies nothing, so it deposits no scene background -- and
+	// covers every type whose geometry Excalidraw will emit, plus text. Blitting is
+	// left for images, whose pixels can only come from the canvas, and for the frame
+	// or two before an element's export lands.
+	const drawn: Array<{ element: FrontOfEmbedElement; placement: MaskPlacement; entry?: EmittedEntry; mask: MaskShape }> = [];
+	const blitted: typeof drawn = [];
+	for (const { element, mask, placement, signature } of state.candidates) {
+		// Only a cache entry built from *this* geometry may be used. Without the
+		// signature check a resize would keep drawing the element's previous size
+		// until its re-export landed, instead of falling back to the mask below.
+		const cached = useEmittedGeometry ? state.emitted.get(element.id) : undefined;
+		const entry = cached?.signature === signature ? cached : undefined;
+		if (entry) drawn.push({ element, placement, entry, mask });
+		else if (mask.kind === "text") drawn.push({ element, placement, mask });
+		else blitted.push({ element, placement, mask });
+	}
+
+	ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+	ctx.globalCompositeOperation = "source-over";
+	ctx.clearRect(0, 0, cssWidth, cssHeight);
+	ctx.lineJoin = "round";
+	ctx.lineCap = "round";
+
+	// Pass 1: the blitted candidates, as a stencil.
+	if (blitted.length > 0) {
+		ctx.fillStyle = "#000";
+		ctx.strokeStyle = "#000";
+		for (const { element, mask, placement } of blitted) {
+			ctx.save();
+			placeElement(element, placement);
+			paintMask(ctx, mask, element, zoom, lib);
+			ctx.restore();
+		}
+		// That stencil is now filled with Excalidraw's own rendered pixels.
+		ctx.globalCompositeOperation = "source-in";
+		ctx.setTransform(1, 0, 0, 1, 0, 0);
+		ctx.drawImage(staticCanvas, 0, 0);
+		ctx.globalCompositeOperation = "source-over";
+		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+	}
+
+	// Pass 2: the drawn candidates, over the top. `source-over` here is what makes
+	// the split safe -- pass 1's `source-in` only ever consumed its own stencil, and
+	// these are added afterwards rather than being caught by it.
+	//
+	// The theme filter goes on for this pass only: pass 1's pixels came off a canvas
+	// that had already been through it, and filtering them twice would undo it.
+	const themeFilter = appState.theme === "dark" ? DARK_THEME_FILTER : "none";
+	for (const { element, mask, placement, entry } of drawn) {
+		ctx.save();
+		ctx.filter = themeFilter;
+		placeElement(element, placement);
+		// Excalidraw's 0-100 opacity, applied here rather than baked into the export
+		// so dragging the opacity slider re-exports nothing.
+		const opacity = element.opacity;
+		if (typeof opacity === "number" && opacity < 100) ctx.globalAlpha = Math.max(0, opacity) / 100;
+		if (entry) paintEmittedElement(ctx, entry);
+		else if (mask.kind === "text") paintTextElement(ctx, mask, element, lib);
+		ctx.globalAlpha = 1;
 		ctx.restore();
 	}
 
-	// Everything painted above is now just a stencil: keep Excalidraw's own
-	// rendered pixels only where the mask covered them.
-	ctx.globalCompositeOperation = "source-in";
-	ctx.setTransform(1, 0, 0, 1, 0, 0);
-	ctx.drawImage(staticCanvas, 0, 0);
-	ctx.globalCompositeOperation = "source-over";
 	state.painted = true;
 }
 
@@ -469,7 +573,9 @@ function refreshEmittedGeometry(leaf: WorkspaceLeaf, state: FrontOfEmbedState): 
 					paths: paths.map((emitted) => ({
 						path: new win.Path2D(emitted.d),
 						filled: emitted.filled,
+						fill: emitted.fill,
 						strokeWidth: emitted.strokeWidth,
+						stroke: emitted.stroke,
 						dash: emitted.dash,
 					})),
 				});
