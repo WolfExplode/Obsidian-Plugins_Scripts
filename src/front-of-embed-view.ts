@@ -2,6 +2,7 @@ import type { WorkspaceLeaf } from "obsidian";
 import type ExcalidrawPureRefPlugin from "../main";
 import {
 	elementPlacement,
+	isFrontOfEmbedEmbeddable,
 	paintPlanFor,
 	planFrontOfEmbedCandidates,
 	type AbsoluteBounds,
@@ -15,6 +16,7 @@ import {
 	hasEmittablePaths,
 	type SvgExporter,
 } from "./emitted-geometry";
+import { elementAABB, type Rect } from "./pack-elements";
 import { getExcalidrawApi, readSceneElements } from "./excalidraw-view";
 import { attachPerLeafScanner, leafDocument, type LeafScannerApi, type LeafScannerHandle } from "./leaf-scanner";
 
@@ -111,6 +113,12 @@ interface FrontOfEmbedState {
 		placement: ElementPlacement;
 		signature: string;
 	}>;
+	/**
+	 * Where the overlay is allowed to paint: the embeddables it exists to cover, in
+	 * scene coordinates. Recomputed alongside `candidates` -- see `paint` for why an
+	 * unclipped overlay is wrong, not just untidy.
+	 */
+	clip: readonly Rect[];
 	/** Emitted geometry per element id, filled in asynchronously; empty until it resolves. */
 	emitted: Map<string, EmittedEntry>;
 	/** Signatures already being fetched, so a drag doesn't queue the same export repeatedly. */
@@ -309,6 +317,21 @@ function paint(leaf: WorkspaceLeaf, state: FrontOfEmbedState): void {
 	ctx.lineJoin = "round";
 	ctx.lineCap = "round";
 
+	// Restricted to the embeddables, same reasoning as `frontLayerClipPath`: this
+	// overlay is a *second* copy of elements the static canvas already drew.
+	// Unclipped, every candidate is painted twice -- invisible where opaque, but a
+	// semi-transparent or hachure-filled one composites against itself, and a
+	// candidate covers any later element it overlaps away from the embeddable.
+	// `clip()` freezes against the CTM at this call, in device pixels, so it holds
+	// through pass 1's temporary identity transform below and through every
+	// candidate's own translate/rotate in `placeElement`.
+	ctx.save();
+	ctx.beginPath();
+	for (const rect of state.clip) {
+		ctx.rect((rect.minX + scrollX) * zoom, (rect.minY + scrollY) * zoom, (rect.maxX - rect.minX) * zoom, (rect.maxY - rect.minY) * zoom);
+	}
+	ctx.clip();
+
 	// Pass 1: the blitted candidates (images), as a stencil. An image's stencil is
 	// its whole box -- exactly its extent, so the copy that fills it carries no
 	// scene background across with it.
@@ -349,6 +372,7 @@ function paint(leaf: WorkspaceLeaf, state: FrontOfEmbedState): void {
 		ctx.restore();
 	}
 
+	ctx.restore(); // pairs with the clip's `save()` above
 	state.painted = true;
 }
 
@@ -436,17 +460,22 @@ function absoluteBoundsOf(lib: ExcalidrawLibGlobal | undefined, element: FrontOf
 	return { minX: bounds[0] as number, minY: bounds[1] as number, maxX: bounds[2] as number, maxY: bounds[3] as number };
 }
 
-/** Which elements go in front, how each is painted, and placed where. Cheap enough to redo per scene change; never per frame. */
-function planCandidates(leaf: WorkspaceLeaf): FrontOfEmbedState["candidates"] {
+/** Which elements go in front, how each is painted and placed, and where they're allowed to paint. Cheap enough to redo per scene change; never per frame. */
+function planCandidates(leaf: WorkspaceLeaf): Pick<FrontOfEmbedState, "candidates" | "clip"> {
 	const elements = readSceneElements(leaf) as readonly FrontOfEmbedElement[] | null;
-	if (!elements) return [];
+	if (!elements) return { candidates: [], clip: [] };
 	const lib = windowOf(leaf)?.ExcalidrawLib;
-	return planFrontOfEmbedCandidates(elements).map((element) => ({
+	const candidates = planFrontOfEmbedCandidates(elements).map((element) => ({
 		element,
 		plan: paintPlanFor(element),
 		placement: elementPlacement(element, absoluteBoundsOf(lib, element)),
 		signature: geometrySignature(element),
 	}));
+	// Same rule as `frontLayerClipPath`: a candidate exists only because it sits in
+	// front of one of these, so an empty clip here would mean the two disagree --
+	// paint nothing rather than paint unclipped.
+	const clip = candidates.length > 0 ? elements.filter(isFrontOfEmbedEmbeddable).map(elementAABB) : [];
+	return { candidates, clip };
 }
 
 function setup(leaf: WorkspaceLeaf, _api: LeafScannerApi, scanner: LeafScannerHandle<FrontOfEmbedState>): FrontOfEmbedState | null {
@@ -474,7 +503,7 @@ function setup(leaf: WorkspaceLeaf, _api: LeafScannerApi, scanner: LeafScannerHa
 		root,
 		canvas,
 		ctx,
-		candidates: planCandidates(leaf),
+		...planCandidates(leaf),
 		emitted: new Map(),
 		inFlight: new Set(),
 		painted: false,
@@ -488,7 +517,7 @@ function setup(leaf: WorkspaceLeaf, _api: LeafScannerApi, scanner: LeafScannerHa
 
 function scan(leaf: WorkspaceLeaf, state: FrontOfEmbedState, scanner: LeafScannerHandle<FrontOfEmbedState>): void {
 	const had = state.candidates.length > 0 || state.painted;
-	state.candidates = planCandidates(leaf);
+	Object.assign(state, planCandidates(leaf));
 	refreshEmittedGeometry(leaf, state);
 	// Restart the loop when candidates appear, and for one final clearing frame
 	// when the last one disappears.
