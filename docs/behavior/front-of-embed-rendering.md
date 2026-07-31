@@ -268,9 +268,6 @@ so they can drift silently when upstream changes. That is tolerable for a
 fallback and would not be as the primary path; see the scope cuts above for
 where they are known to be imperfect.
 
-`__eprEmittedGeometry(false)` switches the primary path off from the console, so
-the two can be compared on the same board without a rebuild.
-
 ## The read-only transparent window
 
 The read-only window (F10) has no Excalidraw canvas at all. It displays a static

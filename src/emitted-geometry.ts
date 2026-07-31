@@ -1,27 +1,20 @@
 /**
- * EXPERIMENT -- reading the geometry Excalidraw emits instead of reproducing it.
+ * The geometry Excalidraw itself emits for an element, via `exportToSvg`, whose
+ * `<path>` data drops straight into a `Path2D`. This is where a drawn
+ * candidate's shape, colour, stroke width and dash pattern all come from -- see
+ * docs/behavior/front-of-embed-rendering.md.
  *
- * See "Worth revisiting" in docs/behavior/front-of-embed-rendering.md. The ports
- * in rough.ts and freehand.ts reconstruct what Excalidraw draws; this asks
- * Excalidraw for it instead, via `exportToSvg`, whose `<path>` data drops
- * straight into a `Path2D`.
- *
- * The trade is that `exportToSvg` is async -- there is no synchronous
- * per-element geometry API anywhere -- so this can only ever be a cache, and the
- * question the experiment answers is whether the cost of filling that cache is
- * noticeable. Two things keep it viable:
- *
- * - The cache key is the element's *geometry*, not its `version`. Moving,
- *   rotating, re-colouring or re-ordering an element leaves the key untouched,
- *   so no re-export happens; only drawing and resizing change it. That matters
- *   because a scene change fires on every pointer move of a drag.
- * - The ports stay as the synchronous fallback, so a frame with no cache entry
- *   yet still masks correctly rather than flashing.
+ * `exportToSvg` is async, and there is no synchronous per-element geometry API
+ * anywhere on `ExcalidrawLib`, so this is necessarily a cache. What keeps that
+ * cheap is the key: it is the element's *geometry*, not its `version`, so
+ * moving, rotating, re-ordering an element or changing its opacity leaves the
+ * key untouched and re-exports nothing. Only drawing, resizing and recolouring
+ * invalidate it -- and where a drag fires a scene change on every pointer move,
+ * a recolour fires once, on commit.
  *
  * Path coordinates come out element-local already (verified 2026-07-30: a
- * rectangle exports as `M32 0 ...`, matching rough.ts's own element-local
- * output), so the `<g>` transform is SVG layout only and is deliberately
- * ignored.
+ * rectangle exports as `M32 0 ...`), so the `<g>` transform is SVG layout only
+ * and is deliberately ignored.
  */
 
 /** One `<path>` from Excalidraw's own export, in element-local coordinates. */

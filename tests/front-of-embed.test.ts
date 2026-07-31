@@ -1,14 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
-	FREEDRAW_SIZE_FACTOR,
-	MASK_ANTIALIAS_ALLOWANCE_PX,
-	MASK_JITTER_ALLOWANCE,
-	curveControlPoints,
+	elementPlacement,
 	isFrontOfEmbedEligible,
-	maskDilation,
-	maskPlacement,
-	maskShapeFor,
+	paintPlanFor,
 	planFrontOfEmbedCandidates,
 	type FrontOfEmbedElement,
 } from "../src/front-of-embed";
@@ -229,216 +224,24 @@ describe("planFrontOfEmbedCandidates", () => {
 	});
 });
 
-describe("maskShapeFor", () => {
-	it("masks an image as its whole box", () => {
-		assert.deepEqual(maskShapeFor(el({ id: "i", type: "image" })), { kind: "box" });
-	});
-
-	it("masks an unfilled shape as its outline only, so the embeddable shows through its interior", () => {
-		const outlined = maskShapeFor(el({ id: "r", type: "ellipse", backgroundColor: "transparent", strokeWidth: 2 }));
-		assert.equal(outlined.kind === "ellipse" && outlined.fill, false);
-
-		const box = maskShapeFor(el({ id: "r", type: "rectangle", backgroundColor: "transparent" }));
-		assert.equal(box.kind === "rough" && box.fillPoints, null);
-	});
-
-	it("treats a missing backgroundColor as unfilled", () => {
-		// A rectangle masks along the path rough.js drew, so an unfilled interior is
-		// expressed as having neither a fill polygon nor a fill radius.
-		for (const roundness of [null, { type: 3 }]) {
-			const shape = maskShapeFor(el({ id: "r", type: "rectangle", roundness }));
-			assert.equal(shape.kind, "rough");
-			assert.equal(shape.kind === "rough" && shape.fillPoints, null);
-			assert.equal(shape.kind === "rough" && shape.fillRadius, 0);
+describe("paintPlanFor", () => {
+	it("draws every path-emitting type from Excalidraw's own export", () => {
+		// No shape knowledge here at all: rectangle, ellipse, diamond, line, arrow and
+		// freedraw are all "whatever exportToSvg emitted for it".
+		for (const type of ["rectangle", "ellipse", "diamond", "line", "arrow", "freedraw"]) {
+			assert.deepEqual(paintPlanFor(el({ id: "a", type })), { kind: "emitted" }, type);
 		}
 	});
 
-	it("masks a filled shape's interior too", () => {
-		const sharp = maskShapeFor(el({ id: "s", type: "rectangle", width: 40, height: 20, backgroundColor: "#ffc9c9" }));
-		assert.deepEqual(sharp.kind === "rough" ? sharp.fillPoints : null, [
-			[0, 0],
-			[40, 0],
-			[40, 20],
-			[0, 20],
-		]);
-
-		// A rounded rectangle's interior is no polygon, so it carries a radius instead.
-		const rounded = maskShapeFor(
-			el({ id: "r", type: "rectangle", width: 280, height: 200, backgroundColor: "#ffc9c9", roundness: { type: 3 } }),
-		);
-		assert.equal(rounded.kind === "rough" && rounded.fillPoints, null);
-		assert.equal(rounded.kind === "rough" && rounded.fillRadius, 32);
+	it("blits an image, whose pixels exist nowhere but Excalidraw's canvas", () => {
+		assert.deepEqual(paintPlanFor(el({ id: "a", type: "image" })), { kind: "image" });
 	});
 
-	it("masks a rectangle with the corner radius Excalidraw actually draws it with", () => {
-		// Square corners left four triangles of scene background outside the drawn arcs.
-		// Adaptive radius: a quarter of the shorter side until that exceeds the fixed
-		// 32, and 32 thereafter.
-		const radiusOf = (width: number, height: number, roundness: { type: number; value?: number } | null): number => {
-			const shape = maskShapeFor(
-				el({ id: "r", type: "rectangle", width, height, roundness, backgroundColor: "#ffc9c9" }),
-			);
-			return shape.kind === "rough" ? shape.fillRadius : -1;
-		};
-		assert.equal(radiusOf(280, 200, { type: 3 }), 32);
-		assert.equal(radiusOf(280, 80, { type: 3 }), 20);
-		assert.equal(radiusOf(280, 200, { type: 3, value: 8 }), 8);
-		// Proportional radius is a flat quarter of the shorter side at any size.
-		assert.equal(radiusOf(280, 200, { type: 2 }), 50);
-		// No roundness at all means sharp corners.
-		assert.equal(radiusOf(280, 200, null), 0);
-	});
-
-	it("draws a rounded rectangle along a different path than a sharp one", () => {
-		const sharp = maskShapeFor(el({ id: "r", type: "rectangle", width: 280, height: 200, seed: 42 }));
-		const rounded = maskShapeFor(
-			el({ id: "r", type: "rectangle", width: 280, height: 200, seed: 42, roundness: { type: 3 } }),
-		);
-		assert.ok(sharp.kind === "rough" && rounded.kind === "rough");
-		// Four sides doubled, against four sides and four corners doubled.
-		assert.equal(sharp.kind === "rough" ? sharp.ops.length : 0, 16);
-		assert.equal(rounded.kind === "rough" ? rounded.ops.length : 0, 32);
-	});
-
-	it("masks an ellipse as an ellipse", () => {
-		const shape = maskShapeFor(el({ id: "e", type: "ellipse", strokeWidth: 4, roughness: 1 }));
-		assert.deepEqual(shape, { kind: "ellipse", fill: false, strokeWidth: 4, roughness: 1, dash: null });
-	});
-
-	it("masks a dashed or dotted stroke with Excalidraw's own dash pattern and width", () => {
-		// A solid mask over a dashed stroke paints scene background into every gap.
-		const solid = maskShapeFor(el({ id: "s", type: "ellipse", strokeWidth: 2, strokeStyle: "solid" }));
-		assert.equal(solid.kind === "ellipse" && solid.dash, null);
-		assert.equal(solid.kind === "ellipse" && solid.strokeWidth, 2);
-
-		// Verified against exportToSvg: stroke-dasharray "8 10", stroke-width 2.5.
-		const dashed = maskShapeFor(el({ id: "d", type: "ellipse", strokeWidth: 2, strokeStyle: "dashed" }));
-		assert.deepEqual(dashed.kind === "ellipse" ? dashed.dash : null, [8, 10]);
-		assert.equal(dashed.kind === "ellipse" && dashed.strokeWidth, 2.5);
-
-		// ...and "1.5 8" when dotted.
-		const dotted = maskShapeFor(el({ id: "o", type: "ellipse", strokeWidth: 2, strokeStyle: "dotted" }));
-		assert.deepEqual(dotted.kind === "ellipse" ? dotted.dash : null, [1.5, 8]);
-		assert.equal(dotted.kind === "ellipse" && dotted.strokeWidth, 2.5);
-
-		// The pattern reaches every stroked shape, not just ellipses.
-		const rect = maskShapeFor(
-			el({ id: "r", type: "rectangle", strokeWidth: 1, strokeStyle: "dashed", roundness: { type: 3 } }),
-		);
-		assert.deepEqual(rect.kind === "rough" ? rect.dash : null, [8, 9]);
-		const line = maskShapeFor(
-			el({ id: "l", type: "line", strokeWidth: 1, strokeStyle: "dotted", points: [[0, 0], [10, 10]] }),
-		);
-		assert.deepEqual(line.kind === "rough" ? line.dash : null, [1.5, 7]);
-	});
-
-	it("masks a freedraw with the stroke outline, not a stroked centerline", () => {
-		// Excalidraw fills the polygon perfect-freehand builds around the stroke. The
-		// recorded points are streamlined before they are drawn, so they are not where
-		// the stroke is, and its width varies with pressure along its length.
-		const points = [
-			[0, 0],
-			[20, 8],
-			[40, 0],
-			[60, 12],
-		];
-		const stroke = maskShapeFor(el({ id: "f", type: "freedraw", points, strokeWidth: 2 }));
-		assert.equal(stroke.kind, "outline");
-		assert.ok(stroke.kind === "outline" && stroke.points.length > points.length);
-
-		// A line goes through rough.js and is masked along the path it actually drew.
-		const line = maskShapeFor(el({ id: "l", type: "line", points, strokeWidth: 2 }));
-		assert.equal(line.kind, "rough");
-		assert.equal(line.kind === "rough" && line.strokeWidth, 2);
-	});
-
-	it("scales the freedraw outline with strokeWidth", () => {
-		const points = [
-			[0, 0],
-			[20, 8],
-			[40, 0],
-			[60, 12],
-		];
-		const spanOf = (strokeWidth: number): number => {
-			const shape = maskShapeFor(el({ id: "f", type: "freedraw", points, strokeWidth }));
-			assert.ok(shape.kind === "outline");
-			const ys = shape.kind === "outline" ? shape.points.map((point) => point[1] ?? 0) : [];
-			return Math.max(...ys) - Math.min(...ys);
-		};
-		assert.ok(spanOf(4) > spanOf(1), "a wider stroke should produce a wider outline");
-	});
-
-	it("carries roughness through to the dilation for the shapes still using an allowance", () => {
-		// Ellipses aren't reproduced from the seed yet, so they still widen by an
-		// allowance -- which is zero at architect roughness.
-		const artist = maskShapeFor(el({ id: "e", type: "ellipse", roughness: 2 }));
-		assert.equal(artist.kind === "ellipse" && artist.roughness, 2);
-		const architect = maskShapeFor(el({ id: "a", type: "ellipse", roughness: 0 }));
-		assert.equal(architect.kind === "ellipse" && architect.roughness, 0);
-	});
-
-	it("masks a diamond along Excalidraw's own vertices, which are not the midpoints", () => {
-		// getDiamondPoints puts the top and right at floor(side / 2) + 1. Verified
-		// live: a 280x200 diamond is drawn through x=141, y=101.
-		const shape = maskShapeFor(el({ id: "d", type: "diamond", width: 280, height: 200, backgroundColor: "#ffc9c9" }));
-		assert.equal(shape.kind, "rough");
-		assert.deepEqual(shape.kind === "rough" ? shape.fillPoints : null, [
-			[141, 0],
-			[280, 101],
-			[141, 200],
-			[0, 101],
-		]);
-	});
-
-	it("masks a linear element along the path rough.js actually drew", () => {
-		const points = [
-			[0, 0],
-			[50, 20],
-			[100, 0],
-		];
-		for (const type of ["arrow", "line"]) {
-			const shape = maskShapeFor(el({ id: "x", type, points, seed: 12345 }));
-			assert.equal(shape.kind, "rough", `${type} should mask along its drawn path`);
-			assert.ok(shape.kind === "rough" && shape.ops.length > 0, `${type} should produce drawing ops`);
-			// Two passes for a solid stroke, so more ops than there are segments.
-			assert.ok(shape.kind === "rough" && shape.ops.length >= 4);
-		}
-
-		// A non-solid stroke is drawn as a single pass, so it produces half as many.
-		const solid = maskShapeFor(el({ id: "s", type: "line", points, seed: 12345 }));
-		const dotted = maskShapeFor(el({ id: "d", type: "line", points, seed: 12345, strokeStyle: "dotted" }));
-		assert.ok(
-			solid.kind === "rough" && dotted.kind === "rough" && solid.ops.length === dotted.ops.length * 2,
-			"a solid stroke is drawn twice, a dotted one once",
-		);
-	});
-
-	it("reproduces a different hand-drawn path per seed, and the same one for the same seed", () => {
-		const points = [
-			[0, 0],
-			[50, 20],
-			[100, 0],
-		];
-		const opsFor = (seed: number, roundness: { type: number } | null = null) => {
-			const shape = maskShapeFor(el({ id: "a", type: "arrow", points, seed, roundness }));
-			return shape.kind === "rough" ? JSON.stringify(shape.ops) : "";
-		};
-		assert.equal(opsFor(999), opsFor(999), "the same seed must redraw identically");
-		assert.notEqual(opsFor(999), opsFor(1000), "a different seed must wander differently");
-		// A curved element goes through rough's curve routine, not its line routine.
-		assert.notEqual(opsFor(999), opsFor(999, { type: 2 }));
-	});
-
-	it("falls back to the box for a degenerate single-point linear element", () => {
-		// Only ever seen mid-creation, before the second vertex exists.
-		assert.deepEqual(maskShapeFor(el({ id: "a", type: "arrow", points: [[0, 0]] })), { kind: "box" });
-	});
-
-	it("masks text as its own lines, so only the glyphs occlude the embeddable", () => {
-		const shape = maskShapeFor(
+	it("lays text out itself, since Excalidraw exports it as <text> rather than as paths", () => {
+		const plan = paintPlanFor(
 			el({ id: "t", type: "text", text: "two\r\nlines", fontSize: 20, lineHeight: 1.25, fontFamily: 5 }),
 		);
-		assert.deepEqual(shape, {
+		assert.deepEqual(plan, {
 			kind: "text",
 			lines: ["two", "lines"],
 			lineHeightPx: 25,
@@ -449,72 +252,23 @@ describe("maskShapeFor", () => {
 		});
 	});
 
-	it("masks a diamond without smoothing, so its corners stay sharp", () => {
-		const shape = maskShapeFor(el({ id: "s", type: "diamond", roundness: { type: 3 } }));
-		assert.equal(shape.kind === "path" && shape.smooth, false);
-	});
-
-	it("fills a linear element only when its path loops, as Excalidraw itself does", () => {
-		// An open stroke is drawn as a bare stroke whatever background is set on it, so
-		// filling its raw polyline masks the path's whole convex sweep -- a band of
-		// scene background clear across the embeddable.
-		const open = [
-			[0, 0],
-			[50, 20],
-			[100, 0],
-		];
-		const loop = [
-			[0, 0],
-			[50, 20],
-			[100, 0],
-			[2, 3],
-		];
-		for (const type of ["line", "arrow"]) {
-			const openShape = maskShapeFor(el({ id: "o", type, points: open, backgroundColor: "#1e1e1e" }));
-			assert.equal(openShape.kind === "rough" && openShape.fillPoints, null, `open ${type} should not be filled`);
-
-			const loopShape = maskShapeFor(el({ id: "c", type, points: loop, backgroundColor: "#1e1e1e" }));
-			assert.deepEqual(loopShape.kind === "rough" ? loopShape.fillPoints : null, loop, `looping ${type} fills`);
-		}
-
-		// A freedraw's outline always covers its stroke; the loop test only decides
-		// whether the interior gets masked too.
-		const openStroke = maskShapeFor(el({ id: "of", type: "freedraw", points: open, backgroundColor: "#1e1e1e" }));
-		assert.equal(openStroke.kind === "outline" && openStroke.interior, null);
-		const loopStroke = maskShapeFor(el({ id: "cf", type: "freedraw", points: loop, backgroundColor: "#1e1e1e" }));
-		assert.deepEqual(loopStroke.kind === "outline" ? loopStroke.interior : null, loop);
-
-		// A loop whose background is transparent still isn't filled -- the background
-		// colour remains what decides, the loop test only gates it.
-		const unfilled = maskShapeFor(el({ id: "t", type: "line", points: loop, backgroundColor: "transparent" }));
-		assert.equal(unfilled.kind === "rough" && unfilled.fillPoints, null);
-
-		// Too few points to close, and a gap wider than Excalidraw's threshold.
-		const twoPoint = maskShapeFor(el({ id: "2", type: "line", points: [[0, 0], [0, 0]], backgroundColor: "#1e1e1e" }));
-		assert.equal(twoPoint.kind === "rough" && twoPoint.fillPoints, null);
-		const nearMiss = maskShapeFor(
-			el({ id: "n", type: "line", points: [[0, 0], [50, 20], [100, 0], [11, 0]], backgroundColor: "#1e1e1e" }),
-		);
-		assert.equal(nearMiss.kind === "rough" && nearMiss.fillPoints, null);
-	});
-
 	it("offsets text horizontally to match Excalidraw's own alignment handling", () => {
-		const centered = maskShapeFor(el({ id: "t", type: "text", text: "x", width: 80, textAlign: "center" }));
+		const centered = paintPlanFor(el({ id: "t", type: "text", text: "x", width: 80, textAlign: "center" }));
 		assert.equal(centered.kind === "text" && centered.horizontalOffset, 40);
 
-		const right = maskShapeFor(el({ id: "t", type: "text", text: "x", width: 80, textAlign: "right" }));
+		const right = paintPlanFor(el({ id: "t", type: "text", text: "x", width: 80, textAlign: "right" }));
 		assert.equal(right.kind === "text" && right.horizontalOffset, 80);
 	});
 });
 
-describe("maskPlacement", () => {
+describe("elementPlacement", () => {
 	const curve = (over: Partial<FrontOfEmbedElement> = {}) =>
 		el({ id: "curve", type: "line", x: 1000, y: 500, width: 400, height: 200, points: [[0, 0], [400, 200]], ...over });
 
 	it("rotates about the centre of the drawn bounds, not of x/y/width/height", () => {
 		// A stroke whose drawn curve reaches left of its origin: its box centre is
 		// 100 units left of where `width/2` alone would put it.
-		const placement = maskPlacement(curve({ points: [[0, 0], [-200, 200]] }), {
+		const placement = elementPlacement(curve({ points: [[0, 0], [-200, 200]] }), {
 			minX: 800,
 			minY: 500,
 			maxX: 1200,
@@ -524,112 +278,30 @@ describe("maskPlacement", () => {
 		assert.equal(placement.pivotY, 100);
 	});
 
-	it("displaces the mask when Excalidraw's own canvas placement displaces the element", () => {
+	it("displaces the paint when Excalidraw's own canvas placement displaces the element", () => {
 		// Drawn bounds start 1.5 below the element's y: Excalidraw clamps its canvas
 		// offset to 0 in that case and paints the element that far low, so the mask
 		// has to follow it down.
-		const placement = maskPlacement(curve(), { minX: 1000, minY: 501.5, maxX: 1400, maxY: 701.5 });
+		const placement = elementPlacement(curve(), { minX: 1000, minY: 501.5, maxX: 1400, maxY: 701.5 });
 		assert.equal(placement.shiftX, 0);
 		assert.equal(placement.shiftY, 1.5);
 	});
 
 	it("does not displace the mask in the usual case, where the drawn geometry reaches past the origin", () => {
-		const placement = maskPlacement(curve(), { minX: 998, minY: 497.5, maxX: 1400, maxY: 700 });
+		const placement = elementPlacement(curve(), { minX: 998, minY: 497.5, maxX: 1400, maxY: 700 });
 		assert.equal(placement.shiftX, 0);
 		assert.equal(placement.shiftY, 0);
 	});
 
 	it("leaves shapes alone -- only linear and freedraw elements go through that canvas", () => {
 		const rect = el({ id: "r", type: "rectangle", x: 1000, y: 500, width: 400, height: 200 });
-		const placement = maskPlacement(rect, { minX: 1002, minY: 502, maxX: 1400, maxY: 700 });
+		const placement = elementPlacement(rect, { minX: 1002, minY: 502, maxX: 1400, maxY: 700 });
 		assert.equal(placement.shiftX, 0);
 		assert.equal(placement.shiftY, 0);
 	});
 
 	it("falls back to the points' own box when Excalidraw's bounds aren't available", () => {
-		const placement = maskPlacement(curve({ points: [[0, 0], [-400, -200]] }), null);
+		const placement = elementPlacement(curve({ points: [[0, 0], [-400, -200]] }), null);
 		assert.deepEqual(placement, { shiftX: 0, shiftY: 0, pivotX: -200, pivotY: -100 });
-	});
-});
-
-describe("maskDilation", () => {
-	it("scales the jitter allowance by roughness, as rough.js scales its own offsets", () => {
-		// Architect style is drawn exactly on the path, so it needs no allowance at
-		// all; a flat one was two scene units of pure background around every edge.
-		assert.equal(maskDilation(1, 0), MASK_ANTIALIAS_ALLOWANCE_PX);
-		assert.equal(maskDilation(1, 1) - maskDilation(1, 0), MASK_JITTER_ALLOWANCE);
-		assert.equal(maskDilation(1, 2) - maskDilation(1, 0), MASK_JITTER_ALLOWANCE * 2);
-	});
-
-	it("shrinks the antialias allowance in scene units as zoom rises, so it stays ~constant on screen", () => {
-		// A fixed scene-space rim would grow on screen when zoomed in, haloing text
-		// in scene background; expressing it in screen pixels keeps it a hairline.
-		assert.equal(maskDilation(1, 0), MASK_ANTIALIAS_ALLOWANCE_PX);
-		assert.equal(maskDilation(4, 0), MASK_ANTIALIAS_ALLOWANCE_PX / 4);
-		assert.equal(maskDilation(0.25, 0), MASK_ANTIALIAS_ALLOWANCE_PX * 4);
-	});
-
-	it("stays finite at absurd zoom levels, and never shrinks below the antialias allowance", () => {
-		assert.ok(Number.isFinite(maskDilation(0, 1)));
-		assert.equal(maskDilation(1, -5), MASK_ANTIALIAS_ALLOWANCE_PX);
-	});
-});
-
-describe("curveControlPoints", () => {
-	it("passes through every point, first and last included", () => {
-		const points = [
-			[0, 0],
-			[651.6, 95.2],
-			[754.9, 544.4],
-		];
-		const segments = curveControlPoints(points);
-		assert.equal(segments.length, points.length - 1);
-		assert.deepEqual(
-			segments.map((segment) => [...segment.to]),
-			[points[1], points[2]],
-		);
-	});
-
-	it("builds the same control points rough.js does, so the mask tracks the drawn curve", () => {
-		// rough.js duplicates the first and last point and runs a Catmull-Rom spline at
-		// curveTightness 0, giving cp1 = p1 + (p2 - p0)/6 and cp2 = p2 + (p1 - p3)/6.
-		const points = [
-			[0, 0],
-			[60, 0],
-			[60, 60],
-		];
-		const [first, second] = curveControlPoints(points);
-		assert.ok(first && second);
-		// First segment: previous point is the duplicated p0, next is p2.
-		assert.deepEqual([...first.cp1], [10, 0]);
-		assert.deepEqual([...first.cp2], [60 + (0 - 60) / 6, 0 + (0 - 60) / 6]);
-		// Last segment: next point is the duplicated final point.
-		assert.deepEqual([...second.cp1], [60 + (60 - 0) / 6, 0 + (60 - 0) / 6]);
-		assert.deepEqual([...second.cp2], [60, 50]);
-	});
-
-	it("evaluates far from the quadratic-through-midpoints curve it replaces", () => {
-		// The old smoothing put the midpoint of this arrow 210 scene units away from
-		// where rough.js draws, which is why the mask tracked nothing.
-		const points = [
-			[0, 0],
-			[651.6, 95.2],
-			[754.9, 544.4],
-		];
-		const segment = curveControlPoints(points)[0];
-		assert.ok(segment);
-		const midpoint = (a: number, b: number, c: number, d: number) => (a + 3 * b + 3 * c + d) / 8;
-		const x = midpoint(0, segment.cp1[0], segment.cp2[0], segment.to[0]);
-		const y = midpoint(0, segment.cp1[1], segment.cp2[1], segment.to[1]);
-		assert.ok(Math.hypot(x - 501.6, y - 127.55) > 150, `expected a large divergence, got (${x}, ${y})`);
-	});
-
-	it("handles a two-point path as a single segment", () => {
-		const segments = curveControlPoints([
-			[0, 0],
-			[30, 0],
-		]);
-		assert.equal(segments.length, 1);
-		assert.deepEqual([...(segments[0]?.to ?? [])], [30, 0]);
 	});
 });
