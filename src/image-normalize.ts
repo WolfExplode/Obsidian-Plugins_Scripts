@@ -109,7 +109,7 @@ export async function normalizeSelectedImages(leaf: WorkspaceLeaf | null, mode: 
 		const factor = factors[index];
 		const width = image.width * factor;
 		const height = image.height * factor;
-		return { id: image.id, x: image.x + (image.width - width) / 2, y: image.y + (image.height - height) / 2, width, height, angle: image.angle ?? 0 };
+		return { id: image.id, type: image.type, x: image.x + (image.width - width) / 2, y: image.y + (image.height - height) / 2, width, height, angle: image.angle ?? 0 };
 	});
 	return applySelectionTransform(leaf, transforms, "IMMEDIATELY");
 }

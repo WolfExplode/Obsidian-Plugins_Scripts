@@ -1,4 +1,4 @@
-import { App, type ButtonComponent, type Modifier, Notice, PluginSettingTab, Setting } from "obsidian";
+import { App, type ButtonComponent, type Modifier, Notice, PluginSettingTab, type Setting, type SettingDefinitionItem } from "obsidian";
 import type ExcalidrawPureRefPlugin from "../main";
 import { findGlobalConflicts, type GlobalConflict } from "./hotkey-conflicts";
 import { currentModifiers, describeBindings } from "./hotkey-match";
@@ -25,52 +25,57 @@ export class ExcalidrawPureRefSettingTab extends PluginSettingTab {
 		super(app, plugin);
 	}
 
-	display(): void {
-		const { containerEl } = this;
-		containerEl.empty();
-
-		new Setting(containerEl).setName("Hotkeys").setHeading();
-
+	getSettingDefinitions(): SettingDefinitionItem[] {
 		const conflicts = this.plugin.hotkeys.findConflicts();
-		if (conflicts.size > 0) {
-			const banner = containerEl.createEl("p");
-			banner.setCssStyles({ color: "var(--text-error)" });
-			banner.setText(
-				"Two or more actions below resolve to the same binding — only one of them will actually " +
-					"trigger. Conflicting entries are highlighted.",
-			);
-		}
-
 		const conflictingActionIds = new Set<string>();
 		for (const ids of conflicts.values()) for (const id of ids) conflictingActionIds.add(id);
 
-		for (const action of HOTKEY_ACTIONS) {
-			this.renderAction(containerEl, action, conflictingActionIds.has(action.id));
-		}
-
-		new Setting(containerEl)
-			.setName("Forget remembered popout positions")
-			.setDesc(
-				"Clears every Board's saved popout window position/size (per CONTEXT.md's geometry-persistence " +
+		return [
+			{
+				type: "group",
+				heading: "Hotkeys",
+				items: [
+					...(conflicts.size > 0
+						? [{
+								name: "Conflicting hotkeys",
+								desc: "Two or more actions below resolve to the same binding — only one of them will actually trigger. Conflicting entries are highlighted.",
+								aliases: ["hotkey conflict", "binding conflict"],
+								render: (setting: Setting) => setting.settingEl.setCssStyles({ color: "var(--text-error)" }),
+							}]
+						: []),
+					...HOTKEY_ACTIONS.map((action) => ({
+						name: action.name,
+						desc: action.desc,
+						aliases: ["hotkey", "keyboard shortcut", action.id],
+						render: (setting: Setting) => this.renderAction(setting, action, conflictingActionIds.has(action.id)),
+					})),
+				],
+			},
+			{
+				name: "Forget remembered popout positions",
+				desc:
+					"Clears every Board's saved popout window position/size (per CONTEXT.md's geometry-persistence " +
 					"contract). Popouts will reopen at Obsidian's default position next time.",
-			)
-			.addButton((button) =>
-				button
-					.setButtonText("Forget all")
-					.setWarning()
-					.setCta()
-					.onClick(async () => {
-						await this.plugin.geometry.clearAll();
-					}),
-			);
+				aliases: ["reset popout geometry", "clear popout position"],
+				render: (setting: Setting) => {
+					setting.addButton((button) =>
+						button
+							.setButtonText("Forget all")
+							.setWarning()
+							.setCta()
+							.onClick(async () => {
+								await this.plugin.geometry.clearAll();
+							}),
+					);
+				},
+			},
+		];
 	}
 
-	private renderAction(containerEl: HTMLElement, action: HotkeyActionDef, hasConflict: boolean): void {
+	private renderAction(setting: Setting, action: HotkeyActionDef, hasConflict: boolean): void {
 		const store = this.plugin.hotkeys;
 		const bindings = store.get(action.id);
 		const globalConflicts = bindings.flatMap((binding) => findGlobalConflicts(this.app, this.plugin.manifest.id, binding));
-
-		const setting = new Setting(containerEl).setName(action.name).setDesc(action.desc);
 
 		const chip = setting.controlEl.createSpan({ text: describeBindings(bindings) });
 		chip.setCssStyles({
@@ -89,13 +94,13 @@ export class ExcalidrawPureRefSettingTab extends PluginSettingTab {
 				.setDisabled(!store.isOverridden(action.id))
 				.onClick(async () => {
 					await store.reset(action.id);
-					this.display();
+					this.update();
 				}),
 		);
 
 		if (globalConflicts.length > 0) {
-			const warning = containerEl.createEl("p", { text: `Already bound to ${describeGlobalConflicts(globalConflicts)}.` });
-			warning.setCssStyles({ color: "var(--text-error)", fontSize: "var(--font-ui-smaller)", marginTop: "-0.5em", marginBottom: "0.5em" });
+			const warning = setting.descEl.createEl("span", { text: ` Already bound to ${describeGlobalConflicts(globalConflicts)}.` });
+			warning.setCssStyles({ color: "var(--text-error)" });
 		}
 	}
 
@@ -126,7 +131,7 @@ export class ExcalidrawPureRefSettingTab extends PluginSettingTab {
 			if (conflicts.length > 0) {
 				new Notice(`"${action.name}" is already bound to ${describeGlobalConflicts(conflicts)}. Saved anyway — you can Reset if that's not what you wanted.`, 8000);
 			}
-			void store.set(action.id, bindings).then(() => this.display());
+			void store.set(action.id, bindings).then(() => this.update());
 		};
 
 		const onKeyDown = (event: KeyboardEvent) => {
