@@ -37,6 +37,7 @@ find the right context before changing code or investigating behavior.
 | A shortcut owned by Obsidian or another plugin | [Obsidian hotkey interception](integrations/obsidian-hotkey-interception.md) |
 | Dropped/imported attachment filenames or wikilink-unsafe characters | [Obsidian wikilink-unsafe attachment names](integrations/obsidian-wikilink-attachment-names.md) |
 | Window-, Popout-, or DOM-level event listeners | [Obsidian window event listeners](integrations/obsidian-window-event-listeners.md) and [Popout lifecycle](popout-lifecycle.md) |
+| The plugin Settings tab or its search indexing | [Obsidian declarative settings](integrations/obsidian-declarative-settings.md) |
 | Local media loaded by URL in any window (`file://` vs `getResourcePath`) | [Media URL schemes](integrations/obsidian-media-url-schemes.md) |
 | Anything that has to land on the pixels Excalidraw drew for a line, arrow, or freedraw | [Excalidraw linear-element canvas offset](integrations/excalidraw-linear-element-canvas-offset.md) |
 | Architecture, scope, or product-boundary changes | The relevant [ADR](adr/) before implementation |

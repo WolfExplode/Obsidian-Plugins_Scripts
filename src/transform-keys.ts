@@ -1,21 +1,27 @@
 import type { App } from "obsidian";
 import { isEditableTarget } from "./editable-target";
 import {
-	applySelectionTransform,
 	clientToSceneCoords,
 	findExcalidrawLeafForNode,
-	getEffectiveGridSize,
+	getInteractiveCanvas,
 	getSelectedTransformElements,
+	installTransformProxy,
+	isTransformProxyReady,
+	removeTransformProxyEventually,
 	resetSelectedImageScale,
 	resetSelectedRotation,
+	restoreSceneElementsEventually,
+	sceneToClientCoords,
+	snapshotSceneElements,
+	type SceneElement,
 	type TransformElement,
 } from "./excalidraw-view";
 import { eventMatchesAnyBinding } from "./hotkey-match";
 import type { HotkeyStore } from "./hotkey-store";
 import { leafDocument } from "./leaf-scanner";
+import { commonTransformBounds } from "./transform-geometry";
 
 type TransformMode = "move" | "rotate" | "scale";
-const ROTATION_SNAP_RADIANS = 15 * Math.PI / 180;
 
 interface ScenePoint {
 	x: number;
@@ -25,68 +31,33 @@ interface ScenePoint {
 interface ActiveTransform {
 	mode: TransformMode;
 	leaf: NonNullable<ReturnType<typeof findExcalidrawLeafForNode>>;
-	baseline: TransformElement[];
+	elements: TransformElement[];
+	baseline: readonly SceneElement[];
 	pivot: ScenePoint;
-	start: ScenePoint | null;
-	latest: TransformElement[];
-	/** Textual scale factor entered while the Scale operator is active. */
+	physicalStart: ScenePoint | null;
+	physicalCurrent: ScenePoint | null;
+	latestShiftKey: boolean;
+	nativeOrigin: ScenePoint;
+	nativeCurrent: ScenePoint;
 	numericInput: string;
-	/** Whether a preview has been applied and therefore needs committing. */
-	hasPreview: boolean;
-	/** The document we painted the mode cursor on, so clear() can undo it. */
-	cursorDoc: Document | null;
+	canvas: HTMLCanvasElement;
+	cursorDoc: Document;
+	hasGesture: boolean;
+	nativeDragReady: boolean;
+	proxyReady: boolean;
+	proxyId: string;
+	selectedIds: string[];
+	finishing: boolean;
 }
 
-/**
- * Modal-transform state, deliberately MODULE-level rather than per-instance.
- *
- * WHY: attachTransformKeydown is bound once per window (main window + each
- * Popout), but a Popout's events do not stay in one realm — a real keypress made
- * in a Popout is delivered to the *main* window's listeners, while its pointer
- * events stay in the Popout. With per-instance closures that split the gesture in
- * half: the instance that received the keydown held `active` but never saw the
- * mouse, and the instance seeing the mouse had `active === null`, so G/R/S
- * silently did nothing in a Popout. Sharing the state means whichever instance
- * receives each event drives the same transform.
- */
+/** Events emitted by this bridge must reach Excalidraw, not be recaptured by us. */
+const forwardedEvents = new WeakSet<Event>();
 let active: ActiveTransform | null = null;
-/** Last pointer position seen in ANY window, with the leaf it was over. */
 let lastPointer: {
 	leaf: NonNullable<ReturnType<typeof findExcalidrawLeafForNode>>;
 	x: number;
 	y: number;
 } | null = null;
-
-/**
- * Drops shared state pointing into a window that is going away.
- *
- * Both `active` and `lastPointer` hold a WorkspaceLeaf, and a leaf transitively
- * retains its whole Excalidraw view and scene. `active` is cleared by the normal
- * commit/cancel paths, but `lastPointer` is only ever overwritten — so without
- * this a closed Popout's leaf stays reachable until the pointer next moves over a
- * different one. Called from each window's disposer with that window's document.
- * A leaf whose view no longer reports a document is treated as stale regardless
- * of which disposer noticed it.
- */
-function releaseStateForDocument(doc: Document): void {
-	const isStale = (leaf: ActiveTransform["leaf"]) => {
-		const owner = leafDocument(leaf);
-		return owner === doc || owner === null;
-	};
-	if (active && isStale(active.leaf)) {
-		active.cursorDoc?.body.style.removeProperty("cursor");
-		active = null;
-	}
-	if (lastPointer && isStale(lastPointer.leaf)) lastPointer = null;
-}
-
-function selectionCenter(elements: readonly TransformElement[]): ScenePoint {
-	const left = Math.min(...elements.map((element) => element.x));
-	const top = Math.min(...elements.map((element) => element.y));
-	const right = Math.max(...elements.map((element) => element.x + element.width));
-	const bottom = Math.max(...elements.map((element) => element.y + element.height));
-	return { x: (left + right) / 2, y: (top + bottom) / 2 };
-}
 
 function rotate(point: ScenePoint, pivot: ScenePoint, radians: number): ScenePoint {
 	const dx = point.x - pivot.x;
@@ -96,195 +67,238 @@ function rotate(point: ScenePoint, pivot: ScenePoint, radians: number): ScenePoi
 	return { x: pivot.x + dx * cos - dy * sin, y: pivot.y + dx * sin + dy * cos };
 }
 
-function transformElements(active: ActiveTransform, current: ScenePoint, shiftKey: boolean): TransformElement[] {
-	const start = active.start;
-	if (!start) return active.baseline;
-	if (active.mode === "move") {
-		const gridSize = getEffectiveGridSize(active.leaf);
+function selectionPivot(elements: readonly TransformElement[]): ScenePoint {
+	const [x1, y1, x2, y2] = commonTransformBounds(elements);
+	return { x: (x1 + x2) / 2, y: (y1 + y2) / 2 };
+}
+
+/** Center of the same native transform handle Excalidraw draws. */
+function transformOrigin(mode: TransformMode, elements: readonly TransformElement[], zoom: number): ScenePoint {
+	if (mode === "move") return selectionPivot(elements);
+	const [x1, y1, x2, y2] = commonTransformBounds(elements);
+	return mode === "rotate" ? { x: (x1 + x2) / 2, y: y1 - 22 / zoom } : { x: x2 + 6 / zoom, y: y2 + 6 / zoom };
+}
+
+function emitPointer(activeTransform: ActiveTransform, type: "pointerdown" | "pointermove" | "pointerup", scenePoint: ScenePoint, source?: PointerEvent): void {
+	const client = sceneToClientCoords(activeTransform.leaf, scenePoint.x, scenePoint.y);
+	const eventWin = activeTransform.cursorDoc.defaultView;
+	if (!client || !eventWin) return;
+	const isDown = type !== "pointerup";
+	const isMove = type === "pointermove";
+	const scaleHasImage = activeTransform.elements.some((element) => element.type === "image");
+	const event = new eventWin.PointerEvent(type, {
+		bubbles: true,
+		cancelable: true,
+		composed: true,
+		// Chromium's real primary mouse is pointer 1. Excalidraw keys its global
+		// gesture map and pointer-capture lifecycle by this identity, so inventing
+		// an arbitrary pointer id produces a DOM event but not a usable drag.
+		pointerId: 1,
+		pointerType: "mouse",
+		isPrimary: true,
+		button: isMove ? -1 : 0,
+		buttons: isDown ? 1 : 0,
+		pressure: isDown ? 0.5 : 0,
+		width: 1,
+		height: 1,
+		clientX: client.x,
+		clientY: client.y,
+		ctrlKey: source?.ctrlKey ?? false,
+		metaKey: source?.metaKey ?? false,
+		shiftKey: activeTransform.mode === "scale" ? !scaleHasImage : (source?.shiftKey ?? false),
+		altKey: activeTransform.mode === "scale",
+	});
+	// The existing Alt-drag duplicate blocker uses this marker for its own
+	// replayed events. Center-resize needs a real Alt modifier, so mark our
+	// native scale stream as already-normalized and let it pass untouched.
+	Object.defineProperty(event, "__eprAltDragRelayed", { value: true });
+	forwardedEvents.add(event);
+	activeTransform.canvas.dispatchEvent(event);
+}
+
+function beginGesture(activeTransform: ActiveTransform): void {
+	if (activeTransform.hasGesture) return;
+	emitPointer(activeTransform, "pointerdown", activeTransform.nativeOrigin);
+	activeTransform.hasGesture = true;
+	// A physical pointer cannot move in the same browser task as its down event.
+	// React/Excalidraw batches pointer-down state (selectionElement, listeners,
+	// pointerDownState) until that task completes. A synchronous virtual move can
+	// therefore race the flush and be handled as box selection. Cross one paint
+	// boundary before relaying the latest accumulated physical position.
+	activeTransform.cursorDoc.defaultView?.requestAnimationFrame(() => {
+		if (active !== activeTransform || activeTransform.finishing) return;
+		activeTransform.nativeDragReady = true;
+		if (activeTransform.mode === "scale" && activeTransform.numericInput) {
+			emitPointer(activeTransform, "pointermove", activeTransform.nativeCurrent);
+			return;
+		}
+		if (!activeTransform.physicalCurrent) return;
+		activeTransform.nativeCurrent = targetForPointer(
+			activeTransform,
+			activeTransform.physicalCurrent,
+			activeTransform.latestShiftKey,
+		);
+		emitPointer(activeTransform, "pointermove", activeTransform.nativeCurrent);
+	});
+}
+
+function targetForPointer(activeTransform: ActiveTransform, current: ScenePoint, shiftKey: boolean): ScenePoint {
+	const start = activeTransform.physicalStart;
+	if (!start) return activeTransform.nativeOrigin;
+	if (activeTransform.mode === "move") {
 		let dx = current.x - start.x;
 		let dy = current.y - start.y;
-		// Match Excalidraw's native selected-element drag: Shift preserves only
-		// the dominant movement axis, before the delta is snapped to the grid.
 		if (shiftKey) {
 			if (Math.abs(dx) < Math.abs(dy)) dx = 0;
 			else if (Math.abs(dx) > Math.abs(dy)) dy = 0;
 		}
-		if (gridSize) {
-			dx = Math.round(dx / gridSize) * gridSize;
-			dy = Math.round(dy / gridSize) * gridSize;
-		}
-		return active.baseline.map((element) => ({ ...element, x: element.x + dx, y: element.y + dy }));
+		return { x: activeTransform.nativeOrigin.x + dx, y: activeTransform.nativeOrigin.y + dy };
 	}
-
-	if (active.mode === "rotate") {
-		const startAngle = Math.atan2(start.y - active.pivot.y, start.x - active.pivot.x);
-		const currentAngle = Math.atan2(current.y - active.pivot.y, current.x - active.pivot.x);
-		const rawRadians = currentAngle - startAngle;
-		const radians = shiftKey
-			? Math.round(rawRadians / ROTATION_SNAP_RADIANS) * ROTATION_SNAP_RADIANS
-			: rawRadians;
-		return active.baseline.map((element) => {
-			const center = rotate({ x: element.x + element.width / 2, y: element.y + element.height / 2 }, active.pivot, radians);
-			return {
-				...element,
-				x: center.x - element.width / 2,
-				y: center.y - element.height / 2,
-				angle: element.angle + radians,
-			};
-		});
+	const startDistance = Math.hypot(start.x - activeTransform.pivot.x, start.y - activeTransform.pivot.y);
+	if (activeTransform.mode === "scale") {
+		const distance = Math.hypot(current.x - activeTransform.pivot.x, current.y - activeTransform.pivot.y);
+		return scaleTarget(activeTransform, startDistance < 0.001 ? 1 : distance / startDistance);
 	}
-
-	const startDistance = Math.hypot(start.x - active.pivot.x, start.y - active.pivot.y);
-	const currentDistance = Math.hypot(current.x - active.pivot.x, current.y - active.pivot.y);
-	const factor = startDistance < 0.001 ? 1 : currentDistance / startDistance;
-	return scaleElements(active, factor);
+	const startAngle = Math.atan2(start.y - activeTransform.pivot.y, start.x - activeTransform.pivot.x);
+	const currentAngle = Math.atan2(current.y - activeTransform.pivot.y, current.x - activeTransform.pivot.x);
+	let radians = currentAngle - startAngle;
+	if (shiftKey) radians = Math.round(radians / (Math.PI / 12)) * (Math.PI / 12);
+	return rotate(activeTransform.nativeOrigin, activeTransform.pivot, radians);
 }
 
-/** Uniformly scales the original selection around its center pivot. */
-function scaleElements(active: ActiveTransform, rawFactor: number): TransformElement[] {
-	// Excalidraw elements cannot have zero-sized bounds. Keep the same lower
-	// bound used by pointer-driven scaling, including for a typed `0`.
+function scaleTarget(activeTransform: ActiveTransform, rawFactor: number): ScenePoint {
 	const factor = Math.max(0.01, rawFactor);
-	return active.baseline.map((element) => {
-		const center = {
-			x: active.pivot.x + (element.x + element.width / 2 - active.pivot.x) * factor,
-			y: active.pivot.y + (element.y + element.height / 2 - active.pivot.y) * factor,
-		};
-		const width = Math.max(1, element.width * factor);
-		const height = Math.max(1, element.height * factor);
-		return { ...element, x: center.x - width / 2, y: center.y - height / 2, width, height };
-	});
+	return {
+		x: activeTransform.pivot.x + (activeTransform.nativeOrigin.x - activeTransform.pivot.x) * factor,
+		y: activeTransform.pivot.y + (activeTransform.nativeOrigin.y - activeTransform.pivot.y) * factor,
+	};
+}
+
+function releaseStateForDocument(doc: Document): void {
+	const isStale = (leaf: ActiveTransform["leaf"]) => {
+		const owner = leafDocument(leaf);
+		return owner === doc || owner === null;
+	};
+	if (active && isStale(active.leaf)) {
+		restoreSceneElementsEventually(active.leaf, active.baseline);
+		removeTransformProxyEventually(active.leaf, active.proxyId, active.selectedIds);
+		if (active.hasGesture) emitPointer(active, "pointerup", active.nativeOrigin);
+		active.cursorDoc.body.style.removeProperty("cursor");
+		active = null;
+	}
+	if (lastPointer && isStale(lastPointer.leaf)) lastPointer = null;
 }
 
 /**
- * Blender-style modal transforms for a selected Excalidraw group:
- * G moves, R rotates, and S uniformly scales about the selection center.
- * Move the pointer to preview, left-click/Enter to commit, or Esc/right-click
- * to restore the exact pre-transform scene.
- *
- * G/R/S/Alt+R/Alt+S all shadow Excalidraw's own shortcuts via a capture-phase
- * DOM race, version-pinned to Excalidraw core 0.18.0 (obsidian-excalidraw-plugin
- * 2.25.3). If these stop working, double-fire with Excalidraw's own actions, or
- * (see onPointerMove below) stop landing in undo history after a version bump,
- * see docs/integrations/excalidraw-shortcut-interception.md for the full
- * mechanism and exact diff targets before re-deriving it from scratch.
+ * Blender-style modal transforms implemented as genuine Excalidraw pointer
+ * gestures. The keyboard starts a virtual drag on the native move/rotation/
+ * resize handle; physical pointer motion is relayed to that drag. Excalidraw
+ * therefore remains responsible for bindings, bound text, frames, snapping,
+ * linear points, font sizes, and history, exactly as it is for a mouse gesture.
  */
 export function attachTransformKeydown(win: Window, app: App, hotkeys: HotkeyStore): () => void {
 	const doc = win.document;
 	let suppressNextContextMenu = false;
 
-	const clear = () => {
-		// Clear the cursor on whichever document we actually painted it on — with a
-		// Popout open that is not necessarily this instance's own document.
-		active?.cursorDoc?.body.style.removeProperty("cursor");
+	const clear = (expected: ActiveTransform) => {
+		expected.cursorDoc.body.style.removeProperty("cursor");
 		doc.body.style.removeProperty("cursor");
-		active = null;
+		if (active === expected) active = null;
 	};
-	const cancel = () => {
-		if (active) applySelectionTransform(active.leaf, active.baseline, "NEVER");
-		clear();
+	const armWhenProxyReady = (expected: ActiveTransform) => {
+		const frame = () => {
+			if (active !== expected || expected.finishing) return;
+			if (!isTransformProxyReady(expected.leaf, expected.proxyId)) {
+				expected.cursorDoc.defaultView?.requestAnimationFrame(frame);
+				return;
+			}
+			expected.proxyReady = true;
+			if (!expected.physicalStart) return;
+			beginGesture(expected);
+		};
+		expected.cursorDoc.defaultView?.requestAnimationFrame(frame);
 	};
-	const commit = () => {
-		if (active?.hasPreview) applySelectionTransform(active.leaf, active.latest, "IMMEDIATELY");
-		clear();
+	const finish = (cancelled: boolean) => {
+		const current = active;
+		if (!current || current.finishing) return;
+		current.finishing = true;
+		if (!current.hasGesture) {
+			if (cancelled) restoreSceneElementsEventually(current.leaf, current.baseline);
+			removeTransformProxyEventually(current.leaf, current.proxyId, current.selectedIds);
+			clear(current);
+			return;
+		}
+		if (cancelled) {
+			current.nativeCurrent = current.nativeOrigin;
+			emitPointer(current, "pointermove", current.nativeOrigin);
+		}
+		// Excalidraw throttles pointermove to the animation frame. Ending on the
+		// next frame lets its native transform consume the final/cancel position
+		// before the equally-native pointerup commits and performs cleanup.
+		current.cursorDoc.defaultView?.requestAnimationFrame(() => {
+			if (cancelled) restoreSceneElementsEventually(current.leaf, current.baseline);
+			removeTransformProxyEventually(current.leaf, current.proxyId, current.selectedIds);
+			emitPointer(current, "pointerup", current.nativeCurrent);
+			clear(current);
+		});
 	};
 
 	const onKeyDown = (event: KeyboardEvent) => {
-		if (active && event.key === "Escape") {
-			event.preventDefault();
-			event.stopImmediatePropagation();
-			cancel();
-			return;
-		}
-		if (active && event.key === "Enter") {
-			event.preventDefault();
-			event.stopImmediatePropagation();
-			commit();
-			return;
-		}
-		// Like Blender's Scale operator, numbers entered during S are absolute
-		// multipliers of the geometry at the start of this operation: `.5` is
-		// 50%, `2` is 200%. Once a number is being entered, the pointer no longer
-		// changes the preview, so it is safe to refine the number with Backspace.
-		if (active?.mode === "scale" && !event.ctrlKey && !event.metaKey && !event.altKey) {
-			const isDigit = /^\d$/.test(event.key);
-			const isDecimalPoint = event.key === "." && !active.numericInput.includes(".");
-			if (isDigit || isDecimalPoint || event.key === "Backspace") {
+		if (active) {
+			if (event.key === "Escape" || event.key === "Enter") {
 				event.preventDefault();
 				event.stopImmediatePropagation();
-				const next = event.key === "Backspace"
-					? active.numericInput.slice(0, -1)
-					: active.numericInput + event.key;
-				active.numericInput = next;
-				const factor = Number(next);
-				if (next !== "" && next !== "." && Number.isFinite(factor)) {
-					active.latest = scaleElements(active, factor);
-					active.hasPreview = true;
-					applySelectionTransform(active.leaf, active.latest, "EVENTUALLY");
-				} else if (next === "") {
-					active.latest = active.baseline;
-					active.hasPreview = false;
-					applySelectionTransform(active.leaf, active.baseline, "EVENTUALLY");
-				}
+				finish(event.key === "Escape");
 				return;
 			}
+			if (active.mode === "scale" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+				const isDigit = /^\d$/.test(event.key);
+				const isDecimalPoint = event.key === "." && !active.numericInput.includes(".");
+				if (isDigit || isDecimalPoint || event.key === "Backspace") {
+					event.preventDefault();
+					event.stopImmediatePropagation();
+					active.numericInput = event.key === "Backspace"
+						? active.numericInput.slice(0, -1)
+						: active.numericInput + event.key;
+					const factor = Number(active.numericInput);
+					active.nativeCurrent = active.numericInput !== "" && active.numericInput !== "." && Number.isFinite(factor)
+						? scaleTarget(active, factor)
+						: active.nativeOrigin;
+					if (active.proxyReady) {
+						beginGesture(active);
+						if (active.nativeDragReady) emitPointer(active, "pointermove", active.nativeCurrent);
+					}
+					return;
+				}
+			}
+			// A modal operator owns the keyboard. In particular Alt+S must never
+			// leak to Excalidraw's object-snap toggle while a transform is active.
+			event.preventDefault();
+			event.stopImmediatePropagation();
+			return;
 		}
-		// Blender-style resets, the counterpart to the modal R/S below: Alt+R clears
-		// rotation, Alt+S restores native pixel size. Both keys are already reserved
-		// inside a Board — Alt+R because it is held back from Templater (see alt-r.ts)
-		// — so consuming them here takes nothing away. This also incidentally drops
-		// Excalidraw's own Alt+S "toggle object snap" shortcut, which is the point:
-		// that action force-disables grid mode unconditionally
-		// (actionToggleObjectsSnapMode.tsx), so an accidental Alt+S would silently
-		// turn the grid off. Consuming Alt+S here, unconditionally and before
-		// Excalidraw's own bubble-phase handler runs, is what prevents that — a
-		// separate snap-keys.ts module used to do this same consume but registered
-		// after this one, so it never actually ran; it was removed rather than kept
-		// as dead code. Skipped while a modal transform is running, which owns the
-		// keyboard until it commits or cancels.
+
 		if (
-			!active &&
-			event.altKey &&
-			!event.ctrlKey &&
-			!event.metaKey &&
-			!event.shiftKey &&
-			!event.repeat &&
-			(event.code === "KeyR" || event.code === "KeyS") &&
-			!isEditableTarget(event.target)
+			event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.repeat &&
+			(event.code === "KeyR" || event.code === "KeyS") && !isEditableTarget(event.target)
 		) {
 			const resetLeaf = findExcalidrawLeafForNode(app, event.target as Node | null);
 			if (!resetLeaf) return;
-			// Consume unconditionally: these keys must never reach Excalidraw or
-			// Obsidian from a Board, even when the selection has nothing to reset.
 			event.preventDefault();
 			event.stopImmediatePropagation();
 			if (event.code === "KeyR") resetSelectedRotation(resetLeaf);
 			else void resetSelectedImageScale(resetLeaf);
 			return;
 		}
-		// X natively activates the freedraw tool (Tools.tsx TOOLS.freedraw.letterKey is
-		// [P, X]) — we want it to delete the selection instead. Rather than reimplement
-		// actionDeleteSelected's frame/binding/group logic, swallow X and re-dispatch a
-		// synthetic Delete keydown at the same target so Excalidraw's own unmodified
-		// handler performs the deletion. Skipped while a modal transform is running,
-		// same as Alt+R/S above.
 		if (
-			!active &&
-			!event.repeat &&
-			!event.ctrlKey &&
-			!event.metaKey &&
-			!event.altKey &&
-			!event.shiftKey &&
-			event.code === "KeyX" &&
-			!isEditableTarget(event.target)
+			!event.repeat && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey &&
+			event.code === "KeyX" && !isEditableTarget(event.target)
 		) {
 			const leaf = findExcalidrawLeafForNode(app, event.target as Node | null);
 			if (!leaf) return;
 			event.preventDefault();
 			event.stopImmediatePropagation();
-			(event.target as EventTarget).dispatchEvent(
-				new KeyboardEvent("keydown", { key: "Delete", code: "Delete", bubbles: true, cancelable: true }),
-			);
+			(event.target as EventTarget).dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", code: "Delete", bubbles: true, cancelable: true }));
 			return;
 		}
 		if (event.repeat || isEditableTarget(event.target)) return;
@@ -292,82 +306,102 @@ export function attachTransformKeydown(win: Window, app: App, hotkeys: HotkeySto
 			? "move"
 			: eventMatchesAnyBinding(event, hotkeys.get("transform-rotate"))
 				? "rotate"
-				: eventMatchesAnyBinding(event, hotkeys.get("transform-scale"))
-					? "scale"
-					: null;
+				: eventMatchesAnyBinding(event, hotkeys.get("transform-scale")) ? "scale" : null;
 		if (!mode) return;
 		const leaf = findExcalidrawLeafForNode(app, event.target as Node | null);
 		if (!leaf) return;
-		// Always consume R so it cannot fall through to Excalidraw's Rectangle shortcut.
 		event.preventDefault();
 		event.stopImmediatePropagation();
-		// Switching operators is a cancel, not a commit. Restore the original
-		// scene before taking the new baseline so (for example) S → G drops the
-		// uncommitted scale preview and starts a fresh move from the pre-scale
-		// geometry.
-		if (active) cancel();
-		const baseline = getSelectedTransformElements(leaf);
-		if (baseline.length === 0) return;
-
-		const pointer = lastPointer?.leaf === leaf ? clientToSceneCoords(leaf, lastPointer.x, lastPointer.y) : null;
-		// Paint the cursor on the transformed leaf's OWN document, not this
-		// instance's: a Popout keypress is delivered to the main window's handler,
-		// so `doc` here is often the wrong window entirely.
+		const elements = getSelectedTransformElements(leaf);
+		const baseline = snapshotSceneElements(leaf);
+		const canvas = getInteractiveCanvas(leaf);
 		const cursorDoc = leafDocument(leaf);
-		active = { mode, leaf, baseline, pivot: selectionCenter(baseline), start: pointer, latest: baseline, numericInput: "", hasPreview: false, cursorDoc };
-		if (cursorDoc) {
-			cursorDoc.body.style.cursor = mode === "move" ? "move" : mode === "rotate" ? "crosshair" : "nwse-resize";
-		}
+		if (elements.length === 0 || !baseline || !canvas || !cursorDoc || elements.every((element) => element.locked)) return;
+		const appState = (leaf.view as unknown as { excalidrawAPI?: { getAppState(): { zoom?: { value?: number } } } }).excalidrawAPI?.getAppState();
+		const zoom = appState?.zoom?.value || 1;
+		const [x1, y1, x2, y2] = commonTransformBounds(elements);
+		const selectedIds = elements.map((element) => element.id);
+		const proxyId = installTransformProxy(leaf, { x: x1, y: y1, width: x2 - x1, height: y2 - y1 }, selectedIds);
+		if (!proxyId) return;
+		const nativeOrigin = transformOrigin(mode, elements, zoom);
+		const pointer = lastPointer?.leaf === leaf ? clientToSceneCoords(leaf, lastPointer.x, lastPointer.y) : null;
+		active = {
+			mode, leaf, elements, baseline, pivot: selectionPivot(elements), physicalStart: pointer,
+			physicalCurrent: pointer, latestShiftKey: false,
+			nativeOrigin, nativeCurrent: nativeOrigin, numericInput: "", canvas, cursorDoc,
+			hasGesture: false, nativeDragReady: false, proxyReady: false, proxyId, selectedIds, finishing: false,
+		};
+		cursorDoc.body.style.cursor = mode === "move" ? "move" : mode === "rotate" ? "crosshair" : "nwse-resize";
+		armWhenProxyReady(active);
+	};
+
+	const onKeyUp = (event: KeyboardEvent) => {
+		if (!active) return;
+		event.preventDefault();
+		event.stopImmediatePropagation();
 	};
 
 	const onPointerMove = (event: PointerEvent) => {
+		if (forwardedEvents.has(event)) return;
 		const leaf = findExcalidrawLeafForNode(app, event.target as Node | null);
 		if (leaf) lastPointer = { leaf, x: event.clientX, y: event.clientY };
 		if (!active) return;
-		if (leaf !== active.leaf) return;
-		if (active.mode === "scale" && active.numericInput) {
-			event.preventDefault();
-			event.stopImmediatePropagation();
-			return;
-		}
-		const point = clientToSceneCoords(active.leaf, event.clientX, event.clientY);
-		if (!point) return;
-		if (!active.start) active.start = point;
-		active.latest = transformElements(active, point, event.shiftKey);
-		active.hasPreview = true;
-		// EVENTUALLY, not NEVER: Excalidraw's store advances its undo snapshot on
-		// BOTH "never" and "immediately" (only "eventually" leaves it untouched — see
-		// packages/element/src/store.ts processAction, verified against core version
-		// 0.18.0 in reference/excalidraw-master — re-check this switch if that file's
-		// behavior changes after an obsidian-excalidraw-plugin version bump).
-		// Previewing every mouse-move frame with "never" was dragging the snapshot
-		// along with the live preview, so by the time commit() fired "immediately"
-		// the diff against that snapshot was empty and nothing ever reached the undo
-		// stack.
-		applySelectionTransform(active.leaf, active.latest, "EVENTUALLY");
+		const targetDoc = (event.target as Node | null)?.ownerDocument;
+		if (targetDoc !== active.cursorDoc) return;
 		event.preventDefault();
 		event.stopImmediatePropagation();
+		// Commit/cancel waits one frame before its virtual pointerup. Physical
+		// movement with the button held can still arrive in that gap; it must be
+		// consumed, otherwise Excalidraw applies the real cursor coordinate to the
+		// virtual drag immediately before it commits.
+		if (active.finishing) return;
+		const current = clientToSceneCoords(active.leaf, event.clientX, event.clientY);
+		if (!current) return;
+		active.physicalCurrent = current;
+		active.latestShiftKey = event.shiftKey;
+		if (!active.physicalStart) {
+			active.physicalStart = current;
+			if (active.proxyReady) beginGesture(active);
+			return;
+		}
+		if (active.mode === "scale" && active.numericInput) return;
+		active.nativeCurrent = targetForPointer(active, current, event.shiftKey);
+		if (active.proxyReady) {
+			beginGesture(active);
+			if (active.nativeDragReady) emitPointer(active, "pointermove", active.nativeCurrent, event);
+		}
 	};
 
 	const onPointerDown = (event: PointerEvent) => {
+		if (forwardedEvents.has(event)) return;
 		if (!active) {
 			suppressNextContextMenu = false;
 			return;
 		}
 		event.preventDefault();
 		event.stopImmediatePropagation();
-		if (event.button === 0) commit();
+		if (event.button === 0) finish(false);
 		else if (event.button === 2) {
 			suppressNextContextMenu = true;
-			cancel();
+			finish(true);
 		}
+	};
+
+	const onPointerUp = (event: PointerEvent) => {
+		if (forwardedEvents.has(event) || !active) return;
+		// LMB/RMB down commits or cancels the modal operation, but the matching
+		// physical release can arrive before our next-frame virtual pointerup.
+		// Letting that real coordinate reach Excalidraw finalizes the virtual drag
+		// at the cursor and makes the selection centre jump there.
+		event.preventDefault();
+		event.stopImmediatePropagation();
 	};
 
 	const onContextMenu = (event: MouseEvent) => {
 		if (active) {
 			event.preventDefault();
 			event.stopImmediatePropagation();
-			cancel();
+			finish(true);
 			return;
 		}
 		if (!suppressNextContextMenu) return;
@@ -376,32 +410,31 @@ export function attachTransformKeydown(win: Window, app: App, hotkeys: HotkeySto
 		event.stopImmediatePropagation();
 	};
 
-	/**
-	 * Whether the in-flight transform is being applied to a leaf in THIS window.
-	 * Now that the state is shared, blur/teardown must not tear down a transform
-	 * another window owns — a Popout keypress activates via the main window's
-	 * handler, so the main window blurring (because the Popout took focus) must
-	 * leave that Popout transform running.
-	 */
 	const ownsActive = () => !!active && leafDocument(active.leaf) === doc;
-
 	const onBlur = () => {
-		if (ownsActive()) cancel();
+		if (ownsActive()) finish(true);
 	};
 	win.addEventListener("keydown", onKeyDown, true);
+	win.addEventListener("keyup", onKeyUp, true);
 	win.addEventListener("pointermove", onPointerMove, true);
 	win.addEventListener("pointerdown", onPointerDown, true);
+	win.addEventListener("pointerup", onPointerUp, true);
 	win.addEventListener("contextmenu", onContextMenu, true);
 	win.addEventListener("blur", onBlur);
 	return () => {
-		// Restore the scene first if this window owns the in-flight transform, then
-		// drop any remaining shared references into this window (see
-		// releaseStateForDocument) so its leaf isn't retained after teardown.
-		if (ownsActive()) cancel();
+		if (ownsActive() && active) {
+			restoreSceneElementsEventually(active.leaf, active.baseline);
+			removeTransformProxyEventually(active.leaf, active.proxyId, active.selectedIds);
+			if (active.hasGesture) emitPointer(active, "pointerup", active.nativeOrigin);
+			active.cursorDoc.body.style.removeProperty("cursor");
+			active = null;
+		}
 		releaseStateForDocument(doc);
 		win.removeEventListener("keydown", onKeyDown, true);
+		win.removeEventListener("keyup", onKeyUp, true);
 		win.removeEventListener("pointermove", onPointerMove, true);
 		win.removeEventListener("pointerdown", onPointerDown, true);
+		win.removeEventListener("pointerup", onPointerUp, true);
 		win.removeEventListener("contextmenu", onContextMenu, true);
 		win.removeEventListener("blur", onBlur);
 	};

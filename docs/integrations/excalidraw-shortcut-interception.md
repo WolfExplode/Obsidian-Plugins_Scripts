@@ -42,26 +42,71 @@ incumbent listener is *also* capture-phase and registered before any plugin, so
 a plugin's capture listener loses that race and interception has to happen
 inside Obsidian's `HotkeyManager` instead.
 
-## Undo-history gotcha this workaround depends on
+## G/R/S must use Excalidraw's pointer transform pipeline
 
-`applySelectionTransform` (in [excalidraw-view.ts](../../src/excalidraw-view.ts))
-drives the G/R/S preview by calling Excalidraw's `updateScene` with a
-`captureUpdate` action on every pointer-move frame, then again once on commit.
-`packages/element/src/store.ts`'s `Store.processAction` (0.18.0) determines what
-each action does to the undo snapshot:
+The modal operators do not rewrite `x`, `y`, `width`, `height`, or `angle`
+through `updateScene`. That bypasses the logic a real pointer transform runs for
+bound text, connected arrows, linear-element points, frames, font sizes,
+snapping, and history.
 
-| `captureUpdate` value | Emits a durable (undoable) increment? | Advances the undo snapshot? |
-| --- | --- | --- |
-| `IMMEDIATELY` | Yes | Yes |
-| `NEVER` | No | **Yes** |
-| `EVENTUALLY` | No | No |
+Instead, `transform-keys.ts` temporarily adds an invisible rectangle matching
+the selection's common bounds and selects it together with the real elements.
+That proxy gives Excalidraw one deterministic native selection box regardless
+of whether the real selection is an embeddable, line, text, frame, or irregular
+shape. The bridge starts its pointer gesture at the proxy selection's interior
+for G, rotation handle for R, or corner-resize handle for S. Physical pointer
+motion is translated into that virtual gesture, and commit/cancel ends it with
+the same pointer-up path as a mouse drag. Excalidraw therefore remains the sole
+owner of transform semantics for the real elements.
 
-The live preview frames must use `EVENTUALLY`, not `NEVER` — using `NEVER` still
-advances the snapshot on every mouse-move, so by the time the final commit fires
-`IMMEDIATELY` the diff against that (already-advanced) snapshot is empty and
-nothing reaches the undo stack. (This was a real regression, fixed 2026-07-23:
-G/R/S transforms were silently not undoable.) If G/R/S stop showing up in undo
-history again after a version bump, check this switch first.
+Proxy bounds for lines, arrows, and free-draw elements must come from their
+local `points`, translated by `x/y` and rotated about the point-derived centre.
+For these element types `x/y` is a local point origin, not the visual top-left;
+reversed arrows commonly have points whose X coordinates are entirely negative.
+Treating `x/y/width/height` as an ordinary rectangle mirrors the proxy to the
+wrong side and makes the calculated native rotation handle miss.
+
+Proxy insertion and removal use `CaptureUpdateAction.EVENTUALLY`, and removal
+occurs before native pointer-up. Their net scene diff is therefore zero when the
+native gesture captures its durable update, leaving only the real transform in
+undo history. Do not use `NEVER` here: Excalidraw 0.18 advances the store's undo
+comparison snapshot for `NEVER`, which would swallow the transform before
+pointer-up captures it. Gesture start polls the observable scene/selection state
+on animation frames and does not dispatch pointer-down until Excalidraw reports
+the proxy ready; this is a data condition, not a timing delay.
+
+An active iframe/embeddable is another required precondition. Excalidraw's own
+drag branch explicitly refuses to move selected elements while
+`activeEmbeddable.state === "active"`; without normalizing it, the same valid
+pointer stream grows the selection marquee instead. Proxy installation clears
+`activeEmbeddable` (the state transition a native click outside the embed makes),
+and readiness also verifies that the clear has reconciled before pointer-down.
+
+Pointer-down and the first relayed pointer-move must also occur in separate
+animation frames. A physical mouse cannot produce both in one browser task, and
+Excalidraw/React batches the pointer-down state that installs the drag. Sending a
+move synchronously after down intermittently routes that move through the
+selection tool instead, producing a marquee even though Excalidraw reported the
+proxy and common selection box as hit.
+
+Excalidraw throttles its pointer-move handler to an animation frame. Commit and
+cancel issue the final virtual position first, then the pointer-up on the next
+animation frame. This is synchronization with the native event pipeline, not a
+wall-clock race workaround.
+
+Physical pointer movement and the LMB/RMB release paired with the user's
+commit/cancel press must be consumed while that next frame is pending. A real
+move with the button held can otherwise reach Excalidraw immediately before the
+virtual pointer-up and apply the real cursor coordinate to the virtual drag,
+jumping the selection centre there. Only pointer events marked as belonging to
+the bridge are allowed through during modal cleanup.
+
+Cancel also restores a deep pre-gesture snapshot with
+`CaptureUpdateAction.EVENTUALLY` immediately before that native pointer-up.
+Returning the virtual pointer to its starting coordinate is not an exact inverse:
+Excalidraw may reapply snapping and binding corrections there. The snapshot
+covers the complete element array because a native transform can mutate related
+bound text, arrows, and frame members outside `selectedElementIds`.
 
 ## Required approach
 
@@ -79,9 +124,10 @@ To claim a plain (non-modifier-locked) Excalidraw shortcut for a plugin feature:
    nothing to do (e.g. no selection) — letting it fall through inconsistently is
    worse than a harmless no-op, and is exactly what happened before Alt+R/Alt+S
    were made to consume unconditionally.
-4. If the feature also drives `updateScene` during a live preview, use
-   `EVENTUALLY` for preview frames and `IMMEDIATELY` only for the final commit —
-   see the gotcha above.
+4. While a modal transform is active, consume every unrelated keydown and keyup.
+   In particular, Alt+S must not reach Excalidraw's object-snap toggle during an
+   operation. Escape, Enter, numeric S input, and pointer modifiers are handled
+   explicitly by the bridge.
 
 ## Known edge
 
