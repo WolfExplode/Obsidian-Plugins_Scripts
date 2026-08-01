@@ -134,8 +134,8 @@ hand-roll another attach/prune/reconcile loop. Supply `setup` (build per-leaf
 state once the view's API is mounted and its saved scene has loaded) and `scan`
 (runs on every change); the shared module owns leaf discovery, the mount-retry,
 teardown, and the `isDestroyed` property-vs-method trap that silently broke
-Popout support once already. `video-aspect.ts`, `animated-image-drop.ts`, and
-`media-auto-pack.ts` are the three consumers.
+Popout support once already. `video-aspect.ts` and `media-auto-pack.ts` are
+the consumers.
 
 **Obsidian `EventRef`s must be released on the emitter they were registered on.**
 `Vault` and `Workspace` are separate `Events` instances, so `workspace.offref(vaultRef)`

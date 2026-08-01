@@ -3,10 +3,10 @@ import type ExcalidrawPureRefPlugin from "../main";
 import { isExcalidrawLeaf } from "./excalidraw-view";
 
 /**
- * The shared lifecycle behind every per-view scene watcher: video-aspect.ts,
- * animated-image-drop.ts, and media-auto-pack.ts.
+ * The shared lifecycle behind every per-view scene watcher: video-aspect.ts
+ * and media-auto-pack.ts.
  *
- * All three want the same thing — "run my scan whenever any Excalidraw view's
+ * Both want the same thing — "run my scan whenever any Excalidraw view's
  * scene changes, in the main window and every Popout, attaching to views as they
  * mount and detaching as they close" — and each had grown its own copy of the
  * attach/prune/reconcile/retry machinery. They differ only in what per-leaf state
@@ -14,7 +14,7 @@ import { isExcalidrawLeaf } from "./excalidraw-view";
  *
  * Consolidating matters beyond deduplication: `isApiDestroyed` below encodes a
  * bug that silently broke Popout support once already (see its comment), and
- * three hand-maintained copies is three chances to get it wrong again.
+ * separate hand-maintained copies is more chances to get it wrong again.
  */
 
 /** How long to keep retrying attachment while a view's API finishes mounting. */
@@ -23,7 +23,7 @@ const READY_RETRY_MAX = 20;
 
 /**
  * The minimal Excalidraw element shape the seeding logic reads. Deliberately a
- * permissive superset of what the three consumers need, so each can narrow it to
+ * permissive superset of what its consumers need, so each can narrow it to
  * its own element interface without the scanner knowing about images vs embeds.
  */
 export interface ScannerElement {

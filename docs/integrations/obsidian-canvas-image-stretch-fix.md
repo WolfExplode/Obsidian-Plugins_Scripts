@@ -4,8 +4,7 @@
 
 CSS-only fix, shipped in [styles.css](../../styles.css). Applies to any
 Excalidraw `embeddable` element that links to a local `gif`/`webp`/`apng` file
-(these are the animated-image extensions this plugin's
-[animated-image-drop.ts](../../src/animated-image-drop.ts) converts from a
+(these are the animated-image extensions Excalidraw itself converts from a
 static `image` element into an embeddable, and the only extensions Obsidian
 maps to its native `"image"` view type).
 

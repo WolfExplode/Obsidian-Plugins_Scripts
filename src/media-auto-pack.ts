@@ -233,12 +233,12 @@ export function attachMediaAutoPack(plugin: ExcalidrawPureRefPlugin): () => void
 	const scan = (leaf: WorkspaceLeaf, state: PackState) => {
 		const elements = readSceneElements(leaf) ?? [];
 
-		// animated-image-drop.ts imports a gif as a static `image` element, then
-		// asynchronously swaps it for a playing `embeddable` at the same file
-		// (add the embeddable, delete the image). If a candidate already matched
-		// the now-deleted image, its slot must be freed so the replacement
-		// embeddable — which shares the same vault path but a different id — can
-		// bind instead of being permanently orphaned.
+		// Some import paths (e.g. Excalidraw's native animated-image handling)
+		// insert an element, then asynchronously swap it for a different element
+		// at the same file (add the replacement, delete the original). If a
+		// candidate already matched the now-deleted element, its slot must be
+		// freed so the replacement — which shares the same vault path but a
+		// different id — can bind instead of being permanently orphaned.
 		const currentIds = new Set(elements.map((raw) => (raw as MediaElement).id).filter((id): id is string => !!id));
 		for (const transaction of state.transactions) {
 			for (const candidate of transaction.candidates) {

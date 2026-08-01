@@ -44,9 +44,6 @@ https://github.com/user-attachments/assets/fda37d9a-c42b-4f69-adbe-68710d3f4a9d
 https://github.com/user-attachments/assets/6c0136df-f822-4b36-8e56-7852c0023c16
 
 ### **Media import/export**
-  - Drag-and-drop import for images, animated images (`.gif`/`.webp`/`.apng`
-    become playing embeddables), and video, with automatic filename
-    sanitization and aspect-ratio correction.
   - **Ctrl+Shift+E** exports every selected image/video/embed to a folder,
     rendering cropped images to a fresh PNG of just the visible crop.
 

@@ -47,10 +47,10 @@ import { attachPerLeafScanner, leafDocument, type LeafScannerApi, type LeafScann
  * Neither path holds a rendered snapshot, so drags, resizes, rotations and
  * zooming need no gesture handling: the transform is re-read every frame.
  *
- * Rides the same attach/prune/reconcile lifecycle as video-aspect.ts,
- * animated-image-drop.ts, and media-auto-pack.ts (attachPerLeafScanner in
- * leaf-scanner.ts) -- one registration covers the main window and every Popout,
- * attaching to views as they mount and detaching as they close.
+ * Rides the same attach/prune/reconcile lifecycle as video-aspect.ts and
+ * media-auto-pack.ts (attachPerLeafScanner in leaf-scanner.ts) -- one
+ * registration covers the main window and every Popout, attaching to views as
+ * they mount and detaching as they close.
  */
 
 /** Excalidraw's own static scene canvas -- the source of every blitted pixel this overlay draws. */

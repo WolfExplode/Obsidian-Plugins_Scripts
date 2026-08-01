@@ -7,7 +7,6 @@ import { exportSelectedMedia } from "src/media-export";
 import { attachBoardGestures } from "src/board-gestures";
 import { attachPopoutDropBridge } from "src/popout-drop-bridge";
 import { attachInsertModalAutoConfirm } from "src/insert-modal-autoconfirm";
-import { attachAnimatedImageEmbedConversion } from "src/animated-image-drop";
 import { attachVideoAspectCorrector } from "src/video-aspect";
 import { attachMediaAutoPack } from "src/media-auto-pack";
 import { attachFrontOfEmbedRendering } from "src/front-of-embed-view";
@@ -103,12 +102,6 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 		// option (e.g. a dropped video → "as Embeddable"). Popouts get their own
 		// observer when they open (see PopoutManager).
 		this.register(attachInsertModalAutoConfirm(window.document));
-
-		// Convert a freshly-inserted animated image (gif/webp/apng) from a static
-		// Image into a playing Embeddable — see animated-image-drop.ts for why
-		// Excalidraw's own drag-drop never offers that choice for this case. Spans
-		// main window and popouts alike, same as the aspect/scale correctors above.
-		this.register(attachAnimatedImageEmbedConversion(this));
 
 		this.addCommand({
 			id: "toggle-pureref-popout",

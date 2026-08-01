@@ -91,9 +91,10 @@ setting globally, the normal Board view is affected for that interval too.
   the plugin selects it automatically.
 - Inserted local videos and animated images are resized to their intrinsic aspect
   ratio after Excalidraw has added them.
-- Newly inserted `.gif`, `.webp`, and `.apng` files are converted from static
-  image elements into playing Excalidraw embeddables. Animated images already
-  present in a saved Board are not changed.
+- Converting newly-inserted `.gif`/`.webp`/`.apng` files into playing
+  embeddables is handled natively by Excalidraw as of
+  [zsviczian/obsidian-excalidraw-plugin@fce2bc1](https://github.com/zsviczian/obsidian-excalidraw-plugin/commit/fce2bc11ffd1187def7db611f91afe2a10f7bdd4);
+  this plugin no longer implements its own conversion for it.
 - Animated-image embeddables now stretch to fill their element box when
   resized, matching video/pdf/markdown embeddables. This works around an
   upstream Obsidian Canvas limitation; see
