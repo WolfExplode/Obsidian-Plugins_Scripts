@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import { desanitizeAttachmentName, sanitizeAttachmentName } from "../src/popout-drop-bridge";
 import { localLinkpath } from "../src/board-render";
 import { mirrorViewport } from "../src/excalidraw-view";
+import { importFileMatchesVaultPath } from "../src/import-file-match";
 
 /**
  * The sanitize/desanitize pair is load-bearing across module boundaries: the drop
@@ -52,6 +53,27 @@ describe("attachment name sanitizing", () => {
 		const onDisk = sanitizeAttachmentName(dropped);
 		assert.notEqual(onDisk, dropped, "the vault path really does differ");
 		assert.equal(desanitizeAttachmentName(onDisk), desanitizeAttachmentName(dropped));
+	});
+});
+
+describe("import file matching", () => {
+	it("matches an unchanged filename and an Obsidian collision suffix", () => {
+		assert.equal(importFileMatchesVaultPath("clip.mp4", "WIP/attachments/clip.mp4"), true);
+		assert.equal(importFileMatchesVaultPath("clip.mp4", "WIP/attachments/clip_1.mp4"), true);
+	});
+
+	it("preserves a numeric suffix that belongs to the source stem", () => {
+		assert.equal(importFileMatchesVaultPath("LacePatterns_0.pur", "WIP/attachments/LacePatterns_0_1.pur"), true);
+		assert.equal(importFileMatchesVaultPath("LacePatterns_0.pur", "WIP/attachments/LacePatterns_1.pur"), false);
+	});
+
+	it("folds the drop bridge's full-width filename substitutions", () => {
+		assert.equal(importFileMatchesVaultPath("#clip|1.mp4", "WIP/attachments/＃clip｜1_2.mp4"), true);
+	});
+
+	it("does not match a different stem or extension", () => {
+		assert.equal(importFileMatchesVaultPath("clip.mp4", "WIP/attachments/other_1.mp4"), false);
+		assert.equal(importFileMatchesVaultPath("clip.mp4", "WIP/attachments/clip_1.mov"), false);
 	});
 });
 

@@ -4,6 +4,7 @@ import { localLinkpath } from "./board-render";
 import { getSceneElementFile, isExcalidrawLeaf, optimalPackElementsById, readSceneElements } from "./excalidraw-view";
 import { desanitizeAttachmentName } from "./popout-drop-bridge";
 import { attachPerLeafScanner, onEvent, type LeafScannerApi, type LeafScannerHandle } from "./leaf-scanner";
+import { importFileMatchesVaultPath } from "./import-file-match";
 
 /**
  * Packs imported media only after every file in an observed import transaction
@@ -45,6 +46,8 @@ interface Transaction {
 	 * the transaction first, or the transaction is invalidated.
 	 */
 	fallbackTimer: number | null;
+	/** Removes a transaction that stops making progress; never triggers packing. */
+	expiryTimer: number | null;
 }
 
 /**
@@ -84,6 +87,13 @@ interface Transaction {
  */
 const FALLBACK_PACK_MS = 1000;
 
+/**
+ * Incomplete imports have no authoritative "this file will never create an
+ * element" event. Bound their in-memory lifetime after the last observed
+ * progress without using elapsed time to decide when it is safe to pack.
+ */
+const TRANSACTION_IDLE_EXPIRY_MS = 5 * 60_000;
+
 /** Per-view state: the document/view hooks this leaf owns plus its import transactions. */
 interface PackState {
 	detachDocument: () => void;
@@ -96,25 +106,6 @@ interface PackState {
 
 function isMedia(el: MediaElement): boolean {
 	return !!el.id && !el.isDeleted && (el.type === "image" || (el.type === "embeddable" && !!localLinkpath(el.link)));
-}
-
-function basename(path: string): string {
-	return path.replace(/\\/g, "/").split("/").pop() ?? path;
-}
-
-function normalizedName(name: string): string {
-	// The popout-drop-bridge rewrites wikilink-unsafe characters (# ^ [ ] |) to
-	// full-width look-alikes before Excalidraw ever writes the file, so the vault
-	// path and the originally-dropped filename can legitimately differ only in
-	// those characters. Fold both back to ASCII before comparing.
-	const base = desanitizeAttachmentName(basename(name)).toLowerCase();
-	return base.replace(/_(\d+)(\.[^.]+)$/i, "$2");
-}
-
-function namesMatch(source: string, targetPath: string): boolean {
-	const sourceBase = desanitizeAttachmentName(basename(source)).toLowerCase();
-	const targetBase = desanitizeAttachmentName(basename(targetPath)).toLowerCase();
-	return sourceBase === targetBase || normalizedName(source) === normalizedName(targetPath);
 }
 
 function getLeafForNode(plugin: ExcalidrawPureRefPlugin, node: Node | null, doc: Document): WorkspaceLeaf | null {
@@ -160,12 +151,23 @@ function seedTransaction(plugin: ExcalidrawPureRefPlugin, leaf: WorkspaceLeaf, f
 		}
 		return { name: file.name, size: file.size, paths, matchedId: null };
 	});
-	return { candidates, baselineIds: new Set(known), mediaIds: new Set(), readyToPack: false, fallbackTimer: null };
+	return {
+		candidates,
+		baselineIds: new Set(known),
+		mediaIds: new Set(),
+		readyToPack: false,
+		fallbackTimer: null,
+		expiryTimer: null,
+	};
 }
 
-function addVaultPath(transaction: Transaction, path: string): void {
-	const candidate = transaction.candidates.find((item) => !item.paths.has(path) && namesMatch(item.name, path));
-	if (candidate) candidate.paths.add(path);
+function addVaultPath(transaction: Transaction, path: string): boolean {
+	const candidate = transaction.candidates.find(
+		(item) => !item.paths.has(path) && importFileMatchesVaultPath(item.name, path),
+	);
+	if (!candidate) return false;
+	candidate.paths.add(path);
+	return true;
 }
 
 function isComplete(transaction: Transaction): boolean {
@@ -179,13 +181,32 @@ export function attachMediaAutoPack(plugin: ExcalidrawPureRefPlugin): () => void
 		if (debugEvents.length > 100) debugEvents.shift();
 	};
 
+	const clearTransactionTimers = (transaction: Transaction) => {
+		if (transaction.fallbackTimer != null) window.clearTimeout(transaction.fallbackTimer);
+		if (transaction.expiryTimer != null) window.clearTimeout(transaction.expiryTimer);
+		transaction.fallbackTimer = null;
+		transaction.expiryTimer = null;
+	};
+
+	const scheduleExpiry = (state: PackState, transaction: Transaction) => {
+		if (transaction.expiryTimer != null) window.clearTimeout(transaction.expiryTimer);
+		transaction.expiryTimer = window.setTimeout(() => {
+			transaction.expiryTimer = null;
+			if (!state.transactions.includes(transaction)) return;
+			if (transaction.fallbackTimer != null) window.clearTimeout(transaction.fallbackTimer);
+			transaction.fallbackTimer = null;
+			debug("transaction-expired", {
+				matched: Array.from(transaction.mediaIds),
+				pending: transaction.candidates.filter((candidate) => !candidate.matchedId).map((candidate) => candidate.name),
+			});
+			state.transactions = state.transactions.filter((item) => item !== transaction);
+		}, TRANSACTION_IDLE_EXPIRY_MS);
+	};
+
 	/** Packs one transaction and removes it from state, wherever the trigger came from. */
 	const packTransaction = (leaf: WorkspaceLeaf, state: PackState, transaction: Transaction, source: string) => {
 		if (!state.transactions.includes(transaction)) return;
-		if (transaction.fallbackTimer != null) {
-			window.clearTimeout(transaction.fallbackTimer);
-			transaction.fallbackTimer = null;
-		}
+		clearTransactionTimers(transaction);
 		const packed = optimalPackElementsById(leaf, transaction.mediaIds);
 		debug("packed", { source, ids: Array.from(transaction.mediaIds), packed });
 		state.transactions = state.transactions.filter((item) => item !== transaction);
@@ -214,7 +235,7 @@ export function attachMediaAutoPack(plugin: ExcalidrawPureRefPlugin): () => void
 			return false;
 		}
 		const candidate = transaction.candidates.find(
-			(item) => item.matchedId === null && (item.paths.has(path) || namesMatch(item.name, path)),
+			(item) => item.matchedId === null && (item.paths.has(path) || importFileMatchesVaultPath(item.name, path)),
 		);
 		if (!candidate) {
 			debug("no-candidate-for-path", {
@@ -263,6 +284,7 @@ export function attachMediaAutoPack(plugin: ExcalidrawPureRefPlugin): () => void
 				if (matchElement(leaf, transaction, el)) {
 					matched = true;
 					state.known.add(el.id);
+					scheduleExpiry(state, transaction);
 					debug("matched", { id: el.id, type: el.type, remaining: transaction.candidates.filter((c) => !c.matchedId).map((c) => c.name) });
 					if (isComplete(transaction)) {
 						// Each importer branch eventually saves the Board after adding its
@@ -295,7 +317,9 @@ export function attachMediaAutoPack(plugin: ExcalidrawPureRefPlugin): () => void
 		}
 		state.lastDropSignature = signature;
 		state.lastDropWasTrusted = trusted;
-		state.transactions.push(seedTransaction(plugin, leaf, files, state.known));
+		const transaction = seedTransaction(plugin, leaf, files, state.known);
+		state.transactions.push(transaction);
+		scheduleExpiry(state, transaction);
 		debug("begin", { trusted, files: files.map((file) => file.name) });
 	};
 
@@ -319,6 +343,8 @@ export function attachMediaAutoPack(plugin: ExcalidrawPureRefPlugin): () => void
 			const result = original.call(this, ...args);
 			void Promise.resolve(result).then(() => {
 				if (scanner.isDisposed()) return;
+				const stillOwned = scanner.entries().some(([ownedLeaf, ownedState]) => ownedLeaf === leaf && ownedState === state);
+				if (!stillOwned) return;
 				debug("board-sync-resolved", {
 					transactions: state.transactions.map((t) => ({
 						readyToPack: t.readyToPack,
@@ -380,7 +406,7 @@ export function attachMediaAutoPack(plugin: ExcalidrawPureRefPlugin): () => void
 
 	const teardown = (_leaf: WorkspaceLeaf, state: PackState) => {
 		for (const transaction of state.transactions) {
-			if (transaction.fallbackTimer != null) window.clearTimeout(transaction.fallbackTimer);
+			clearTransactionTimers(transaction);
 		}
 		if (state.transactions.length) {
 			debug("subscription-torn-down-with-pending-transactions", {
@@ -390,6 +416,7 @@ export function attachMediaAutoPack(plugin: ExcalidrawPureRefPlugin): () => void
 				})),
 			});
 		}
+		state.transactions = [];
 		state.detachDocument();
 		state.detachBoardSync();
 	};
@@ -405,7 +432,9 @@ export function attachMediaAutoPack(plugin: ExcalidrawPureRefPlugin): () => void
 			const detachCreate = onEvent(vault, () =>
 				vault.on("create", (file) => {
 					for (const [leaf, state] of scanner.entries()) {
-						for (const transaction of state.transactions) addVaultPath(transaction, file.path);
+						for (const transaction of state.transactions) {
+							if (addVaultPath(transaction, file.path)) scheduleExpiry(state, transaction);
+						}
 						if (state.transactions.length) scanner.rescan(leaf);
 					}
 				}),

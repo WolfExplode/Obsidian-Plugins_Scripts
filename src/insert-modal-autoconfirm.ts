@@ -52,25 +52,18 @@ function tryAutoConfirm(modal: HTMLElement): void {
 
 /**
  * Considers a node that was just added to the document: if it is (or contains) the
- * target modal, try to auto-confirm it — retrying briefly because the modal's
- * buttons can render a tick after its container appears.
+ * target modal, try to auto-confirm it. Descendant mutations are considered as
+ * well as the initial container insertion because the modal shell is attached
+ * before its buttons are rendered.
  */
-function considerNode(node: Node, win: Window): void {
+function considerNode(node: Node): void {
 	if (!node.instanceOf(HTMLElement)) return;
-	const modal = node.classList?.contains("modal-container")
-		? node.querySelector<HTMLElement>(".modal.excalidraw-modal")
-		: node.matches?.(".modal.excalidraw-modal")
-			? node
-			: node.querySelector<HTMLElement>(".modal.excalidraw-modal");
+	const modal = node.matches?.(".modal.excalidraw-modal")
+		? node
+		: node.closest<HTMLElement>(".modal.excalidraw-modal")
+			?? node.querySelector<HTMLElement>(".modal.excalidraw-modal");
 	if (!modal) return;
-
-	let attempts = 0;
-	const attempt = () => {
-		if (modal.dataset[HANDLED_FLAG] || !modal.isConnected) return;
-		tryAutoConfirm(modal);
-		if (!modal.dataset[HANDLED_FLAG] && ++attempts < 5) win.setTimeout(attempt, 40);
-	};
-	attempt();
+	tryAutoConfirm(modal);
 }
 
 /**
@@ -81,13 +74,13 @@ export function attachInsertModalAutoConfirm(doc: Document): () => void {
 	const win = doc.defaultView ?? window;
 	const observer = new win.MutationObserver((mutations) => {
 		for (const m of mutations) {
-			for (const node of Array.from(m.addedNodes)) considerNode(node, win);
+			for (const node of Array.from(m.addedNodes)) considerNode(node);
 		}
 	});
-	observer.observe(doc.body, { childList: true });
+	observer.observe(doc.body, { childList: true, subtree: true });
 	// A modal already open when we attach (e.g. after a plugin reload).
 	for (const modal of Array.from(doc.querySelectorAll<HTMLElement>(".modal.excalidraw-modal"))) {
-		considerNode(modal, win);
+		considerNode(modal);
 	}
 	return () => observer.disconnect();
 }
