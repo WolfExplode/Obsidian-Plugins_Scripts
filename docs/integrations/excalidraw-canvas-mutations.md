@@ -39,6 +39,10 @@ conflict is an expected cancellation: the user's newer edit wins.
 | App-state/view write | viewport, zen mode, overlap selection, duplicate selection | No | No element revision or durable element history is involved. |
 | Generated-image transaction | rotated crop and uncrop | No | Vault files, ExcalidrawData, core files, and the element/file map have a strict lifecycle and atomic final write. |
 
+Generated-image transactions remain distinct, but reuse the mutation module's
+revision comparison and element stamping. They still own staging, rollback,
+commit verification, and retirement.
+
 The unused direct-deletion helper was removed during this audit. Native deletion
 owns binding and frame cleanup, so reviving a generic `isDeleted` patch would be
 incorrect.

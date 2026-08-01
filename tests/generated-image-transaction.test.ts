@@ -39,11 +39,11 @@ class MemoryGeneratedImages implements GeneratedImageTransactionAdapter<Generate
 		this.registrations.add(asset.id);
 		if (this.registerFailure) throw new Error("register failed after mutation");
 	}
-	addCoreFiles(files: readonly GeneratedImageBinary[]): void {
+	stageCoreFiles(files: readonly GeneratedImageBinary[]): GeneratedImageFileMap {
 		for (const file of files) this.coreFiles[file.id] = file;
 		this.onAddCore?.();
+		return { ...this.coreFiles };
 	}
-	readCoreFiles(): GeneratedImageFileMap { return this.coreFiles; }
 	writeScene(elements: readonly GeneratedImageElement[], files?: GeneratedImageFileMap): void {
 		this.writes++;
 		if (this.writeBehavior !== "noop") {
@@ -102,6 +102,8 @@ describe("applyGeneratedImageTransaction", () => {
 
 		assert.equal(result.status, "applied");
 		assert.equal(adapter.elements.find((element) => element.id === "target")?.x, 5);
+		assert.equal(adapter.elements.find((element) => element.id === "target")?.versionNonce, 101);
+		assert.equal(adapter.elements.find((element) => element.id === "target")?.updated, 1234);
 		assert.equal(adapter.elements.find((element) => element.id === "other")?.x, 99);
 		assert.equal(adapter.coreFiles.existing?.dataURL, "existing");
 		assert.equal(adapter.coreFiles.new?.dataURL, "data:new");
@@ -183,5 +185,28 @@ describe("applyGeneratedImageTransaction", () => {
 		assert.equal(result.status, "applied");
 		assert.equal(adapter.elements[0].x, 5);
 		assert.equal(adapter.coreFiles.existing?.dataURL, "existing");
+	});
+
+	it("restages an existing source binary before restoring its fileId", async () => {
+		const adapter = new MemoryGeneratedImages();
+
+		const result = await applyGeneratedImageTransaction(adapter, {
+			changes: [{
+				id: "target",
+				expected: { version: 2, versionNonce: 20 },
+				patch: { fileId: "source" },
+			}],
+			created: [],
+			requiredCoreFiles: [{
+				id: "source",
+				dataURL: "data:image/png;base64,source",
+				mimeType: "image/png",
+				created: 1,
+			}],
+		});
+
+		assert.equal(result.status, "applied");
+		assert.equal(adapter.elements[0].fileId, "source");
+		assert.equal(adapter.coreFiles.source?.dataURL, "data:image/png;base64,source");
 	});
 });

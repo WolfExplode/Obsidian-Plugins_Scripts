@@ -27,9 +27,15 @@ interface GeometryData {
 
 const emptyData = (): GeometryData => ({ boards: {}, viewports: {} });
 
+function normalizeData(stored?: Partial<GeometryData>): GeometryData {
+	return {
+		boards: stored?.boards ?? {},
+		viewports: stored?.viewports ?? {},
+	};
+}
+
 export class GeometryStore {
 	private data: GeometryData = emptyData();
-	private mutationQueue: Promise<void> = Promise.resolve();
 
 	constructor(private readonly dataWriter: PluginDataWriter) {}
 
@@ -37,10 +43,7 @@ export class GeometryStore {
 		const stored = await this.dataWriter.readSection<Partial<GeometryData>>("geometry");
 		// `viewports` was added after `boards`; tolerate data.json written by an
 		// older build that only has `boards`.
-		this.data = {
-			boards: stored?.boards ?? {},
-			viewports: stored?.viewports ?? {},
-		};
+		this.data = normalizeData(stored);
 	}
 
 	get(filePath: string): ElectronBounds | null {
@@ -49,7 +52,7 @@ export class GeometryStore {
 
 	set(filePath: string, bounds: ElectronBounds): Promise<void> {
 		const savedBounds = { ...bounds };
-		return this.enqueueMutation((current) => ({
+		return this.persistMutation((current) => ({
 			boards: { ...current.boards, [filePath]: savedBounds },
 			viewports: { ...current.viewports },
 		}));
@@ -61,14 +64,14 @@ export class GeometryStore {
 
 	setViewport(filePath: string, viewport: ExcalidrawViewport): Promise<void> {
 		const savedViewport = { ...viewport };
-		return this.enqueueMutation((current) => ({
+		return this.persistMutation((current) => ({
 			boards: { ...current.boards },
 			viewports: { ...current.viewports, [filePath]: savedViewport },
 		}));
 	}
 
 	clear(filePath: string): Promise<void> {
-		return this.enqueueMutation((current) => {
+		return this.persistMutation((current) => {
 			const boards = { ...current.boards };
 			const viewports = { ...current.viewports };
 			delete boards[filePath];
@@ -78,19 +81,14 @@ export class GeometryStore {
 	}
 
 	clearAll(): Promise<void> {
-		return this.enqueueMutation(() => emptyData());
+		return this.persistMutation(() => emptyData());
 	}
 
-	/** Serializes copy-on-write changes and publishes them in memory only after the save succeeds. */
-	private enqueueMutation(transform: (current: GeometryData) => GeometryData): Promise<void> {
-		const mutation = this.mutationQueue.then(async () => {
-			const next = transform(this.data);
-			await this.dataWriter.writeSection("geometry", next);
-			this.data = next;
-		});
-		// Reject this caller on failure without preventing a later mutation from
-		// starting from the last successfully persisted state.
-		this.mutationQueue = mutation.catch(() => undefined);
-		return mutation;
+	/** Publishes copy-on-write state in memory only after the atomic save succeeds. */
+	private async persistMutation(transform: (current: GeometryData) => GeometryData): Promise<void> {
+		this.data = await this.dataWriter.mutateSection<GeometryData>(
+			"geometry",
+			(stored) => transform(normalizeData(stored)),
+		);
 	}
 }

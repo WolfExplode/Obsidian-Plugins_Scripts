@@ -58,8 +58,8 @@ describe("PluginDataWriter", () => {
 		const writer = new PluginDataWriter(adapter);
 		adapter.failNextSave = true;
 
-		await assert.rejects(writer.writeSection("geometry", { boards: {} }), /simulated save failure/);
-		await writer.writeSection("hotkeys", { "pack-left": [] });
+		await assert.rejects(writer.mutateSection("geometry", () => ({ boards: {} })), /simulated save failure/);
+		await writer.mutateSection("hotkeys", () => ({ "pack-left": [] }));
 
 		assert.deepEqual(adapter.data, { hotkeys: { "pack-left": [] } });
 	});
@@ -99,6 +99,8 @@ describe("PluginDataWriter", () => {
 				viewports: { "board.excalidraw": { scrollX: 10, scrollY: 20, zoom: 2 } },
 			},
 		});
+		assert.deepEqual(geometry.get("board.excalidraw"), { x: 1, y: 2, width: 3, height: 4 });
+		assert.deepEqual(geometry.getViewport("board.excalidraw"), { scrollX: 10, scrollY: 20, zoom: 2 });
 	});
 
 	it("preserves committed geometry when clearAll fails", async () => {
@@ -135,6 +137,7 @@ describe("PluginDataWriter", () => {
 		assert.equal(viewportResult.status, "rejected");
 		assert.equal(boundsResult.status, "fulfilled");
 		assert.equal(geometry.getViewport("board.excalidraw"), null);
+		assert.deepEqual(geometry.get("board.excalidraw"), { x: 1, y: 2, width: 3, height: 4 });
 		assert.deepEqual(adapter.data, {
 			geometry: {
 				boards: { "board.excalidraw": { x: 1, y: 2, width: 3, height: 4 } },
@@ -197,5 +200,7 @@ describe("PluginDataWriter", () => {
 				"second-action": [{ modifiers: ["Alt"], key: "S" }],
 			},
 		});
+		assert.equal(hotkeys.isOverridden("first-action"), true);
+		assert.equal(hotkeys.isOverridden("second-action"), true);
 	});
 });

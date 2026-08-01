@@ -57,14 +57,20 @@ binary to the immediate core store.
 
 ## Required cleanup order
 
-1. Update the element back to its remembered source `fileId` (or to the
-   replacement generated `fileId`).
-2. Wait until the live scene no longer references the old generated ID.
-3. Remove the generated `EmbeddedFile` registration.
-4. Delete the generated vault attachment.
+1. Recover the remembered source binary and add it back to Excalidraw core.
+   After reopening a Board, this may require reading the remembered source path
+   from the vault because only the generated crop is resident in core.
+2. Update the element back to its remembered source `fileId` (or to the
+   replacement generated `fileId`), submitting the complete binary map in the
+   same scene update.
+3. Wait until the live scene no longer references the old generated ID.
+4. Remove the generated `EmbeddedFile` registration.
+5. Delete the generated vault attachment.
 
 Deleting the file in the same call stack as the element switch can race
 Excalidraw's renderer and produce a false "could not find image file" warning.
+The restored source is an existing prerequisite, not a transaction-created
+asset, so a later commit failure must not delete it during rollback.
 
 ## Non-obvious constraints
 

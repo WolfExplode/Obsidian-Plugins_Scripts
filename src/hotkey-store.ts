@@ -12,7 +12,6 @@ import type { PluginDataWriter } from "./plugin-data-writer";
 export class HotkeyStore {
 	private overrides: Record<string, HotkeyBinding[]> = {};
 	private listeners: Set<() => void> = new Set();
-	private mutationQueue: Promise<void> = Promise.resolve();
 
 	constructor(private readonly dataWriter: PluginDataWriter) {}
 
@@ -35,12 +34,12 @@ export class HotkeyStore {
 			modifiers: [...binding.modifiers],
 			key: binding.key,
 		}));
-		await this.enqueueMutation((current) => ({ ...current, [actionId]: savedBindings }));
+		await this.persistMutation((current) => ({ ...current, [actionId]: savedBindings }));
 		this.notify();
 	}
 
 	async reset(actionId: string): Promise<void> {
-		await this.enqueueMutation((current) => {
+		await this.persistMutation((current) => {
 			const next = { ...current };
 			delete next[actionId];
 			return next;
@@ -75,18 +74,13 @@ export class HotkeyStore {
 		for (const listener of this.listeners) listener();
 	}
 
-	/** Serializes copy-on-write changes and publishes them in memory only after the save succeeds. */
-	private enqueueMutation(
+	/** Publishes copy-on-write state in memory only after the atomic save succeeds. */
+	private async persistMutation(
 		transform: (current: Record<string, HotkeyBinding[]>) => Record<string, HotkeyBinding[]>,
 	): Promise<void> {
-		const mutation = this.mutationQueue.then(async () => {
-			const next = transform(this.overrides);
-			await this.dataWriter.writeSection("hotkeys", next);
-			this.overrides = next;
-		});
-		// Reject this caller on failure without preventing a later mutation from
-		// starting from the last successfully persisted state.
-		this.mutationQueue = mutation.catch(() => undefined);
-		return mutation;
+		this.overrides = await this.dataWriter.mutateSection<Record<string, HotkeyBinding[]>>(
+			"hotkeys",
+			(stored) => transform(stored ?? {}),
+		);
 	}
 }

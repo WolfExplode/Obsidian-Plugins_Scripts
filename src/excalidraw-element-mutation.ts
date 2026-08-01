@@ -28,13 +28,34 @@ export type ElementMutationResult =
 type RevisionFields = "id" | "version" | "versionNonce" | "updated";
 export type ElementPatch<Element extends MutableSceneElement> = Partial<Omit<Element, RevisionFields>>;
 
+/** A pseudo-random 31-bit integer for an element's versionNonce (mirrors Excalidraw). */
+export function randomVersionNonce(): number {
+	return Math.floor(Math.random() * 0x7fffffff);
+}
+
+/** Applies one patch with the revision fields Excalidraw requires. */
+export function stampElementPatch<Element extends MutableSceneElement>(
+	element: Element,
+	patch: ElementPatch<Element>,
+	versionNonce = randomVersionNonce(),
+	updated = Date.now(),
+): Element {
+	return {
+		...element,
+		...patch,
+		version: (element.version ?? 1) + 1,
+		versionNonce,
+		updated,
+	};
+}
+
 export function captureElementRevisions(
 	elements: readonly MutableSceneElement[],
 ): ElementRevision[] {
 	return elements.map(({ id, version, versionNonce }) => ({ id, version, versionNonce }));
 }
 
-function conflictsWithExpected<Element extends MutableSceneElement>(
+function conflictingElementRevisions<Element extends MutableSceneElement>(
 	elements: readonly Element[],
 	expected: readonly ElementRevision[],
 ): string[] {
@@ -42,10 +63,17 @@ function conflictsWithExpected<Element extends MutableSceneElement>(
 	const currentById = new Map(elements.map((element) => [element.id, element]));
 	return expected.flatMap((revision) => {
 		const current = currentById.get(revision.id);
-		return !current || current.version !== revision.version || current.versionNonce !== revision.versionNonce
+		return !elementRevisionMatches(current, revision)
 			? [revision.id]
 			: [];
 	});
+}
+
+export function elementRevisionMatches(
+	element: MutableSceneElement | undefined,
+	expected: { version?: number; versionNonce?: number },
+): boolean {
+	return !!element && element.version === expected.version && element.versionNonce === expected.versionNonce;
 }
 
 function patchChangesElement<Element extends MutableSceneElement>(
@@ -71,22 +99,16 @@ export function commitElementMutation<Element extends MutableSceneElement>(
 	if (!adapter) return { status: "unavailable" };
 	try {
 		const elements = adapter.readElements();
-		const conflictingIds = conflictsWithExpected(elements, expected);
+		const conflictingIds = conflictingElementRevisions(elements, expected);
 		if (conflictingIds.length > 0) return { status: "conflict", conflictingIds };
 
 		const changedIds: string[] = [];
-		const now = Date.now();
+		const updated = Date.now();
 		const nextElements = elements.map((element) => {
 			const patch = change(element);
 			if (!patch || !patchChangesElement(element, patch)) return element;
 			changedIds.push(element.id);
-			return {
-				...element,
-				...patch,
-				version: (element.version ?? 1) + 1,
-				versionNonce: Math.floor(Math.random() * 0x7fffffff),
-				updated: now,
-			};
+			return stampElementPatch(element, patch, randomVersionNonce(), updated);
 		});
 		if (changedIds.length === 0) return { status: "no-op" };
 

@@ -1,13 +1,15 @@
-import type { App, WorkspaceLeaf } from "obsidian";
+import { TFile, arrayBufferToBase64, type App, type WorkspaceLeaf } from "obsidian";
 import {
 	getExcalidrawApi,
 	getExcalidrawView,
-	randomVersionNonce,
 	type ExcalidrawEmbeddedFileLike,
 } from "./excalidraw-view";
+import { randomVersionNonce } from "./excalidraw-element-mutation";
 import type {
 	GeneratedImageAsset,
+	GeneratedImageBinary,
 	GeneratedImageElement,
+	GeneratedImageFileMap,
 	GeneratedImageTransactionAdapter,
 } from "./generated-image-transaction";
 
@@ -20,6 +22,25 @@ interface ExcalidrawPluginFileRegistryLike {
 	filesMaster?: { delete(fileId: string): unknown };
 }
 
+export interface ObsidianGeneratedImageAdapter extends GeneratedImageTransactionAdapter<ObsidianGeneratedImageAsset> {
+	recoverSourceBinary(fileId: string, sourcePath: string | undefined, isDark: boolean): Promise<GeneratedImageBinary | null>;
+}
+
+const IMAGE_MIME_TYPES: Record<string, string> = {
+	avif: "image/avif",
+	bmp: "image/bmp",
+	gif: "image/gif",
+	jpeg: "image/jpeg",
+	jpg: "image/jpeg",
+	png: "image/png",
+	svg: "image/svg+xml",
+	webp: "image/webp",
+};
+
+function mimeTypeFromDataURL(dataURL: string): string {
+	return /^data:([^;,]+)/i.exec(dataURL)?.[1] ?? "application/octet-stream";
+}
+
 /**
  * Adapts the Obsidian vault and a live Excalidraw canvas to the generated-image
  * transaction. Returns null until every required runtime capability is mounted.
@@ -27,7 +48,7 @@ interface ExcalidrawPluginFileRegistryLike {
 export function createObsidianGeneratedImageAdapter(
 	app: App,
 	leaf: WorkspaceLeaf | null,
-): GeneratedImageTransactionAdapter<ObsidianGeneratedImageAsset> | null {
+): ObsidianGeneratedImageAdapter | null {
 	const api = getExcalidrawApi(leaf);
 	const view = getExcalidrawView(leaf);
 	if (!api?.getSceneElements || !view?.updateScene) return null;
@@ -69,13 +90,49 @@ export function createObsidianGeneratedImageAdapter(
 			});
 			data.setFile(asset.id, embedded);
 		},
-		addCoreFiles: (files) => {
+		stageCoreFiles: (files) => {
 			if (!api.addFiles) throw new Error("Excalidraw core file registration is unavailable");
 			api.addFiles(files);
-		},
-		readCoreFiles: () => {
 			if (!api.getFiles) throw new Error("Excalidraw core file map is unavailable");
-			return api.getFiles();
+			const complete: GeneratedImageFileMap = { ...api.getFiles() };
+			for (const file of files) complete[file.id] = file;
+			return complete;
+		},
+		recoverSourceBinary: async (fileId, sourcePath, isDark) => {
+			let existing: GeneratedImageFileMap[string];
+			try {
+				existing = api.getFiles?.()[fileId];
+			} catch {
+				// The persisted source path remains a usable fallback.
+			}
+			let dataURL = existing?.dataURL;
+			let sourceFile: TFile | null = null;
+			try {
+				const embedded = view.excalidrawData?.getFile?.(fileId);
+				dataURL ||= embedded?.getImage?.(isDark) || undefined;
+				sourceFile = embedded?.file ?? null;
+			} catch {
+				// The persisted source path remains a usable fallback.
+			}
+			if (!sourceFile && sourcePath) {
+				const candidate = app.vault.getAbstractFileByPath(sourcePath);
+				if (candidate instanceof TFile) sourceFile = candidate;
+			}
+			if (!dataURL && sourceFile) {
+				try {
+					const mimeType = IMAGE_MIME_TYPES[sourceFile.extension.toLowerCase()] ?? "application/octet-stream";
+					dataURL = `data:${mimeType};base64,${arrayBufferToBase64(await app.vault.readBinary(sourceFile))}`;
+				} catch {
+					return null;
+				}
+			}
+			if (!dataURL) return null;
+			return {
+				id: fileId,
+				dataURL,
+				mimeType: existing?.mimeType ?? mimeTypeFromDataURL(dataURL),
+				created: existing?.created ?? sourceFile?.stat.ctime ?? Date.now(),
+			};
 		},
 		writeScene: (elements, files) => {
 			view.updateScene!({

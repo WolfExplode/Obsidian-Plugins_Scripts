@@ -29,11 +29,13 @@ import {
 } from "./excalidraw-view";
 import {
 	applyGeneratedImageTransaction,
+	type GeneratedImageBinary,
 	type GeneratedImageChange,
 	type GeneratedImageRef,
 } from "./generated-image-transaction";
 import {
 	createObsidianGeneratedImageAdapter,
+	type ObsidianGeneratedImageAdapter,
 	type ObsidianGeneratedImageAsset,
 } from "./obsidian-excalidraw-generated-images";
 
@@ -111,16 +113,6 @@ function nextViewportPath(app: App, leaf: WorkspaceLeaf | null, elementId: strin
 		suffix++;
 	}
 	return path;
-}
-
-function getSourceDataURL(leaf: WorkspaceLeaf | null, files: Record<string, { dataURL?: string } | undefined>, fileId: string, isDark: boolean): string | null {
-		const direct = files[fileId]?.dataURL;
-		if (direct) return direct;
-		try {
-			return getExcalidrawData(leaf)?.getFile?.(fileId)?.getImage?.(isDark) ?? null;
-		} catch {
-			return null;
-		}
 }
 
 function getSourcePath(leaf: WorkspaceLeaf | null, fileId: string): string | undefined {
@@ -208,18 +200,23 @@ interface ViewportCropPlan {
 async function planViewportCrop(
 	app: App,
 	leaf: WorkspaceLeaf | null,
+	generatedImages: ObsidianGeneratedImageAdapter,
 	el: ImageSceneElement,
 	rect: SceneRect,
 	sourceNatural: { w: number; h: number },
 	generatedNatural: { w: number; h: number },
-	files: Record<string, { dataURL?: string } | undefined>,
 	sourceIsDarkThemed: boolean,
 ): Promise<ViewportCropPlan | null> {
 	const existing = getViewportCropState(el);
 	const sourceFileId = existing?.sourceFileId ?? el.fileId;
 	if (!sourceFileId) return null;
-	const sourceDataURL = getSourceDataURL(leaf, files, sourceFileId, sourceIsDarkThemed);
-	if (!sourceDataURL) return null;
+	const sourceBinary = await generatedImages.recoverSourceBinary(
+		sourceFileId,
+		existing?.sourcePath ?? getSourcePath(leaf, sourceFileId),
+		sourceIsDarkThemed,
+	);
+	if (!sourceBinary) return null;
+	const sourceDataURL = sourceBinary.dataURL;
 	const viewportToCurrent = existing
 		? viewportCropToCurrentLocal(el, existing, generatedNatural)
 		: null;
@@ -426,7 +423,7 @@ export async function cropImagesToSceneRect(
 				? { w: viewport.sourceNaturalWidth, h: viewport.sourceNaturalHeight }
 				: elementNatural;
 			const viewportPlan = (el.angle && Math.abs(el.angle) > 1e-6) || getViewportCropState(el)
-				? await planViewportCrop(app, leaf, el, rect, sourceNatural, elementNatural, files, sourceIsDarkThemed)
+				? await planViewportCrop(app, leaf, transactionAdapter, el, rect, sourceNatural, elementNatural, sourceIsDarkThemed)
 				: null;
 			if (viewportPlan) {
 				plans.set(el.id, {
@@ -499,7 +496,8 @@ export async function cropImagesToSceneRect(
  * programmatic equivalent of Excalidraw's double-click uncrop. For custom
  * viewport-cropped images this removes only the custom layer and restores the
  * underlying native-cropped image; ordinary images are restored as before.
- * Synchronous: natural size comes from the existing crop, so nothing is decoded.
+ * Natural size comes from persisted crop state. A custom crop may still need to
+ * recover its original bytes from the vault after the Board has been reopened.
  */
 export async function uncropImages(app: App, leaf: WorkspaceLeaf | null, ids?: readonly string[]): Promise<string[]> {
 	const api = getExcalidrawApi(leaf);
@@ -518,15 +516,21 @@ export async function uncropImages(app: App, leaf: WorkspaceLeaf | null, ids?: r
 	const idSet = ids ? new Set(ids) : null;
 	const changes: GeneratedImageChange[] = [];
 	const generatedFilesToDelete: GeneratedImageRef[] = [];
-	all.forEach((raw) => {
-		if (!isImageElement(raw)) return;
+	const requiredCoreFiles = new Map<string, GeneratedImageBinary>();
+	const sourceIsDarkThemed = api.getAppState().theme === "dark";
+	for (const raw of all) {
+		if (!isImageElement(raw)) continue;
 		const el = raw;
 		const target = idSet ? idSet.has(el.id) : !!selectedIds[el.id];
 		const viewport = getViewportCropState(el);
 		if (target && viewport) {
-			if (viewport.generatedPath && el.fileId) {
-				generatedFilesToDelete.push({ fileId: el.fileId, path: viewport.generatedPath });
-			}
+			const sourceBinary = await transactionAdapter.recoverSourceBinary(
+				viewport.sourceFileId,
+				viewport.sourcePath,
+				sourceIsDarkThemed,
+			);
+			// Never replace a working generated image with an unresolved source ID.
+			if (!sourceBinary) continue;
 			const crop = viewport.baseCrop;
 			const nw = viewport.sourceNaturalWidth;
 			const nh = viewport.sourceNaturalHeight;
@@ -541,9 +545,9 @@ export async function uncropImages(app: App, leaf: WorkspaceLeaf | null, ids?: r
 					const bounds = polygonBounds(viewport.polygon);
 					return bounds ? { w: bounds.width, h: bounds.height } : null;
 				})();
-			if (!generatedNatural) return;
+			if (!generatedNatural) continue;
 			const viewportToCurrent = viewportCropToCurrentLocal(el, viewport, generatedNatural);
-			if (!viewportToCurrent) return;
+			if (!viewportToCurrent) continue;
 			const sourceToScene = multiplyAffine(
 				elementLocalToScene(el),
 				multiplyAffine(viewportToCurrent, viewport.sourceToLocal),
@@ -553,7 +557,7 @@ export async function uncropImages(app: App, leaf: WorkspaceLeaf | null, ids?: r
 			const p2 = applyAffine(sourceToScene, { x: sourceCrop.x, y: sourceCrop.y + sourceCrop.height });
 			const width = Math.hypot(p1.x - p0.x, p1.y - p0.y);
 			const height = Math.hypot(p2.x - p0.x, p2.y - p0.y);
-			if (width <= 0 || height <= 0) return;
+			if (width <= 0 || height <= 0) continue;
 			const orientation = (p1.x - p0.x) * (p2.y - p0.y) - (p1.y - p0.y) * (p2.x - p0.x);
 			const center = {
 				x: (p0.x + p1.x + p2.x + (p1.x + p2.x - p0.x)) / 4,
@@ -579,9 +583,13 @@ export async function uncropImages(app: App, leaf: WorkspaceLeaf | null, ids?: r
 					customData: Object.keys(customData).length ? customData : undefined,
 				},
 			});
-			return;
+			requiredCoreFiles.set(viewport.sourceFileId, sourceBinary);
+			if (viewport.generatedPath && el.fileId) {
+				generatedFilesToDelete.push({ fileId: el.fileId, path: viewport.generatedPath });
+			}
+			continue;
 		}
-		if (!target || !el.crop) return;
+		if (!target || !el.crop) continue;
 
 		const crop = el.crop;
 		const flipX = el.scale?.[0] === -1;
@@ -622,12 +630,13 @@ export async function uncropImages(app: App, leaf: WorkspaceLeaf | null, ids?: r
 			expected: { version: el.version, versionNonce: el.versionNonce },
 			patch: { x, y, width: uncroppedW, height: uncroppedH, crop: null },
 		});
-	});
+	}
 	if (changes.length === 0) return [];
 
 	const transaction = await applyGeneratedImageTransaction(transactionAdapter, {
 		changes,
 		created: [],
+		requiredCoreFiles: [...requiredCoreFiles.values()],
 		retire: generatedFilesToDelete,
 	});
 	if (transaction.status !== "applied") {

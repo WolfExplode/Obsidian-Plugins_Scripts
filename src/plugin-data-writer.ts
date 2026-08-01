@@ -18,8 +18,8 @@ function asPluginData(value: unknown): Record<string, unknown> {
 /**
  * Owns every read-modify-write transaction against the host plugin's
  * data.json. GeometryStore and HotkeyStore keep their domain state and expose
- * their existing interfaces; this module alone owns cross-store ordering,
- * top-level merging, and write-queue failure recovery.
+ * their existing interfaces; this module alone owns cross-store and same-store
+ * ordering, top-level merging, and write-queue failure recovery.
  */
 export class PluginDataWriter {
 	private writeQueue: Promise<void> = Promise.resolve();
@@ -31,13 +31,18 @@ export class PluginDataWriter {
 		return data[section] as T | undefined;
 	}
 
-	async writeSection(section: PluginDataSection, value: unknown): Promise<void> {
+	async mutateSection<T>(
+		section: PluginDataSection,
+		transform: (current: T | undefined) => T,
+	): Promise<T> {
 		const write = this.writeQueue.then(async () => {
 			const current = asPluginData(await this.adapter.loadData());
-			await this.adapter.saveData({ ...current, [section]: value });
+			const next = transform(current[section] as T | undefined);
+			await this.adapter.saveData({ ...current, [section]: next });
+			return next;
 		});
 		// Reject this caller on failure without poisoning later queued writes.
-		this.writeQueue = write.catch(() => undefined);
-		await write;
+		this.writeQueue = write.then(() => undefined, () => undefined);
+		return write;
 	}
 }

@@ -12,6 +12,7 @@ import { type ImageCrop, type SceneRect } from "./crop-geometry";
 import {
 	captureElementRevisions,
 	commitElementMutation,
+	randomVersionNonce,
 	type ElementMutationResult,
 	type ElementPatch,
 	type ElementRevision,
@@ -96,11 +97,19 @@ export interface ExcalidrawApi {
 	};
 	getSceneElements?(): readonly SceneElement[];
 	/** The scene's binary files, keyed by an image element's `fileId`. */
-	getFiles?(): Record<string, { dataURL?: string } | undefined>;
+	getFiles?(): Record<string, {
+		dataURL?: string;
+		mimeType?: string;
+		created?: number;
+	} | undefined>;
 	addFiles?(files: readonly unknown[]): void;
 	updateScene?(scene: {
 		elements?: readonly unknown[];
-		files?: Record<string, { dataURL?: string } | undefined>;
+		files?: Record<string, {
+			dataURL?: string;
+			mimeType?: string;
+			created?: number;
+		} | undefined>;
 		captureUpdate?: string;
 	}): void;
 }
@@ -413,11 +422,6 @@ const PACK_GAP = 8;
 
 /** The same ten-percent increment used by Excalidraw's opacity control. */
 const ELEMENT_OPACITY_STEP = 10;
-
-/** A pseudo-random 31-bit integer for an element's versionNonce (mirrors Excalidraw). */
-export function randomVersionNonce(): number {
-	return Math.floor(Math.random() * 0x7fffffff);
-}
 
 /**
  * Changes every currently selected scene element's opacity in one undoable

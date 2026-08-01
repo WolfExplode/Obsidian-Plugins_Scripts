@@ -1,7 +1,12 @@
-export interface GeneratedImageElement {
+import {
+	elementRevisionMatches,
+	stampElementPatch,
+	type ElementPatch,
+	type MutableSceneElement,
+} from "./excalidraw-element-mutation";
+
+export interface GeneratedImageElement extends MutableSceneElement {
 	id: string;
-	version?: number;
-	versionNonce?: number;
 	fileId?: string | null;
 	[key: string]: unknown;
 }
@@ -28,17 +33,20 @@ export interface GeneratedImageRef {
 export interface GeneratedImageChange {
 	id: string;
 	expected: { version?: number; versionNonce?: number };
-	patch: Record<string, unknown>;
+	patch: ElementPatch<GeneratedImageElement>;
 }
 
-export type GeneratedImageFileMap = Record<string, { dataURL?: string } | undefined>;
+export type GeneratedImageFileMap = Record<string, {
+	dataURL?: string;
+	mimeType?: string;
+	created?: number;
+} | undefined>;
 
 export interface GeneratedImageTransactionAdapter<TAsset extends GeneratedImageAsset> {
 	readElements(): readonly GeneratedImageElement[];
 	createAttachment(asset: TAsset): Promise<void>;
 	registerGenerated(asset: TAsset): void | Promise<void>;
-	addCoreFiles(files: readonly GeneratedImageBinary[]): void;
-	readCoreFiles(): GeneratedImageFileMap;
+	stageCoreFiles(files: readonly GeneratedImageBinary[]): GeneratedImageFileMap;
 	writeScene(elements: readonly GeneratedImageElement[], files?: GeneratedImageFileMap): void;
 	rollbackRegistration(asset: TAsset): void | Promise<void>;
 	retireRegistration(fileId: string): void | Promise<void>;
@@ -59,16 +67,15 @@ export type GeneratedImageTransactionResult =
 export interface GeneratedImageTransaction<TAsset extends GeneratedImageAsset> {
 	changes: readonly GeneratedImageChange[];
 	created: readonly TAsset[];
+	/** Existing binaries that changed elements will reference after the commit. */
+	requiredCoreFiles?: readonly GeneratedImageBinary[];
 	retire?: readonly GeneratedImageRef[];
 	cleanupAttempts?: number;
 }
 
 function revisionsMatch(elements: readonly GeneratedImageElement[], changes: readonly GeneratedImageChange[]): boolean {
 	const byId = new Map(elements.map((element) => [element.id, element]));
-	return changes.every((change) => {
-		const element = byId.get(change.id);
-		return !!element && element.version === change.expected.version && element.versionNonce === change.expected.versionNonce;
-	});
+	return changes.every((change) => elementRevisionMatches(byId.get(change.id), change.expected));
 }
 
 async function rollbackCreated<TAsset extends GeneratedImageAsset>(
@@ -152,13 +159,7 @@ function buildCommit(
 		if (!change) return element;
 		const versionNonce = adapter.randomVersionNonce();
 		committedNonces.set(element.id, versionNonce);
-		return {
-			...element,
-			...change.patch,
-			version: (element.version ?? 1) + 1,
-			versionNonce,
-			updated,
-		};
+		return stampElementPatch(element, change.patch, versionNonce, updated);
 	});
 	return { elements: next, committedNonces };
 }
@@ -215,12 +216,14 @@ export async function applyGeneratedImageTransaction<TAsset extends GeneratedIma
 		}
 
 		let files: GeneratedImageFileMap | undefined;
-		if (transaction.created.length > 0) {
+		const binariesById = new Map(
+			(transaction.requiredCoreFiles ?? []).map((binary) => [binary.id, binary]),
+		);
+		for (const asset of transaction.created) binariesById.set(asset.binary.id, asset.binary);
+		const binaries = [...binariesById.values()];
+		if (binaries.length > 0) {
 			stage = "core";
-			const binaries = transaction.created.map((asset) => asset.binary);
-			adapter.addCoreFiles(binaries);
-			files = { ...adapter.readCoreFiles() };
-			for (const binary of binaries) files[binary.id] = binary;
+			files = adapter.stageCoreFiles(binaries);
 		}
 
 		stage = "commit";
