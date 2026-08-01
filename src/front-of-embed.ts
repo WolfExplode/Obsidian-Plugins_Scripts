@@ -83,24 +83,12 @@ function overlaps(a: FrontOfEmbedElement, b: FrontOfEmbedElement): boolean {
  * has no clip of its own, so it would copy scene background from wherever the
  * frame cut the element off.
  *
- * Neither a *bound* nor an *elbowed* arrow bails out for being either. Both
- * used to be blanket excluded on the theory that their `points` aren't where
- * Excalidraw actually draws them -- true of the mask-and-blit approach this
- * mechanism used to use, verified live (2026-07-29) with an arrow bound
- * `mode: "inside"` to the very embeddable it crossed. But `points` is the
- * *only* place either a bound endpoint's pull-back (focus/gap/`fixedPoint`)
- * or an elbow-routed segment ever gets written to --
- * `packages/element/src/shape.ts` (both the canvas shape generator and
- * `exportToSvg` run through it) reads nothing but the element's own fields, no
- * binding lookups and no elbow-specific routing of its own -- and
- * `updateBoundElements`/`updateElbowArrowPoints` keep `points` in sync on
- * every drag/resize of the bound element or the arrow's own endpoints. So the
- * emitted path drawn since `c357f095` is exactly what's on screen for a bound
- * or elbowed arrow too; re-verified live (2026-07-31) against a real bound
- * arrow and a real bound *elbowed* arrow.
+ * Bound and elbowed arrows remain eligible: Excalidraw writes their resolved
+ * routing into `points`, and both its canvas renderer and `exportToSvg` consume
+ * those fields without a separate binding lookup.
  *
- * A *labelled arrow* no longer bails out either. Its label's own `x`/`y` are
- * unreliable -- Excalidraw ignores them in favour of
+ * A labelled arrow is eligible, but its label's own `x`/`y` are unreliable:
+ * Excalidraw ignores them in favour of
  * `LinearElementEditor.getBoundTextElementPosition`, computed live from the
  * arrow's current `points` and only occasionally written back to the label's
  * stored `x`/`y` (unlike the arrow's own `points`, which get resynced on
@@ -240,12 +228,8 @@ export interface ElementPlacement {
  * the origin (`element.y < y1`) the guard clamps the offset to 0 and the element
  * is painted `y1 - element.y` too low. Same on x.
  *
- * That mostly happens with a cartoonist-roughness dashed or dotted stroke: those
- * are drawn as a single rough.js pass with unpinned vertices, so the whole curve
- * can sit below where its first point is recorded. Measured live (2026-07-30) on
- * a dashed cartoonist curve: Excalidraw drew it 1.41 scene units below its own
- * exported geometry, so the overlay's copy straddled it -- the drawn stroke and
- * the canvas one visibly out of register at the embeddable's edge.
+ * This is most visible on dashed or dotted cartoonist strokes, whose unpinned
+ * rough.js pass may stay entirely after the recorded origin.
  */
 export function elementPlacement(element: FrontOfEmbedElement, bounds: AbsoluteBounds | null): ElementPlacement {
 	if (!bounds) {
@@ -320,4 +304,3 @@ export function paintPlanFor(element: FrontOfEmbedElement): PaintPlan {
 		fontFamily: element.fontFamily ?? DEFAULT_FONT_FAMILY,
 	};
 }
-

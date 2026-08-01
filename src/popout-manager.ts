@@ -413,19 +413,13 @@ export class PopoutManager {
 			return;
 		}
 
-		// Snapshot the originating (main-window) view's camera NOW, before opening
-		// the Popout steals focus/active state, so a first-ever launch can mirror
-		// it (per the "mirror on first launch, then persist" decision). Ignored
-		// once this Board has a saved Popout viewport. null if the Board isn't
-		// currently open in the main window.
+		// Capture the main-window camera before the Popout takes focus. It seeds only
+		// Boards without a saved Popout viewport.
 		const sourceViewState = readMainWindowViewportForFile(this.plugin.app, file.path);
 
 		const existingWindowIds = new Set(getBrowserWindowIds());
-		// Placeholder entry stored BEFORE calling openPopoutLeaf(): Obsidian's
-		// 'window-open' event fires synchronously from inside that call, before
-		// it returns to us, so finalizePendingOpen() must already find this
-		// entry in the map or every `if (entry)` block below silently no-ops
-		// (this is what was breaking window-drag attachment).
+		// `window-open` fires inside openPopoutLeaf(), so publish the pending entry
+		// before calling it.
 		const entry: OpenBoardPopout = {
 			leaf: null,
 			phase: "opening",
@@ -449,11 +443,8 @@ export class PopoutManager {
 		this.openBoards.set(file.path, entry);
 		this.plugin.recordDiagnostic("popout-opening", { filePath: file.path });
 
-		// Suppress Excalidraw's global zoom-to-fit-on-resize for as long as a
-		// Popout is open, so RMB window-drag (which emits resize events on
-		// Windows via Electron's setBounds) doesn't refit the board. Balanced
-		// by resume() in handleWindowClosed(), and in the catch below if the
-		// open fails before the window is ever marked. See excalidraw-settings.ts.
+		// Electron window dragging emits resize events; suspend Excalidraw's global
+		// zoom-to-fit until this Popout closes. See excalidraw-settings.ts.
 		this.refitSuspender.suspend();
 
 		try {
@@ -464,42 +455,25 @@ export class PopoutManager {
 			// openPopoutLeaf returns. Focus is still bounded and cancellable.
 			await this.waitForPopoutFocus(entry.doc, FOCUS_WAIT_MAX_MS, entry);
 			if (!this.isCurrent(file.path, entry)) return;
-			// Force the Excalidraw view type explicitly instead of leaf.openFile(),
-			// which lets Obsidian/Excalidraw choose the view. A Board file carrying
-			// `excalidraw-open-md: true` frontmatter would otherwise open as plain
-			// markdown, defeating the Popout. Excalidraw's own leaf patch only ever
-			// upgrades markdown -> excalidraw, never the reverse, so pinning the
-			// type here wins regardless of that frontmatter.
+			// Pin the Excalidraw view type; `excalidraw-open-md: true` must not turn a
+			// Popout Board into a markdown view.
 			await leaf.setViewState({
 				type: EXCALIDRAW_VIEW_TYPE,
 				state: { file: file.path },
 				active: true,
 			});
 			if (!this.isCurrent(file.path, entry)) return;
-			// Veiled immediately once the container exists, before its first paint
-			// of Excalidraw's default (pre-startup-camera) view — cleared once
-			// finalizeCanvasWhenReady has applied the real one. See setContainerVeiled.
+			// Hide the default camera until finalizeCanvasWhenReady applies the startup view.
 			setContainerVeiled(entry.leaf, true);
 
-			// Focus is grabbed here — after Excalidraw's view has mounted —
-			// rather than during the pre-mount window-open handling. See the
-			// comment in finalizePendingOpen() for why.
+			// Excalidraw binds input to the active window at mount, so focus only now.
 			if (entry.windowId != null) {
 				focusWindowById(entry.windowId);
 				if (initialOpacity != null) setWindowOpacityById(entry.windowId, initialOpacity);
 			}
 
-			// Nudge the canvas to its final size and set the startup camera — but
-			// only once Excalidraw's API is live AND its own "Loading scene…"
-			// overlay has cleared. The API can report a measured container well
-			// before Excalidraw finishes decoding embedded images on a heavy Board;
-			// poking updateScene/resize while that overlay is still up has been
-			// confirmed (via a live repro) to orphan Excalidraw's own file-load
-			// promise chain, leaving the overlay stuck forever even though the
-			// scene's elements loaded fine. finalizeCanvasWhenReady gates on both
-			// isCanvasReady() and hasLoadingOverlay(). This is part of the
-			// serialized open transition: a queued close must not detach the leaf
-			// while Excalidraw is still mounting.
+			// Resize and apply the camera only after the canvas and its files are ready;
+			// touching a partially loaded Board can strand Excalidraw's loader.
 			await this.finalizeCanvasWhenReady(entry, file.path, sourceViewState);
 		} catch (error) {
 			console.error("Excalidraw PureRef: failed to open board in popout.", error);
@@ -536,18 +510,9 @@ export class PopoutManager {
 	}
 
 	/**
-	 * Resolve once the popout window has actually become the focused/active
-	 * window, or after `maxMs` as a hard cap. This replaces a blind fixed
-	 * delay: Excalidraw binds its pointer/wheel listeners to whatever window
-	 * is active at mount time, so mounting it (via openFile) before the new
-	 * popout has taken focus makes it track the wrong window — the root cause
-	 * of the "app doesn't know where the mouse is" bug. `document.hasFocus()`
-	 * is the direct OS/Chromium-level truth of that condition.
-	 *
-	 * Polled on the popout's OWN requestAnimationFrame (which only runs once
-	 * that window's compositor is live), with an independent setTimeout on the
-	 * main window as a guaranteed fallback in case focus never lands (which
-	 * would otherwise throttle the popout's rAF and stall the poll).
+	 * Wait until the Popout owns focus before mounting Excalidraw, which binds
+	 * input listeners to the active window. Poll its rAF and keep a main-window
+	 * timeout because an unfocused renderer may throttle frames.
 	 */
 	private waitForPopoutFocus(doc: Document | null, maxMs: number, entry: OpenBoardPopout): Promise<void> {
 		return new Promise<void>((resolve) => {
@@ -675,38 +640,10 @@ export class PopoutManager {
 	}
 
 	/**
-	 * Waits (on the reliable main-window timer, not the popout's rAF) for
-	 * Excalidraw's canvas API to come alive, then does the two things that must
-	 * happen against a live canvas: dispatch a synthetic resize so Excalidraw
-	 * re-measures its container to the window's final size (it only measures once
-	 * at mount and never re-measures on its own), and apply the startup camera.
-	 * Doing this before the API is ready is both useless (our calls no-op) and
-	 * harmful (poking a mid-load scene), so we gate on readiness. Bails out if the
-	 * Popout is closed before the canvas ever comes up.
-	 *
-	 * "Ready" (`isReady()` below) is three conditions, all live data reads, no
-	 * timer: `isCanvasReady` (API mounted, container measured), `!hasLoadingOverlay`
-	 * (Excalidraw's own "Loading scene…" element is gone), and `!hasUnloadedFiles`
-	 * (every element's `fileId` has a matching entry in `getFiles()`). The last one
-	 * is load-bearing, not decorative — confirmed via a live repro (2026-07-29) that
-	 * firing resize/updateScene while a heavy Board's images are still decoding
-	 * orphans Excalidraw's own file-load promise chain, leaving the overlay stuck
-	 * forever even though the scene's elements loaded fine and the plugin's own
-	 * `isLoaded` bookkeeping falsely reports done. `hasLoadingOverlay` alone isn't
-	 * enough to catch this: right after mount there's a gap before Excalidraw has
-	 * even decided to show the overlay, so a lone overlay check can read "clear"
-	 * a beat before the real decode work starts. `hasUnloadedFiles` closes that gap
-	 * with an actual data comparison instead of a wait — a settle-time debounce
-	 * was tried first and discarded: a live probe showed elements are always fully
-	 * populated the instant the API exists (nothing to debounce for), so the
-	 * timer was pure guesswork riding on top of a real, checkable condition. Prefer
-	 * that pattern generally: if a fix's correctness depends on a wall-clock
-	 * duration rather than on data you can query, look harder for the actual
-	 * condition first (see AGENTS.md, "Avoid timers as bug fixes").
-	 *
-	 * The container stays veiled (`setContainerVeiled`, called by the caller
-	 * around `setViewState`/here) for the same span this waits on, so the
-	 * mount-at-default-view-then-snap-to-saved-viewport transition isn't visible.
+	 * Resize and apply the startup camera only when the API is mounted, the loading
+	 * overlay is gone, and every element file is registered. The file-map check
+	 * closes the gap before Excalidraw displays its loading overlay; readiness must
+	 * depend on live data, not a settle delay. Keep the container veiled throughout.
 	 */
 	private async finalizeCanvasWhenReady(
 		entry: OpenBoardPopout,

@@ -133,12 +133,8 @@ directly rather than left as a pure upstream limitation.
 - **A candidate with no export yet is simply not painted, for that frame.** The
   emitted-geometry cache is asynchronous (see "How candidates are painted"
   below), so a freshly-drawn or just-resized element has nothing to draw from
-  for a frame or two, and it stays behind the embeddable until its geometry
-  arrives. An earlier reconstruction fallback (rough.js/perfect-freehand ports
-  in `rough.ts`/`freehand.ts`) covered that gap but was later dropped — live
-  testing found no visible flash or flicker without it, and the ports were
-  reconstructions of code not in this plugin's bundle, liable to drift silently
-  on an Excalidraw update.
+  until its geometry arrives. The host plugin does not reconstruct missing
+  Excalidraw geometry because such ports would drift from the bundled renderer.
 - **Hachure and cross-hatch fills paint as solid.** `fillStyle` is read for
   whether a fill exists but a hatched interior still fills as a slab rather than
   as its lines, because the fill follows the emitted fill path rather than its
@@ -152,18 +148,9 @@ directly rather than left as a pure upstream limitation.
   behind both the live canvas and `exportToSvg`
   (`packages/element/src/shape.ts`) reads nothing but the element's own
   fields: no binding lookup, no elbow-specific routing of its own. So the
-  emitted path is exactly what a bound or elbowed arrow draws, the same as for
-  an ordinary one. (An earlier revision of this mechanism excluded both, on
-  the strength of a live regression against the *old* mask-and-blit
-  approach's points-based mask — that reasoning didn't carry over once the
-  mechanism switched to drawing Excalidraw's own emitted paths; re-verified
-  live, separately, against a real bound arrow and a real bound *elbowed*
-  arrow after removing each exclusion.) A **labelled** arrow no longer bails
-  out either, for the reason and mechanism in "How an arrow's label is placed"
-  below; re-verified live against a real labelled arrow crossing an
-  embeddable, including a case where its label's own stored position was
-  deliberately left stale to confirm the live recompute actually runs rather
-  than coasting on data that happened to already be right.
+  emitted path is exactly what a bound or elbowed arrow draws. A **labelled**
+  arrow is also eligible because its live label position is recomputed as
+  described in "How an arrow's label is placed" below.
 
 ## How candidates are painted
 
@@ -369,10 +356,6 @@ it, because its only copy over the embeddable is drawn over the media itself.
   applied live from `element.opacity` rather than baked into the export, so
   dragging the opacity slider re-exports nothing.
 
-Earlier revisions of this mechanism masked-and-blitted every candidate from
-Excalidraw's static canvas, which left a rim of scene background around thin
-elements (worst at low zoom, where it could replace a stroke's colour outright
-rather than just fringe it). Switching to drawing emitted paths directly
-removed the rim entirely for every candidate except images, which still blit
-because their pixels have nowhere else to come from. See
-[ADR 0010](../adr/0010-front-of-embed-rendering.md) for that history.
+Images still blit from Excalidraw's static canvas because their pixels are not
+present in the emitted SVG geometry. [ADR 0010](../adr/0010-front-of-embed-rendering.md)
+records why other candidates use emitted paths instead.

@@ -1,27 +1,15 @@
 /**
  * Heals cross-realm drag-and-drop of media into a Popout.
  *
- * An Obsidian Popout is a *separate JavaScript realm* — its `File`, `Blob` and
- * `ArrayBuffer` are different constructors from the main window's, even though
- * both share the same `app` object (which lives in the main realm). Verified
- * live: `popoutWindow.ArrayBuffer !== mainWindow.ArrayBuffer`.
- *
- * When you drop a file into the Popout, Chromium mints the dropped
- * `File`/`ArrayBuffer` from the *Popout's* realm. Excalidraw's importer
- * (`createOrOverwriteFile` in the Excalidraw plugin) runs in the *main* realm
- * and branches on `i instanceof Blob` / `i instanceof ArrayBuffer`. A
- * Popout-realm object fails those checks, so the import falls through to the
- * text-write path (`vault.create(path, arrayBuffer)`) and Node's `fs.writeFile`
- * throws "the data argument must be ... Received an instance of ArrayBuffer".
- * That's why a *new* file fails to import while media already in the vault
- * (no write needed) drops in fine, and why the main window is unaffected.
+ * A Popout is a separate JavaScript realm, but Excalidraw's importer runs in the
+ * main realm and uses `instanceof Blob` / `instanceof ArrayBuffer`. Popout-owned
+ * file objects therefore fail its type checks.
  *
  * We don't reimplement Excalidraw's import matrix (files, vault links, browser
  * images, .excalidraw payloads, …). Instead we hand Excalidraw objects it
  * recognizes: on a trusted file drop we clone each dropped file into a
  * *main-realm* `File`, rebuild the `DataTransfer`, and re-dispatch the drag
- * sequence. Excalidraw's own pipeline then runs unmodified and every
- * `instanceof` passes.
+ * sequence so Excalidraw's own pipeline receives main-realm objects.
  *
  * Scope: only trusted drops carrying `dataTransfer.files` are bridged. Plain
  * string payloads (a browser image's `text/uri-list`, Obsidian's internal
@@ -40,8 +28,8 @@ const SYNTHETIC_FLAG = "__eprBridged";
  * name has to be made legal *before* Excalidraw writes the file, because
  * Excalidraw records it into the scene as a raw path — not an Obsidian link —
  * so no later rename can heal the reference. We map each offender to its
- * full-width Unicode look-alike, which is link-legal, visually near-identical,
- * and verified to round-trip cross-platform sync. `#温柔甜美.mp4` → `＃温柔甜美.mp4`.
+ * full-width Unicode look-alike, which is link-legal and reversible.
+ * `#温柔甜美.mp4` → `＃温柔甜美.mp4`.
  */
 const WIKILINK_UNSAFE: Record<string, string> = {
 	"#": "＃", // ＃ FULLWIDTH NUMBER SIGN

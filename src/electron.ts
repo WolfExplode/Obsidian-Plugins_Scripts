@@ -319,11 +319,8 @@ export function setWindowBoundsById(id: number, bounds: ElectronBounds): boolean
 /**
  * Reads a window's bounds as absolute *physical* screen pixels (scale-
  * independent), for persistence. getBounds() alone returns DIP relative to the
- * display the window is currently on, so its numbers change meaning when a
- * later window lands on a different-DPI monitor — the root cause of the F11
- * "popout shrinks each toggle" bug on mixed-DPI Windows setups (a 125% main +
- * 100% secondary compounds a x0.8 error every cycle). Physical pixels are the
- * one representation that stays stable across monitors, verified live via CDP.
+ * display the window is currently on, so persisted numbers change meaning on
+ * another DPI scale. Physical pixels remain stable across monitors.
  *
  * Falls back to raw DIP getBounds() if the screen module is unavailable, so
  * single-DPI setups keep working even on Electron builds without it.

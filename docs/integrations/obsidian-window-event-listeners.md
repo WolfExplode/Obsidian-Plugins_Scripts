@@ -74,11 +74,6 @@ the instance that received the keydown holds the state but never sees the mouse,
 and the instance seeing the mouse has no state. Each half works; the gesture
 never completes, silently and with no error.
 
-That is exactly how the Blender-style G/R/S transforms failed in a Popout: the
-main window's instance activated the transform (resolving the *Popout's* leaf
-correctly), while the Popout's instance received every `pointermove` with its own
-`active === null`.
-
 **Required approach** for any multi-event gesture (key-then-drag, hold-then-drag,
 anything spanning more than one event):
 
@@ -100,10 +95,9 @@ between events. Statelessness is the cheapest way to stay correct here.
 
 ## Testing pitfall: synthetic events do not reproduce routing
 
-`element.dispatchEvent(new KeyboardEvent(...))` on a Popout node **is** delivered
-to that Popout's listeners — real keypresses are not. Synthetic dispatch
-therefore exercises a path the user never takes and can make a broken feature
-look healthy (or vice versa).
+`element.dispatchEvent(new KeyboardEvent(...))` on a Popout node is delivered to
+that Popout's listeners, unlike a real keypress. Synthetic dispatch therefore
+does not validate cross-window routing.
 
 Use synthetic events only to probe a specific handler in isolation. Confirm any
 cross-window behavior with a **real keypress**, driving the diagnosis from
@@ -129,14 +123,5 @@ tracing inside `attachTransformKeydown`:
   (`entry.doc` matched the leaf's document exactly), and empty selection (a real
   selection was present and the baseline computed to 1).
 
-### Unresolved
-
-- The mechanism behind keyboard routing to the main window was not determined —
-  only its behavior. Treat the routing table above as observed contract, not as
-  documented Obsidian API.
-- While debugging a long-lived Popout, calling **every** stored disposer on the
-  entry still left some listeners responding, suggesting handlers can be attached
-  more than once across open/close cycles. A plugin reload plus a fresh Popout did
-  not reproduce it, and it was not the cause of the transform bug. If stale
-  behavior is ever seen in a Popout that has been reopened several times, suspect
-  duplicate attachment first.
+The keyboard-routing mechanism is undocumented. Treat the table above as a
+runtime contract to re-verify when Obsidian or Electron changes.

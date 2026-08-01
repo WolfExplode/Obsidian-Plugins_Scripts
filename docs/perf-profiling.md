@@ -49,10 +49,7 @@ without re-pasting anything.
 `location.href` stays `"about:blank"` for its entire lifetime -- it never
 navigates to a real `app://` URL, `window.app` is just injected into the
 blank page -- so a pattern like `"app://obsidian\\.md"` silently misses it
-and only ever matches the main window. Confirmed by installing with that
-pattern and finding `matchedExistingWindows` undercounting, then checking
-`window.__obsidianDevtoolsProbes` directly on the popout's targetId and
-finding it absent. The installer below already self-guards with
+and only matches the main window. The installer below self-guards with
 `if (!window.app) return () => {}`, so matching every window is safe --
 worker targets are never real `BrowserWindow`s and can't receive it anyway.
 

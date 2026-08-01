@@ -30,8 +30,8 @@ dropped into a plain Obsidian note has the identical broken-wikilink problem.
 ## Fix
 
 Each offending ASCII character is mapped to its full-width Unicode look-alike
-before Excalidraw's importer ever sees the name — link-legal, visually
-near-identical, and verified to round-trip cross-platform sync:
+before Excalidraw's importer sees the name. The mapping is link-legal, visually
+near-identical, and reversible:
 
 | ASCII | Replacement |
 | --- | --- |

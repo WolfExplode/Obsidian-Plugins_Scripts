@@ -329,13 +329,8 @@ export function isCanvasReady(leaf: WorkspaceLeaf | null): boolean {
 }
 
 /**
- * Excalidraw's own "Loading scene…" overlay (rendered as a `.LoadingMessage`
- * element while it decodes embedded files) is still up. The API can be live
- * and reporting a measured container well before this clears on a heavy Board
- * — poking updateScene/resize while it's still visible has been observed to
- * orphan Excalidraw's own file-load promise chain and leave the overlay
- * stuck forever, even though the elements themselves loaded fine. Callers
- * must wait for this to go false, not just for isCanvasReady().
+ * Excalidraw's "Loading scene…" overlay is still present. A mounted API does not
+ * imply that embedded files are ready; callers must gate canvas writes on both.
  */
 export function hasLoadingOverlay(leaf: WorkspaceLeaf | null): boolean {
 	const view = getExcalidrawView(leaf);
@@ -343,14 +338,8 @@ export function hasLoadingOverlay(leaf: WorkspaceLeaf | null): boolean {
 }
 
 /**
- * True while any non-deleted element that references a binary file (images;
- * embeddables carry their own iframe content and don't count) has no matching
- * entry in getFiles() yet. hasLoadingOverlay() alone is racy: right after
- * mount, Excalidraw hasn't decided to show the overlay yet, so a lone overlay
- * check can pass a beat before the real file-decode work — and the resulting
- * resize/updateScene call is what was observed to orphan that decode, leaving
- * the overlay stuck forever once it does appear. This checks the actual data
- * Excalidraw is waiting on instead of its transient UI state.
+ * True while a live image references a binary absent from `getFiles()`.
+ * This data check covers the gap before Excalidraw displays its loading overlay.
  */
 export function hasUnloadedFiles(leaf: WorkspaceLeaf | null): boolean {
 	const api = getExcalidrawApi(leaf);
@@ -370,13 +359,8 @@ export function hasUnloadedFiles(leaf: WorkspaceLeaf | null): boolean {
  * and zen mode are still being applied, so the "mounts at Excalidraw's default
  * view, then visibly snaps to the saved viewport" transition isn't visible.
  *
- * Deliberately an inline style on the container element itself, not a CSS
- * class on the window's <body> (see the identical lesson already documented
- * in chrome-hider.ts: Obsidian resets custom classes it doesn't own on a
- * popout's <body> shortly after the window opens, silently discarding
- * anything added that way). The container element itself isn't subject to
- * that reset and isn't recreated by Excalidraw's own re-renders, so a plain
- * inline style here doesn't need chrome-hider's MutationObserver reapply.
+ * Use an inline style on the stable container: Obsidian may reset custom classes
+ * on a Popout body, while Excalidraw does not recreate this element on render.
  */
 // Passed as variables (not inlined) so this stays a forced inline !important
 // style — see the docblock above — without reading as swappable-for-a-class.

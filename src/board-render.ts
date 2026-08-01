@@ -222,12 +222,8 @@ export function collectMediaOverlays(
  * these embeddables (same reason as video/gif above), so without this they
  * show as Excalidraw's plain placeholder link box in F10 mode.
  *
- * Deliberately an allowlist, not "any registered extension": these all
- * resolve their `loadFile()` (plus, for image-tag-based ones, a `load` event)
- * as a genuine one-shot completion signal — verified live against
- * obsidian-extended-file-support. 3D formats (obj/fbx/glb/gltf/stl) render on
- * a perpetual animation loop with no signal for "the model has loaded" at
- * all, so they are left out and stay as Excalidraw's placeholder box.
+ * The allowlist contains formats with a one-shot load completion signal. 3D
+ * formats render continuously without such a signal and remain placeholders.
  */
 const SNAPSHOT_EXTENSIONS = new Set([
 	"tiff", "tif", "dds", "hdr", "exr", "tga", "psd", "ai", "jfif", "kra", "pur", "clip",
@@ -256,14 +252,8 @@ interface EmbedComponentLike {
 type EmbedCreatorLike = (context: EmbedContextLike, file: TFile, subpath?: string) => EmbedComponentLike;
 
 /**
- * `app.embedRegistry` is undocumented Obsidian-core internal, absent from
- * every vendored reference under reference/ (neither Excalidraw's own repo
- * nor its Obsidian plugin touch it), so there's no local source of truth to
- * grep. Confirmed live instead: connected to a running Obsidian 1.13.4 via
- * the Obsidian DevTools MCP (CDP renderer eval, `obsidian_execute_js`) and
- * read `Object.getOwnPropertyNames(Object.getPrototypeOf(app.embedRegistry))`,
- * which included `getEmbedCreator`. Re-verify the same way if this ever
- * needs re-confirming after an Obsidian upgrade.
+ * `app.embedRegistry` is an undocumented Obsidian interface. Keep this shape
+ * minimal and re-check it in a live runtime when upgrading Obsidian.
  */
 interface EmbedRegistryLike {
 	getEmbedCreator?(file: TFile): EmbedCreatorLike | null;

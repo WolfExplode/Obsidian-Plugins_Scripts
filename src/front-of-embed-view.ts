@@ -59,12 +59,8 @@ const STATIC_CANVAS_SELECTOR = "canvas.static";
 /**
  * Excalidraw's `DARK_THEME_FILTER`
  * ([constants.ts:194](../reference/excalidraw-master/packages/common/src/constants.ts#L194)),
- * which is how dark theme is implemented: not as a palette, but as a filter over
- * everything the scene draws. It is **baked into the canvas pixels**, not applied
- * as CSS -- verified live (2026-07-31): no element from the static canvas up to
- * the workspace leaf has a computed `filter`, yet `viewBackgroundColor` `#ffffff`
- * reads back as `18,18,18` and a `#1e1e1e` glyph reads back as `211,211,211`,
- * which is exactly `invert(93%)` of each.
+ * which is how dark theme is implemented: a filter over scene paint rather than
+ * a stored palette. The static canvas pixels already contain that transform.
  *
  * So the blit path inherits the theme for free (it copies pixels that already
  * went through it) and the drawn path must apply it itself, or a dark-theme board

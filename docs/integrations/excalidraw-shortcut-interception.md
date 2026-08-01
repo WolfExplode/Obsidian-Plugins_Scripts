@@ -11,12 +11,9 @@ move/rotate/scale) and the Alt+S reset, all implemented in
 command implemented separately in
 [rotation-reset-hotkey.ts](../../src/rotation-reset-hotkey.ts).
 
-This was verified against `reference/excalidraw-master`,
-**Excalidraw core version 0.18.0** — the version bundled by
-**obsidian-excalidraw-plugin 2.25.3**, the live plugin version at the time of
-writing. Excalidraw's shortcut wiring is not part of its public API. Re-verify
-against the matching tag in that reference tree after the bundled plugin's
-version changes, before trusting anything below.
+This contract targets Excalidraw core 0.18.0 as bundled by
+obsidian-excalidraw-plugin 2.25.3. Shortcut wiring is not public; re-check the
+matching source under `reference/excalidraw-master` after an upstream upgrade.
 
 ## Why a DOM capture-phase listener *does* work here
 

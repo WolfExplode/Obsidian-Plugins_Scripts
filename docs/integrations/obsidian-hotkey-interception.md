@@ -14,9 +14,8 @@ the same key to `templater-obsidian:replace-in-file-templater`, which errors on 
 drawing ("Active editor is null"); the Board-scoped binding also prevents that
 conflict. Users without an existing Alt+R binding get the same reset behavior.
 
-This behavior was verified against the live Obsidian runtime (Obsidian's
-`HotkeyManager` internals are not part of its public API). Re-verify after an
-Obsidian upgrade before trusting it.
+`HotkeyManager` is an undocumented Obsidian interface; re-check this contract
+after an Obsidian upgrade.
 
 ## Why a DOM keydown listener does not work
 
@@ -37,8 +36,7 @@ that *is* an Obsidian hotkey must be intercepted inside the keymap instead.
 
 ## How the keymap resolves a hotkey
 
-Three `HotkeyManager` behaviors, observed from the live runtime, define the
-contract:
+These `HotkeyManager` behaviors define the contract:
 
 | Mechanism | Behavior | Consequence for us |
 | --- | --- | --- |

@@ -5,22 +5,14 @@ import type { HotkeyStore } from "./hotkey-store";
 
 /**
  * The minimal slice of Obsidian's (untyped) HotkeyManager this plugin touches
- * — same shape rotation-reset-hotkey.ts relies on for its Board-scoped Alt+R
- * shadowing. `setHotkeys` overwrites the custom-keys store for a command
+ * — the same shape rotation-reset-hotkey.ts uses for Board-scoped Alt+R.
+ * `setHotkeys` overwrites the custom-keys store for a command
  * (baked first, ahead of any built-in default) without touching hotkeys.json
  * until the user separately edits Settings → Hotkeys. `bakedHotkeys`/`bakedIds`
  * are parallel arrays — the same flattened view of every active hotkey (core +
  * every installed plugin) that Settings → Hotkeys itself reads to flag
- * conflicts; `bake()` recomputes them after a `setHotkeys` call invalidates them.
- *
- * Undocumented Obsidian-core internal — not present in any vendored
- * reference/ source, so there's nothing local to grep against. Confirmed
- * live instead: connected to a running Obsidian 1.13.4 via the Obsidian
- * DevTools MCP (CDP renderer eval, `obsidian_execute_js`) and checked
- * `app.hotkeyManager`'s prototype and own-properties directly —
- * `setHotkeys`/`bake` are real prototype methods, `bakedHotkeys`/`bakedIds`
- * are real instance fields. Re-verify the same way after an Obsidian
- * upgrade if this is ever in doubt again.
+ * conflicts; `bake()` recomputes them after `setHotkeys` invalidates them.
+ * This is an undocumented Obsidian interface and must be re-checked on upgrade.
  */
 interface HotkeyManagerLike {
 	setHotkeys(commandId: string, hotkeys: { modifiers: string[]; key: string }[]): void;

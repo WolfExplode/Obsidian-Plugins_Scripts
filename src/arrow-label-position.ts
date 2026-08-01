@@ -6,11 +6,8 @@
  * `deconstructLinearOrFreeDrawElement`, `curvePointAtLength`), because none of
  * it is exposed on `window.ExcalidrawLib` -- see docs/behavior/front-of-embed-rendering.md.
  *
- * Excalidraw ignores the label's own `x`/`y` for an arrow container (unlike a
- * shape container, where `redrawTextBoundingBox` keeps them accurate) and
- * instead centres the label on the arrow's middle point or middle segment,
- * recomputed live at render time from the arrow's current `points`. Which of
- * the two depends on parity:
+ * Excalidraw ignores an arrow label's stored `x`/`y` and recomputes its position
+ * from the arrow's current `points`. Placement depends on point-count parity:
  *
  * - **Odd `points.length`**: the label centres on the actual middle point,
  *   rotated about the arrow's own bounds centre -- cheap, no curve math.
@@ -18,18 +15,9 @@
  *   segment. For an elbow arrow that's just the segment's two endpoints
  *   averaged (elbow arrows don't rotate). For an ordinary arrow with sharp
  *   corners (`!roundness`) it's the straight segment's midpoint. For an
- *   ordinary arrow with rounded corners (Excalidraw's default) the segment is
- *   actually a rough.js-generated bezier through the neighbouring points, and
- *   the label sits at that curve's *arc-length* midpoint, not its parametric
- *   one -- both ported here using the real `roughjs` package (the same
- *   version Excalidraw itself bundles, pinned in package.json) for the curve
- *   generation, and a standard 24-point Legendre-Gauss quadrature (the same
- *   one `packages/math/src/curve.ts` uses) for the arc-length search. Neither
- *   is a guess at proprietary logic -- roughjs's `curve()` at `roughness: 0`
- *   is deterministic, and Gauss-Legendre quadrature is textbook numerical
- *   integration -- so this doesn't carry the drift risk the earlier
- *   rough.js/perfect-freehand reconstruction ports did (see "Deliberate scope
- *   cuts" in the doc).
+ *   ordinary rounded arrow it is the rough.js bezier's arc-length midpoint.
+ *   This uses the bundled roughjs version and the same 24-point Legendre-Gauss
+ *   integration method as Excalidraw.
  */
 
 import { RoughGenerator } from "roughjs/bin/generator";

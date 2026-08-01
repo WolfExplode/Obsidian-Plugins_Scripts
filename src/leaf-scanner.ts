@@ -6,15 +6,8 @@ import { isExcalidrawLeaf } from "./excalidraw-view";
  * The shared lifecycle behind every per-view scene watcher: video-aspect.ts
  * and media-auto-pack.ts.
  *
- * Both want the same thing — "run my scan whenever any Excalidraw view's
- * scene changes, in the main window and every Popout, attaching to views as they
- * mount and detaching as they close" — and each had grown its own copy of the
- * attach/prune/reconcile/retry machinery. They differ only in what per-leaf state
- * they seed and what they do on a change, which is what `setup` and `scan` are.
- *
- * Consolidating matters beyond deduplication: `isApiDestroyed` below encodes a
- * bug that silently broke Popout support once already (see its comment), and
- * separate hand-maintained copies is more chances to get it wrong again.
+ * It attaches across the main window and every Popout, retries while views mount,
+ * and prunes closed leaves. Consumers provide only `setup` and `scan`.
  */
 
 /** How long to keep retrying attachment while a view's API finishes mounting. */
@@ -48,13 +41,8 @@ export interface LeafScannerApi {
 /**
  * Whether a view's API reports itself torn down, tolerating property-or-method form.
  *
- * DO NOT collapse this to `api.isDestroyed?.()`. In the bundled Excalidraw
- * `isDestroyed` is a boolean *property*, so `?.()` becomes `false.call(api)` and
- * throws "d.call is not a function". That throw is silent and nasty: it fired
- * inside `prune()`, which only iterates once a leaf is attached — so the first
- * (empty) reconcile attached the main window fine, then every later reconcile
- * threw before reaching the popout leaf. Net effect was the corrector working in
- * the main window but never in popouts, with no error surfaced.
+ * Do not call it unconditionally: bundled Excalidraw exposes a boolean property,
+ * while other builds may expose a function.
  */
 export function isApiDestroyed(api: LeafScannerApi): boolean {
 	const destroyed = api.isDestroyed;
@@ -115,10 +103,8 @@ export interface LeafScannerOptions<TState> {
 	/**
 	 * Extra listeners/hooks owned for the scanner's lifetime. Returns disposers
 	 * rather than EventRefs on purpose: an EventRef must be released through the
-	 * SAME emitter it was registered on, and `Vault` and `Workspace` are separate
-	 * `Events` instances. Passing a vault ref to `workspace.offref` silently does
-	 * nothing and leaks the listener across a plugin reload — which is exactly the
-	 * bug the previous hand-rolled copies of this loop had.
+	 * SAME emitter it was registered on; `Vault` and `Workspace` are separate
+	 * `Events` instances.
 	 */
 	extras?(scanner: LeafScannerHandle<TState>): Array<() => void>;
 }

@@ -23,9 +23,8 @@ An image may exist on disk and open through Obsidian's link menu while the
 Excalidraw canvas and export still display a missing-image texture. Conversely,
 an image can render immediately and disappear after background save or reload.
 
-This behavior was verified against the live Obsidian Excalidraw runtime. Do not
-collapse or reorder the registration steps without testing immediate rendering,
-background save, and plugin reload.
+Do not collapse or reorder the registration steps without testing immediate
+rendering, background save, and plugin reload.
 
 | Layer | Owns | Required operation |
 | --- | --- | --- |

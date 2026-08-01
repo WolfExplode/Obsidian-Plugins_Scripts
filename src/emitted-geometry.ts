@@ -12,9 +12,8 @@
  * invalidate it -- and where a drag fires a scene change on every pointer move,
  * a recolour fires once, on commit.
  *
- * Path coordinates come out element-local already (verified 2026-07-30: a
- * rectangle exports as `M32 0 ...`), so the `<g>` transform is SVG layout only
- * and is deliberately ignored.
+ * Path coordinates are element-local; the surrounding `<g>` transform is SVG
+ * layout and is deliberately ignored.
  */
 
 /** One `<path>` from Excalidraw's own export, in element-local coordinates. */
@@ -58,11 +57,8 @@ function field(element: GeometryElement, name: string): unknown {
  * otherwise re-export on every frame, which is the cost that would sink this
  * approach.
  *
- * Colours *are* included, because the emitted paths carry the colours they are
- * painted in -- see `EmittedPath.fill`. That makes a recolour a re-export, which
- * a drag is not: it fires once per commit rather than once per pointer move.
- * `opacity` is deliberately still excluded; the view layer applies it live from
- * the element, so dragging the opacity slider re-exports nothing.
+ * Colours are included because the emitted paths own their paint. `opacity` is
+ * excluded because the view layer applies it live.
  */
 const GEOMETRY_FIELDS = [
 	"type",

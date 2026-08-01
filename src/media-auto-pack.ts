@@ -51,39 +51,11 @@ interface Transaction {
 }
 
 /**
- * Some import paths never re-trigger `view.synchronizeWithData` at all — e.g.
- * confirming the "Insert File From Vault" modal for a PDF calls
- * `ea.addElementsToView()` -> `view.addElements({save: true})` ->
- * `view.save()` directly, and nothing ever calls synchronizeWithData for that
- * insert. A transaction can then sit at readyToPack forever with no signal to
- * pack it.
- *
- * `view.save()` was considered as a tighter trigger here (traced into the
- * Excalidraw plugin's bundled source: addElements only awaits `this.save()`
- * when its `save` param is true). It was rejected: instrumenting a live save
- * showed `view.save()` firing *twice* for a single PDF insert — once from
- * addElements, once more shortly after from the embeddable's own async resize
- * once its rendered size is measured — so a save resolving does not reliably
- * mean "nothing more is coming." The normal drag-drop path likely calls save()
- * per file too, while still following up with the real synchronizeWithData
- * reload the rest of this module is built around. Using save() to shorten the
- * wait risks packing early on that path and then having the later
- * synchronizeWithData reload silently revert it — the exact race this module's
- * synchronizeWithData-only design exists to avoid.
- *
- * There is no way to positively detect "no synchronizeWithData is ever
- * coming" — only bound how long we wait for one. This is that bound: long
- * enough that every observed synchronizeWithData-driven pack in this codebase
- * finished well within it, so it should never race a real one; hit only when
- * synchronizeWithData is confirmed to never fire, as measured for this
- * PDF-via-modal path.
- *
- * Note: Excalidraw's own bundle reaches for the identical tool for a
- * structurally identical gap — `ExcalidrawView.setPreventReload()` arms its
- * self-reload guard with a plain `window.setTimeout(..., 2000)` because
- * there's no event for "it is now safe to reload" either. Same shape of
- * problem, same shape of fix, from the plugin whose internals we don't
- * control — not a workaround to keep trying to eliminate.
+ * Some modal insert paths save directly and never call `synchronizeWithData`,
+ * leaving no completion event for packing. `view.save()` is not a substitute:
+ * one import can save more than once while an embeddable measures itself. This
+ * fallback bounds the wait; ordinary imports still finish through the observable
+ * synchronize-with-data path.
  */
 const FALLBACK_PACK_MS = 1000;
 

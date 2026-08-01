@@ -88,15 +88,8 @@ export function isPackable(el: PackElement): boolean {
  * or upwards therefore has negative points, and its box begins that far before
  * its origin; `width`/`height` still span the full point extent either way.
  *
- * Without this an element's box was taken as `x`/`y` extending right and down by
- * `width`/`height` -- for a big scribble drawn right-to-left, a box the size of
- * the scribble hanging off its *starting point*, overlapping embeddables it
- * doesn't touch and missing the ones it covers (seen live, 2026-07-30, on a
- * 3483x3378 freedraw whose points reach 2258 units to the left of its origin).
- *
- * Excalidraw rotates such an element about the centre of this same box (verified
- * 2026-07-30 against the `rotate(...)` origin `exportToSvg` emits for a rotated
- * line), so the rotation below stays correct.
+ * Using `x`/`y` as the box corner would displace leftward or upward strokes.
+ * Excalidraw also rotates linear elements about this point-derived box.
  */
 export function geometryOffset(el: PackElement): readonly [number, number] {
 	const points = el.points;
