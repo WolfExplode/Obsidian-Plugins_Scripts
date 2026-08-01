@@ -1,6 +1,6 @@
-import type { Plugin } from "obsidian";
 import type { ElectronBounds } from "./electron";
 import type { ExcalidrawViewport } from "./excalidraw-view";
+import type { PluginDataWriter } from "./plugin-data-writer";
 
 /**
  * Persists each Board's last Popout window bounds AND canvas camera (scroll +
@@ -29,17 +29,16 @@ const emptyData = (): GeometryData => ({ boards: {}, viewports: {} });
 
 export class GeometryStore {
 	private data: GeometryData = emptyData();
-	private writeQueue: Promise<void> = Promise.resolve();
 
-	constructor(private readonly plugin: Plugin) {}
+	constructor(private readonly dataWriter: PluginDataWriter) {}
 
 	async load(): Promise<void> {
-		const stored = (await this.plugin.loadData()) as { geometry?: Partial<GeometryData> } | null;
+		const stored = await this.dataWriter.readSection<Partial<GeometryData>>("geometry");
 		// `viewports` was added after `boards`; tolerate data.json written by an
 		// older build that only has `boards`.
 		this.data = {
-			boards: stored?.geometry?.boards ?? {},
-			viewports: stored?.geometry?.viewports ?? {},
+			boards: stored?.boards ?? {},
+			viewports: stored?.viewports ?? {},
 		};
 	}
 
@@ -79,12 +78,6 @@ export class GeometryStore {
 			boards: { ...this.data.boards },
 			viewports: { ...this.data.viewports },
 		};
-		const write = this.writeQueue.then(async () => {
-			const existing = ((await this.plugin.loadData()) as Record<string, unknown> | null) ?? {};
-			await this.plugin.saveData({ ...existing, geometry: snapshot });
-		});
-		// A failed write rejects its caller but cannot poison every future write.
-		this.writeQueue = write.catch(() => undefined);
-		await write;
+		await this.dataWriter.writeSection("geometry", snapshot);
 	}
 }

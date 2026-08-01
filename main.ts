@@ -15,6 +15,7 @@ import { attachRotationResetHotkey } from "src/rotation-reset-hotkey";
 import { installKeyRelay, removeKeyRelay, cleanupOrphanPrototypes } from "src/transparent-proto";
 import { HotkeyStore } from "src/hotkey-store";
 import { syncObsidianHotkeys } from "src/hotkey-sync";
+import { PluginDataWriter } from "src/plugin-data-writer";
 
 /**
  * The only persisted state is per-Board window geometry (GeometryStore) and
@@ -47,10 +48,13 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 
 	async onload(): Promise<void> {
 		this.recordDiagnostic("plugin-load");
-		this.geometry = new GeometryStore(this);
+		// One writer serializes every read-modify-write transaction against this
+		// plugin's data.json; the domain stores retain their own state/interfaces.
+		const dataWriter = new PluginDataWriter(this);
+		this.geometry = new GeometryStore(dataWriter);
 		await this.geometry.load();
 
-		this.hotkeys = new HotkeyStore(this);
+		this.hotkeys = new HotkeyStore(dataWriter);
 		await this.hotkeys.load();
 
 		this.popouts = new PopoutManager(this);

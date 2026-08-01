@@ -1,24 +1,23 @@
-import type { Plugin } from "obsidian";
 import { getHotkeyAction, HOTKEY_ACTIONS, type HotkeyBinding } from "./hotkey-registry";
+import type { PluginDataWriter } from "./plugin-data-writer";
 
 /**
  * Persists user overrides of the plugin's hotkey bindings (see
  * hotkey-registry.ts for the fixed action list), keyed by action id. Modeled
- * on GeometryStore (geometry-store.ts): same load-once / read-modify-write-
- * merge-under-one-top-level-key pattern against Obsidian's own data.json, so
- * this store and GeometryStore can coexist without clobbering each other's
- * key. An action with no override falls back to its registry default.
+ * on GeometryStore (geometry-store.ts): both keep their domain state but route
+ * persistence through one PluginDataWriter, so concurrent changes cannot
+ * clobber each other's top-level data.json record. An action with no override
+ * falls back to its registry default.
  */
 export class HotkeyStore {
 	private overrides: Record<string, HotkeyBinding[]> = {};
-	private writeQueue: Promise<void> = Promise.resolve();
 	private listeners: Set<() => void> = new Set();
 
-	constructor(private readonly plugin: Plugin) {}
+	constructor(private readonly dataWriter: PluginDataWriter) {}
 
 	async load(): Promise<void> {
-		const stored = (await this.plugin.loadData()) as { hotkeys?: Record<string, HotkeyBinding[]> } | null;
-		this.overrides = { ...(stored?.hotkeys ?? {}) };
+		const stored = await this.dataWriter.readSection<Record<string, HotkeyBinding[]>>("hotkeys");
+		this.overrides = { ...(stored ?? {}) };
 	}
 
 	/** Current bindings for an action: its override if set, else its registry default. */
@@ -71,11 +70,6 @@ export class HotkeyStore {
 
 	private async persist(): Promise<void> {
 		const snapshot: Record<string, HotkeyBinding[]> = { ...this.overrides };
-		const write = this.writeQueue.then(async () => {
-			const existing = ((await this.plugin.loadData()) as Record<string, unknown> | null) ?? {};
-			await this.plugin.saveData({ ...existing, hotkeys: snapshot });
-		});
-		this.writeQueue = write.catch(() => undefined);
-		await write;
+		await this.dataWriter.writeSection("hotkeys", snapshot);
 	}
 }

@@ -78,7 +78,12 @@ function transformOrigin(mode: TransformMode, elements: readonly TransformElemen
 	return mode === "rotate" ? { x: (x1 + x2) / 2, y: y1 - 22 / zoom } : { x: x2 + 6 / zoom, y: y2 + 6 / zoom };
 }
 
-function emitPointer(activeTransform: ActiveTransform, type: "pointerdown" | "pointermove" | "pointerup", scenePoint: ScenePoint, source?: PointerEvent): void {
+function emitPointer(
+	activeTransform: ActiveTransform,
+	type: "pointerdown" | "pointermove" | "pointerup",
+	scenePoint: ScenePoint,
+	source?: Partial<Pick<PointerEvent, "ctrlKey" | "metaKey" | "shiftKey" | "altKey">>,
+): void {
 	const client = sceneToClientCoords(activeTransform.leaf, scenePoint.x, scenePoint.y);
 	const eventWin = activeTransform.cursorDoc.defaultView;
 	if (!client || !eventWin) return;
@@ -132,25 +137,19 @@ function beginGesture(activeTransform: ActiveTransform): void {
 			return;
 		}
 		if (!activeTransform.physicalCurrent) return;
-		activeTransform.nativeCurrent = targetForPointer(
-			activeTransform,
-			activeTransform.physicalCurrent,
-			activeTransform.latestShiftKey,
-		);
-		emitPointer(activeTransform, "pointermove", activeTransform.nativeCurrent);
+		activeTransform.nativeCurrent = targetForPointer(activeTransform, activeTransform.physicalCurrent);
+		emitPointer(activeTransform, "pointermove", activeTransform.nativeCurrent, {
+			shiftKey: activeTransform.latestShiftKey,
+		});
 	});
 }
 
-function targetForPointer(activeTransform: ActiveTransform, current: ScenePoint, shiftKey: boolean): ScenePoint {
+function targetForPointer(activeTransform: ActiveTransform, current: ScenePoint): ScenePoint {
 	const start = activeTransform.physicalStart;
 	if (!start) return activeTransform.nativeOrigin;
 	if (activeTransform.mode === "move") {
-		let dx = current.x - start.x;
-		let dy = current.y - start.y;
-		if (shiftKey) {
-			if (Math.abs(dx) < Math.abs(dy)) dx = 0;
-			else if (Math.abs(dx) > Math.abs(dy)) dy = 0;
-		}
+		const dx = current.x - start.x;
+		const dy = current.y - start.y;
 		return { x: activeTransform.nativeOrigin.x + dx, y: activeTransform.nativeOrigin.y + dy };
 	}
 	const startDistance = Math.hypot(start.x - activeTransform.pivot.x, start.y - activeTransform.pivot.y);
@@ -160,8 +159,7 @@ function targetForPointer(activeTransform: ActiveTransform, current: ScenePoint,
 	}
 	const startAngle = Math.atan2(start.y - activeTransform.pivot.y, start.x - activeTransform.pivot.x);
 	const currentAngle = Math.atan2(current.y - activeTransform.pivot.y, current.x - activeTransform.pivot.x);
-	let radians = currentAngle - startAngle;
-	if (shiftKey) radians = Math.round(radians / (Math.PI / 12)) * (Math.PI / 12);
+	const radians = currentAngle - startAngle;
 	return rotate(activeTransform.nativeOrigin, activeTransform.pivot, radians);
 }
 
@@ -363,7 +361,7 @@ export function attachTransformKeydown(win: Window, app: App, hotkeys: HotkeySto
 			return;
 		}
 		if (active.mode === "scale" && active.numericInput) return;
-		active.nativeCurrent = targetForPointer(active, current, event.shiftKey);
+		active.nativeCurrent = targetForPointer(active, current);
 		if (active.proxyReady) {
 			beginGesture(active);
 			if (active.nativeDragReady) emitPointer(active, "pointermove", active.nativeCurrent, event);

@@ -71,8 +71,6 @@ export interface ExcalidrawApi {
 		offsetLeft?: number;
 		offsetTop?: number;
 		zenModeEnabled?: boolean;
-		gridModeEnabled?: boolean;
-		gridSize?: number;
 		boxSelectionMode?: "contain" | "overlap";
 		selectedElementIds?: Record<string, boolean>;
 		/** Non-null while an iframe/embeddable owns interactive focus. */
@@ -1152,24 +1150,6 @@ export function sceneToClientCoords(leaf: WorkspaceLeaf | null, sceneX: number, 
 /** The canvas which owns Excalidraw's native React pointer handlers for a leaf. */
 export function getInteractiveCanvas(leaf: WorkspaceLeaf | null): HTMLCanvasElement | null {
 	return getExcalidrawView(leaf)?.containerEl?.querySelector<HTMLCanvasElement>("canvas.excalidraw__canvas.interactive") ?? null;
-}
-
-/**
- * Returns the active grid spacing, or null when grid snapping is disabled.
- * This mirrors Excalidraw's `getEffectiveGridSize()`: a configured grid only
- * affects element movement while grid mode itself is enabled.
- */
-export function getEffectiveGridSize(leaf: WorkspaceLeaf | null): number | null {
-	const api = getExcalidrawApi(leaf);
-	if (!api) return null;
-	try {
-		const state = api.getAppState();
-		return state.gridModeEnabled && typeof state.gridSize === "number" && state.gridSize > 0
-			? state.gridSize
-			: null;
-	} catch {
-		return null;
-	}
 }
 
 /** Ids of the leaf's image elements — the selected ones, or all when `selectedOnly` is false. */
