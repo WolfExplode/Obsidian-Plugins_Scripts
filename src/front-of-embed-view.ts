@@ -505,9 +505,7 @@ function setup(leaf: WorkspaceLeaf, _api: LeafScannerApi, scanner: LeafScannerHa
 	const win = windowOf(leaf);
 	if (!root || !win) return null;
 
-	const canvas = win.document.createElement("canvas");
-	canvas.className = "epr-front-of-embed-overlay";
-	root.appendChild(canvas);
+	const canvas = root.createEl("canvas", { cls: "epr-front-of-embed-overlay" });
 
 	const ctx = canvas.getContext("2d");
 	if (!ctx) return null;

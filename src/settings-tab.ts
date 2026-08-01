@@ -61,7 +61,7 @@ export class ExcalidrawPureRefSettingTab extends PluginSettingTab {
 					setting.addButton((button) =>
 						button
 							.setButtonText("Forget all")
-							.setWarning()
+							.setDestructive()
 							.setCta()
 							.onClick(async () => {
 								await this.plugin.geometry.clearAll();
