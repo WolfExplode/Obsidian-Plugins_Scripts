@@ -255,6 +255,16 @@ interface EmbedComponentLike {
 
 type EmbedCreatorLike = (context: EmbedContextLike, file: TFile, subpath?: string) => EmbedComponentLike;
 
+/**
+ * `app.embedRegistry` is undocumented Obsidian-core internal, absent from
+ * every vendored reference under reference/ (neither Excalidraw's own repo
+ * nor its Obsidian plugin touch it), so there's no local source of truth to
+ * grep. Confirmed live instead: connected to a running Obsidian 1.13.4 via
+ * the Obsidian DevTools MCP (CDP renderer eval, `obsidian_execute_js`) and
+ * read `Object.getOwnPropertyNames(Object.getPrototypeOf(app.embedRegistry))`,
+ * which included `getEmbedCreator`. Re-verify the same way if this ever
+ * needs re-confirming after an Obsidian upgrade.
+ */
 interface EmbedRegistryLike {
 	getEmbedCreator?(file: TFile): EmbedCreatorLike | null;
 }

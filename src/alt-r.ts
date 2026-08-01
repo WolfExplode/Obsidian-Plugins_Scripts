@@ -39,7 +39,17 @@ import { isExcalidrawLeaf } from "./excalidraw-view";
 /** Sub-id under the plugin namespace; the full command id is `${manifest.id}:${SUBID}`. */
 const COMMAND_SUBID = "alt-r-drawing";
 
-/** The minimal slice of Obsidian's (untyped) HotkeyManager we touch. */
+/**
+ * The minimal slice of Obsidian's (untyped) HotkeyManager we touch.
+ *
+ * Undocumented Obsidian-core internal — not present in any vendored
+ * reference/ source, so there's nothing local to grep against. Confirmed
+ * live instead: connected to a running Obsidian 1.13.4 via the Obsidian
+ * DevTools MCP (CDP renderer eval, `obsidian_execute_js`) and checked
+ * `app.hotkeyManager`'s prototype directly — `setHotkeys`/`removeHotkeys`
+ * are both real prototype methods. Re-verify the same way after an
+ * Obsidian upgrade if this is ever in doubt again.
+ */
 interface HotkeyManagerLike {
 	setHotkeys(commandId: string, hotkeys: { modifiers: string[]; key: string }[]): void;
 	removeHotkeys(commandId: string): void;
