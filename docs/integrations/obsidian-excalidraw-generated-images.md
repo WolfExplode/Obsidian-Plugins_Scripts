@@ -8,8 +8,11 @@ rotated-image crop implementation, but is intentionally broader: any feature
 that materializes an image into the vault and changes an Excalidraw element's
 `fileId` must follow it.
 
-The implementation lives in [excalidraw-view.ts](../../src/excalidraw-view.ts).
-The rotated-crop product decision is in [ADR 0009](../adr/0009-image-crop-drag.md).
+The transaction orchestration lives in
+[crop-orchestrator.ts](../../src/crop-orchestrator.ts), with runtime access and
+file-registration helpers in
+[excalidraw-view.ts](../../src/excalidraw-view.ts). The rotated-crop product
+decision is in [ADR 0009](../adr/0009-image-crop-drag.md).
 
 ## Why this exists
 

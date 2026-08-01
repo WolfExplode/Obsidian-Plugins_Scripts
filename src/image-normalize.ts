@@ -1,5 +1,6 @@
 import type { App, WorkspaceLeaf } from "obsidian";
 import { applySelectionTransform, findExcalidrawLeafForNode, type TransformElement } from "./excalidraw-view";
+import { captureElementRevisions } from "./excalidraw-element-mutation";
 import { chordMatches, describeBinding } from "./hotkey-match";
 import type { HotkeyStore } from "./hotkey-store";
 
@@ -14,6 +15,8 @@ interface ImageElement {
 	width: number;
 	height: number;
 	angle?: number;
+	version?: number;
+	versionNonce?: number;
 	fileId?: string;
 	crop?: { width: number; height: number } | null;
 }
@@ -111,7 +114,7 @@ export async function normalizeSelectedImages(leaf: WorkspaceLeaf | null, mode: 
 		const height = image.height * factor;
 		return { id: image.id, type: image.type, x: image.x + (image.width - width) / 2, y: image.y + (image.height - height) / 2, width, height, angle: image.angle ?? 0 };
 	});
-	return applySelectionTransform(leaf, transforms, "IMMEDIATELY");
+	return applySelectionTransform(leaf, transforms, captureElementRevisions(images));
 }
 
 const MENU_ITEMS: Array<[ImageNormalizeMode, string, string]> = [

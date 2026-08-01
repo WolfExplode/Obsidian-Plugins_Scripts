@@ -9,6 +9,13 @@ import {
 } from "./pack-elements";
 import { planOverlapAwareZOrderMove, type ZOrderDirection } from "./zorder";
 import { type ImageCrop, type SceneRect } from "./crop-geometry";
+import {
+	captureElementRevisions,
+	commitElementMutation,
+	type ElementMutationResult,
+	type ElementPatch,
+	type ElementRevision,
+} from "./excalidraw-element-mutation";
 
 /**
  * The Excalidraw community plugin registers its view under this type id.
@@ -54,7 +61,10 @@ interface ExcalidrawViewState extends ExcalidrawViewport {
 /** The Excalidraw element fields we read for bounding-box math and packing. */
 export interface SceneElement extends PackElement {
 	version?: number;
+	versionNonce?: number;
+	updated?: number;
 	opacity?: number;
+	scale?: readonly [number, number];
 	/** Nested Excalidraw group ids; the last id is the outermost group. */
 	groupIds?: readonly string[];
 	frameId?: string | null;
@@ -152,6 +162,37 @@ export function getExcalidrawApi(leaf: WorkspaceLeaf | null): ExcalidrawApi | nu
 
 export function getExcalidrawData(leaf: WorkspaceLeaf | null): ExcalidrawDataLike | null {
 	return getExcalidrawView(leaf)?.excalidrawData ?? null;
+}
+
+/** The single durable-write seam for field-level Excalidraw canvas mutations. */
+function mutateElements(
+	leaf: WorkspaceLeaf | null,
+	operation: string,
+	change: (element: SceneElement) => ElementPatch<SceneElement> | null,
+	expected: readonly ElementRevision[] = [],
+): ElementMutationResult {
+	const api = getExcalidrawApi(leaf);
+	const view = getExcalidrawView(leaf);
+	const result = commitElementMutation(
+		api?.getSceneElements && view?.updateScene ? {
+			readElements: () => api.getSceneElements!(),
+			writeElements: (elements) => view.updateScene!({
+				elements,
+				captureUpdate: "IMMEDIATELY",
+				commitToHistory: true,
+			}),
+		} : null,
+		change,
+		expected,
+	);
+	if (result.status === "failed") {
+		console.error(`[Excalidraw PureRef] ${operation} mutation failed`, result.error);
+	}
+	return result;
+}
+
+function mutationApplied(result: ElementMutationResult): boolean {
+	return result.status === "applied";
 }
 
 function updateExcalidrawScene(leaf: WorkspaceLeaf | null, appState: Record<string, unknown>): boolean {
@@ -401,38 +442,20 @@ export function randomVersionNonce(): number {
  */
 export function adjustSelectedElementsOpacity(leaf: WorkspaceLeaf | null, direction: -1 | 1): boolean {
 	const api = getExcalidrawApi(leaf);
-	const view = getExcalidrawView(leaf);
-	if (!api?.getSceneElements || !view?.updateScene) return false;
-
-	let all: readonly SceneElement[];
+	if (!api) return false;
 	let selectedIds: Record<string, boolean>;
 	try {
-		all = api.getSceneElements();
 		selectedIds = api.getAppState().selectedElementIds ?? {};
 	} catch {
 		return false;
 	}
-
-	let selected = false;
-	const nextElements = all.map((el) => {
-		if (!selectedIds[el.id] || el.isDeleted) return el;
-		selected = true;
-		return {
-			...el,
+	return mutationApplied(mutateElements(
+		leaf,
+		"adjust opacity",
+		(el) => (selectedIds[el.id] || (!!el.containerId && selectedIds[el.containerId])) && !el.isDeleted ? {
 			opacity: Math.max(0, Math.min(100, (el.opacity ?? 100) + direction * ELEMENT_OPACITY_STEP)),
-			version: (el.version ?? 1) + 1,
-			versionNonce: randomVersionNonce(),
-			updated: Date.now(),
-		};
-	});
-	if (!selected) return false;
-
-	try {
-		view.updateScene({ elements: nextElements, captureUpdate: "IMMEDIATELY", commitToHistory: true });
-		return true;
-	} catch {
-		return false;
-	}
+		} : null,
+	));
 }
 
 /**
@@ -500,8 +523,7 @@ function applyPack(
 	plan: (selected: PackElement[]) => PackMove[],
 ): boolean {
 	const api = getExcalidrawApi(leaf);
-	const view = getExcalidrawView(leaf);
-	if (!api?.getSceneElements || !view?.updateScene) return false;
+	if (!api?.getSceneElements) return false;
 
 	let all: readonly SceneElement[];
 	let selectedIds: Record<string, boolean>;
@@ -525,28 +547,14 @@ function applyPack(
 	for (const move of moves) {
 		for (const memberId of memberIdsByUnit.get(move.id) ?? []) moveById.set(memberId, move);
 	}
-	const nextElements = all.map((el) => {
+	return mutationApplied(mutateElements(leaf, "pack elements", (el) => {
 		const move = moveById.get(el.id);
-		if (!move) return el;
+		if (!move) return null;
 		return {
-			...el,
 			x: el.x + move.dx,
 			y: el.y + move.dy,
-			version: (el.version ?? 1) + 1,
-			versionNonce: randomVersionNonce(),
-			updated: Date.now(),
 		};
-	});
-
-	try {
-		// captureUpdate is the current key (CaptureUpdateAction.IMMEDIATELY);
-		// commitToHistory is the older equivalent — harmless on newer builds — so
-		// the move is a single Ctrl+Z step regardless of the bundled Excalidraw.
-		view.updateScene({ elements: nextElements, captureUpdate: "IMMEDIATELY", commitToHistory: true });
-		return true;
-	} catch {
-		return false;
-	}
+	}));
 }
 
 /**
@@ -779,144 +787,46 @@ export function removeTransformProxyEventually(
 	}
 }
 
-/**
- * Applies a modal-transform preview or final result. Preview updates are kept
- * out of history; the final identical update is captured as one undo step.
- */
+/** Applies planned geometry as one durable mutation, optionally revision-guarded. */
 export function applySelectionTransform(
 	leaf: WorkspaceLeaf | null,
 	transforms: readonly TransformElement[],
-	captureUpdate: "NEVER" | "EVENTUALLY" | "IMMEDIATELY",
+	expected: readonly ElementRevision[] = [],
 ): boolean {
 	if (transforms.length === 0) return false;
-	const api = getExcalidrawApi(leaf);
-	const view = getExcalidrawView(leaf);
-	if (!api?.getSceneElements || !view?.updateScene) return false;
-
-	let all: readonly SceneElement[];
-	try {
-		all = api.getSceneElements();
-	} catch {
-		return false;
-	}
 	const byId = new Map(transforms.map((transform) => [transform.id, transform]));
-	let changed = false;
-	const nextElements = all.map((element) => {
+	return mutationApplied(mutateElements(leaf, "apply geometry", (element) => {
 		const transform = byId.get(element.id);
-		if (!transform) return element;
-		changed = true;
+		if (!transform) return null;
 		return {
-			...element,
 			x: transform.x,
 			y: transform.y,
 			width: transform.width,
 			height: transform.height,
 			angle: transform.angle,
-			version: (element.version ?? 1) + 1,
-			versionNonce: randomVersionNonce(),
-			updated: Date.now(),
 		};
-	});
-	if (!changed) return false;
-
-	try {
-		view.updateScene({
-			elements: nextElements,
-			captureUpdate,
-			commitToHistory: captureUpdate === "IMMEDIATELY",
-		});
-		return true;
-	} catch {
-		return false;
-	}
+	}, expected));
 }
 
 /**
  * Rewrites the position/size of specific scene elements in one undoable step,
  * leaving every other element untouched. Used by the video aspect-ratio
- * corrector. Mirrors applyPack's version-bump + captureUpdate handling so the
- * change commits cleanly on any bundled Excalidraw. Returns false (no-op) if the
- * API is unavailable or none of the ids are present.
+ * corrector. The shared mutation module owns revision/history handling. Returns
+ * false (no-op) if the runtime is unavailable or none of the ids are present.
  */
 export function resizeSceneElements(leaf: WorkspaceLeaf | null, resizes: readonly ElementResize[]): boolean {
 	if (resizes.length === 0) return false;
-	const api = getExcalidrawApi(leaf);
-	const view = getExcalidrawView(leaf);
-	if (!api?.getSceneElements || !view?.updateScene) return false;
-
-	let all: readonly SceneElement[];
-	try {
-		all = api.getSceneElements();
-	} catch {
-		return false;
-	}
-
 	const byId = new Map(resizes.map((r) => [r.id, r]));
-	let changed = false;
-	const nextElements = all.map((el) => {
+	return mutationApplied(mutateElements(leaf, "resize elements", (el) => {
 		const r = byId.get(el.id);
-		if (!r) return el;
-		changed = true;
+		if (!r) return null;
 		return {
-			...el,
 			x: r.x,
 			y: r.y,
 			width: r.width,
 			height: r.height,
-			version: (el.version ?? 1) + 1,
-			versionNonce: randomVersionNonce(),
-			updated: Date.now(),
 		};
-	});
-	if (!changed) return false;
-
-	try {
-		view.updateScene({ elements: nextElements, captureUpdate: "IMMEDIATELY", commitToHistory: true });
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-/**
- * Marks specific scene elements deleted in one undoable step, leaving every
- * other element untouched. Used to remove the placeholder `image` element the
- * animated-image-to-embeddable converter replaces with an `embeddable`.
- */
-export function deleteSceneElements(leaf: WorkspaceLeaf | null, ids: readonly string[]): boolean {
-	if (ids.length === 0) return false;
-	const api = getExcalidrawApi(leaf);
-	const view = getExcalidrawView(leaf);
-	if (!api?.getSceneElements || !view?.updateScene) return false;
-
-	let all: readonly SceneElement[];
-	try {
-		all = api.getSceneElements();
-	} catch {
-		return false;
-	}
-
-	const idSet = new Set(ids);
-	let changed = false;
-	const nextElements = all.map((el) => {
-		if (!idSet.has(el.id) || el.isDeleted) return el;
-		changed = true;
-		return {
-			...el,
-			isDeleted: true,
-			version: (el.version ?? 1) + 1,
-			versionNonce: randomVersionNonce(),
-			updated: Date.now(),
-		};
-	});
-	if (!changed) return false;
-
-	try {
-		view.updateScene({ elements: nextElements, captureUpdate: "IMMEDIATELY", commitToHistory: true });
-		return true;
-	} catch {
-		return false;
-	}
+	}));
 }
 
 // The crop coordinate math lives in crop-geometry.ts (pure, no Obsidian or
@@ -928,9 +838,7 @@ export type ImageFlipAxis = "horizontal" | "vertical";
 
 /** The image-element fields the crop primitive reads. */
 export interface ImageSceneElement extends SceneElement {
-	versionNonce?: number;
 	angle?: number;
-	scale?: readonly [number, number];
 	crop?: ImageCrop | null;
 	fileId?: string;
 	customData?: Record<string, unknown>;
@@ -981,7 +889,6 @@ export function resetSelectedRotation(leaf: WorkspaceLeaf | null): boolean {
 	return applySelectionTransform(
 		leaf,
 		rotated.map((element) => ({ ...element, angle: 0 })),
-		"IMMEDIATELY",
 	);
 }
 
@@ -1048,14 +955,19 @@ export async function resetSelectedImageScale(leaf: WorkspaceLeaf | null): Promi
 		});
 	}
 	if (transforms.length === 0) return false;
-	return applySelectionTransform(leaf, transforms, "IMMEDIATELY");
+	const transformedIds = new Set(transforms.map(({ id }) => id));
+	return applySelectionTransform(
+		leaf,
+		transforms,
+		captureElementRevisions(targets.filter(({ id }) => transformedIds.has(id))),
+	);
 }
 
 /**
  * The vault file a scene `image` element's `fileId` resolves to, straight from
  * the Excalidraw plugin's own file registry (`excalidrawData.getFile`). Used
- * by the animated-image-to-embeddable converter to identify a freshly-inserted
- * gif/webp/apng without needing its own bookkeeping of vault paths.
+ * by media import tracking to identify newly inserted vault attachments without
+ * maintaining a second fileId-to-path mapping.
  */
 export function getSceneElementFile(leaf: WorkspaceLeaf | null, fileId: string): TFile | null {
 	try {
@@ -1171,40 +1083,22 @@ export function getImageIds(leaf: WorkspaceLeaf | null, selectedOnly: boolean): 
  */
 export function flipImageElements(leaf: WorkspaceLeaf | null, axis: ImageFlipAxis, ids?: readonly string[]): boolean {
 	const api = getExcalidrawApi(leaf);
-	const view = getExcalidrawView(leaf);
-	if (!api?.getSceneElements || !view?.updateScene) return false;
-
-	let all: readonly SceneElement[];
+	if (!api) return false;
 	let selectedIds: Record<string, boolean>;
 	try {
-		all = api.getSceneElements();
 		selectedIds = api.getAppState().selectedElementIds ?? {};
 	} catch {
 		return false;
 	}
 
 	const idSet = ids ? new Set(ids) : null;
-	let flipped = false;
-	const nextElements = all.map((raw) => {
-		if (!isImageElement(raw) || !(idSet ? idSet.has(raw.id) : selectedIds[raw.id])) return raw;
-		flipped = true;
+	return mutationApplied(mutateElements(leaf, "flip images", (raw) => {
+		if (!isImageElement(raw) || !(idSet ? idSet.has(raw.id) : selectedIds[raw.id])) return null;
 		const [scaleX = 1, scaleY = 1] = raw.scale ?? [1, 1];
 		return {
-			...raw,
 			scale: axis === "horizontal" ? [-scaleX, scaleY] : [scaleX, -scaleY],
-			version: (raw.version ?? 1) + 1,
-			versionNonce: randomVersionNonce(),
-			updated: Date.now(),
 		};
-	});
-	if (!flipped) return false;
-
-	try {
-		view.updateScene({ elements: nextElements, captureUpdate: "IMMEDIATELY", commitToHistory: true });
-		return true;
-	} catch {
-		return false;
-	}
+	}));
 }
 
 /**
@@ -1234,8 +1128,7 @@ export function optimalPackSelectedElements(leaf: WorkspaceLeaf | null): boolean
 export function optimalPackElementsById(leaf: WorkspaceLeaf | null, ids: ReadonlySet<string>): boolean {
 	if (ids.size < 2) return false;
 	const api = getExcalidrawApi(leaf);
-	const view = getExcalidrawView(leaf);
-	if (!api?.getSceneElements || !view?.updateScene) return false;
+	if (!api?.getSceneElements) return false;
 
 	let all: readonly SceneElement[];
 	try {
@@ -1250,25 +1143,14 @@ export function optimalPackElementsById(leaf: WorkspaceLeaf | null, ids: Readonl
 	if (moves.length === 0) return false;
 
 	const moveById = new Map(moves.map((move) => [move.id, move]));
-	const nextElements = all.map((el) => {
+	return mutationApplied(mutateElements(leaf, "pack imported elements", (el) => {
 		const move = moveById.get(el.id);
-		if (!move) return el;
+		if (!move) return null;
 		return {
-			...el,
 			x: el.x + move.dx,
 			y: el.y + move.dy,
-			version: (el.version ?? 1) + 1,
-			versionNonce: randomVersionNonce(),
-			updated: Date.now(),
 		};
-	});
-
-	try {
-		view.updateScene({ elements: nextElements, captureUpdate: "IMMEDIATELY", commitToHistory: true });
-		return true;
-	} catch {
-		return false;
-	}
+	}));
 }
 
 /**

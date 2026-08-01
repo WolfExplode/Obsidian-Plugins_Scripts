@@ -16,6 +16,14 @@ _Avoid_: Scene (conflicts with Excalidraw's scene model), Canvas (conflicts with
 The rendering surface and element model supplied by the third-party Excalidraw community plugin.
 _Avoid_: Excalidraw plugin (when referring only to its drawing surface)
 
+**Excalidraw canvas mutation**:
+A host-plugin-owned, durable change to existing Excalidraw element fields through
+`updateScene`. It is appropriate for operations with no equivalent native
+gesture, and is distinct from a native pointer transform, array reordering,
+temporary transform infrastructure, app-state changes, and generated-image
+lifecycle work.
+_Avoid_: Scene update (too broad), canvas operation (could mean rendering or input)
+
 **Front-of-embed rendering**:
 The host plugin's behavior of making a non-embeddable element (an image, a drawn shape, text) visually appear in front of an embeddable element it overlaps, driven by the same scene z-order that Bring to Front/Send to Back already control. Works around Excalidraw rendering embeddables above everything else regardless of z-order — on its canvas, and again in its SVG export. One name, one candidate set, two mechanisms: the editable surfaces mask and blit the canvas, the read-only window stacks a second clipped export.
 _Avoid_: Overlay (already means the separate transparent Popout surface in this project), always-on-top layer

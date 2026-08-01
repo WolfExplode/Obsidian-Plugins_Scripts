@@ -33,6 +33,7 @@ find the right context before changing code or investigating behavior.
 | If your change involves | Read first |
 | --- | --- |
 | Excalidraw gestures, shortcuts, selection, transforms, or crop interactions | [Interaction overrides](behavior/user-interaction-overrides.md) and [Excalidraw shortcut interception](integrations/excalidraw-shortcut-interception.md) |
+| Direct changes to existing Excalidraw element fields or undo history | [Excalidraw canvas mutations](integrations/excalidraw-canvas-mutations.md) |
 | Vault images, generated images, or Excalidraw `fileId` values | [Generated-image lifecycle](integrations/obsidian-excalidraw-generated-images.md) |
 | A shortcut owned by Obsidian or another plugin | [Obsidian hotkey interception](integrations/obsidian-hotkey-interception.md) |
 | Dropped/imported attachment filenames or wikilink-unsafe characters | [Obsidian wikilink-unsafe attachment names](integrations/obsidian-wikilink-attachment-names.md) |
