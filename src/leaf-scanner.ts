@@ -142,10 +142,20 @@ export function attachPerLeafScanner<TState>(
 	options: LeafScannerOptions<TState>,
 ): () => void {
 	const states = new Map<WorkspaceLeaf, TState>();
+	// A WorkspaceLeaf survives a view-type round trip. In particular, Excalidraw's
+	// "Open as Markdown" / "Open as Excalidraw" commands replace `leaf.view` and
+	// its imperative API while preserving the leaf object. Keying ownership only
+	// by leaf therefore leaves the old state and dead onChange subscription in
+	// place when the Board returns. Remember the exact API instance each state was
+	// attached to so `prune` can release and rebuild it after that replacement.
+	const apis = new Map<WorkspaceLeaf, LeafScannerApi>();
 	const unsubscribes = new Map<WorkspaceLeaf, () => void>();
+	// Retry readiness per leaf and per concrete view/API instance. A fileless or
+	// otherwise permanently-unready Excalidraw leaf must not consume one global
+	// budget and prevent a different Board from attaching after it remounts.
+	const retries = new Map<WorkspaceLeaf, { identity: object; attempts: number }>();
 	let disposed = false;
 	let retryTimer: number | null = null;
-	let retriesLeft = READY_RETRY_MAX;
 
 	const release = (leaf: WorkspaceLeaf) => {
 		const state = states.get(leaf);
@@ -155,6 +165,8 @@ export function attachPerLeafScanner<TState>(
 			/* view already torn down */
 		}
 		unsubscribes.delete(leaf);
+		apis.delete(leaf);
+		retries.delete(leaf);
 		states.delete(leaf);
 		if (state !== undefined) {
 			try {
@@ -183,11 +195,14 @@ export function attachPerLeafScanner<TState>(
 		if (state === null) return false;
 
 		states.set(leaf, state);
+		apis.set(leaf, api);
 		try {
 			unsubscribes.set(
 				leaf,
 				api.onChange(() => {
-					if (disposed) return;
+					// A destroyed API can still deliver a queued callback after a view
+					// replacement. Only the subscription that still owns this leaf may scan.
+					if (disposed || states.get(leaf) !== state || apis.get(leaf) !== api) return;
 					// TState is narrowed to non-null above, but this project's pinned TS 4.7.4
 					// doesn't carry that narrowing for a generic `let` across a closure boundary
 					// (removing the assertion breaks `tsc`, even though newer TS versions accept it).
@@ -196,6 +211,7 @@ export function attachPerLeafScanner<TState>(
 				}),
 			);
 		} catch {
+			apis.delete(leaf);
 			states.delete(leaf);
 			try {
 				options.teardown?.(leaf, state);
@@ -211,7 +227,12 @@ export function attachPerLeafScanner<TState>(
 	const prune = () => {
 		for (const leaf of Array.from(states.keys())) {
 			const api = getLeafScannerApi(leaf);
-			if (isExcalidrawLeaf(leaf) && api && !isApiDestroyed(api)) continue;
+			if (
+				isExcalidrawLeaf(leaf) &&
+				api &&
+				api === apis.get(leaf) &&
+				!isApiDestroyed(api)
+			) continue;
 			release(leaf);
 		}
 	};
@@ -219,21 +240,37 @@ export function attachPerLeafScanner<TState>(
 	const reconcile = () => {
 		if (disposed) return;
 		prune();
-		let allReady = true;
+		const pendingRetries: Array<{ leaf: WorkspaceLeaf; identity: object; attempts: number }> = [];
 		plugin.app.workspace.iterateAllLeaves((leaf) => {
 			if (!isExcalidrawLeaf(leaf)) return;
-			if (!attach(leaf)) allReady = false;
+			if (attach(leaf)) {
+				retries.delete(leaf);
+				return;
+			}
+
+			// Before the API mounts, the view object is the readiness identity. Once
+			// it mounts, the API becomes the identity, replenishing the budget for
+			// the saved-scene load that follows. Replacing either one also starts a
+			// fresh budget without affecting any other leaf.
+			const identity = getLeafScannerApi(leaf) ?? leaf.view;
+			const previous = retries.get(leaf);
+			const attempts = previous?.identity === identity ? previous.attempts : 0;
+			if (attempts < READY_RETRY_MAX) {
+				pendingRetries.push({ leaf, identity, attempts });
+			}
 		});
 		// A just-opened view's imperative API mounts a beat after the workspace
-		// event fires; keep retrying briefly until it's there.
-		if (!allReady && retriesLeft > 0 && retryTimer == null) {
-			retriesLeft--;
+		// event fires; keep retrying briefly until it's there. Count an attempt only
+		// when scheduling the next check: a burst of workspace events while that
+		// check is already pending must not consume the whole budget at once.
+		if (pendingRetries.length > 0 && retryTimer == null) {
+			for (const { leaf, identity, attempts } of pendingRetries) {
+				retries.set(leaf, { identity, attempts: attempts + 1 });
+			}
 			retryTimer = window.setTimeout(() => {
 				retryTimer = null;
 				reconcile();
 			}, READY_RETRY_MS);
-		} else if (allReady) {
-			retriesLeft = READY_RETRY_MAX;
 		}
 	};
 
