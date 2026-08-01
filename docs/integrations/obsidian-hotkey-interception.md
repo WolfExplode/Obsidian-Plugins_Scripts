@@ -2,17 +2,17 @@
 
 ## Scope
 
-This guide defines the runtime contract for **claiming a keyboard shortcut that
-another plugin (or a core command) already owns**, conditionally, so the original
-keeps working everywhere else. It applies to the Alt+R reservation but is
-intentionally broader: any feature that needs to shadow an existing Obsidian
-hotkey only in a specific context must follow it.
+This guide defines the runtime contract for **claiming a keyboard shortcut
+conditionally**, so the host plugin owns it on a Board and the normal Obsidian
+keymap owns it everywhere else. It applies whether or not another plugin or a
+core command currently uses the key.
 
-The implementation lives in [alt-r.ts](../../src/alt-r.ts). The concrete case is
-Alt+R, which Templater binds to `templater-obsidian:replace-in-file-templater`;
-on an Excalidraw drawing that command errors ("Active editor is null"), so the
-plugin takes the key while a drawing is the active leaf and returns it to
-Templater otherwise.
+The implementation lives in
+[rotation-reset-hotkey.ts](../../src/rotation-reset-hotkey.ts). Alt+R resets the
+selected elements' rotation while a Board is active. Templater commonly binds
+the same key to `templater-obsidian:replace-in-file-templater`, which errors on a
+drawing ("Active editor is null"); the Board-scoped binding also prevents that
+conflict. Users without an existing Alt+R binding get the same reset behavior.
 
 This behavior was verified against the live Obsidian runtime (Obsidian's
 `HotkeyManager` internals are not part of its public API). Re-verify after an
@@ -52,7 +52,9 @@ contract:
 To claim `<hotkey>` for command `<id>` only in context C:
 
 1. Register a normal command (`plugin.addCommand`) with **no** default hotkey.
-   Its callback re-checks context C defensively before acting.
+   Its callback re-checks context C defensively before acting. Once assigned,
+   the command consumes the hotkey even when the operation is a no-op; ownership
+   must not change based on transient selection state.
 2. Toggle the binding by context, using the full command id
    (`${manifest.id}:${subId}`):
    - Entering C → `app.hotkeyManager.setHotkeys(fullId, [{ modifiers, key }])`
@@ -73,10 +75,11 @@ which must be attached per window — see
 documents how events route between windows and why gesture state must not live in
 a per-window closure).
 
-For the drawing-vs-markdown test specifically, `isExcalidrawLeaf(activeLeaf)` is
+For the Board-vs-markdown test specifically, `isExcalidrawLeaf(activeLeaf)` is
 the correct signal: the host's "toggle Excalidraw/Markdown" swaps the leaf's view
-*type*, so an active drawing is exactly a leaf of type `excalidraw`. No dependency
-on the Excalidraw plugin's code (see [ADR 0001](../adr/0001-standalone-plugin-depends-on-excalidraw.md)).
+*type*, so an active Board is exactly a leaf of type `excalidraw`. No dependency
+on the Excalidraw plugin's code is required (see
+[ADR 0001](../adr/0001-standalone-plugin-depends-on-excalidraw.md)).
 
 ## Known edge
 

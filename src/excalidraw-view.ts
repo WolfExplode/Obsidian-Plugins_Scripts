@@ -974,8 +974,8 @@ const SCALE_RESET_EPSILON = 0.01;
  * Clears every selected element's rotation (Blender's Alt+R). Excalidraw rotates
  * an element about the centre of its unrotated box, so dropping `angle` to 0
  * leaves x/y/width/height — and therefore the centre — exactly where they are.
- * Returns false when nothing is selected or everything is already upright, so a
- * caller can leave the keystroke unconsumed.
+ * Returns whether the scene changed; keyboard ownership is handled separately
+ * and still consumes Alt+R when there is nothing to reset.
  */
 export function resetSelectedRotation(leaf: WorkspaceLeaf | null): boolean {
 	const rotated = getSelectedTransformElements(leaf).filter((element) => element.angle !== 0);

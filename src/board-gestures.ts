@@ -26,9 +26,7 @@ export interface BoardGestureOptions {
  * Cut/Copy/Paste from the context menu. `main.ts` and
  * `popout-manager.ts` both call this instead of wiring each gesture
  * individually, so a Board window and a Popout always get the same set by
- * construction. Order matches the original main.ts wiring; it is not
- * arbitrary; see attachTransformKeydown's Alt+R/Alt+S handling for the one
- * case where two modules used to compete for the same key.
+ * construction. Order matches the original main.ts wiring.
  *
  * Returns a single disposer that tears down all of them.
  */

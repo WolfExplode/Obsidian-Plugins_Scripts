@@ -6,8 +6,10 @@ This guide covers claiming a keyboard shortcut that **Excalidraw itself** owns
 (as opposed to an Obsidian-level hotkey — see
 [Obsidian hotkey interception](obsidian-hotkey-interception.md) for that case,
 including why the two require opposite techniques). It applies to G/R/S (modal
-move/rotate/scale) and the Alt+R/Alt+S resets, all implemented in
-[transform-keys.ts](../../src/transform-keys.ts).
+move/rotate/scale) and the Alt+S reset, all implemented in
+[transform-keys.ts](../../src/transform-keys.ts). Alt+R is an Obsidian-keymap
+command implemented separately in
+[rotation-reset-hotkey.ts](../../src/rotation-reset-hotkey.ts).
 
 This was verified against `reference/excalidraw-master`,
 **Excalidraw core version 0.18.0** — the version bundled by
@@ -122,8 +124,8 @@ To claim a plain (non-modifier-locked) Excalidraw shortcut for a plugin feature:
 3. Call `event.preventDefault()` and `event.stopImmediatePropagation()`
    unconditionally for any code you're reserving, even when your feature has
    nothing to do (e.g. no selection) — letting it fall through inconsistently is
-   worse than a harmless no-op, and is exactly what happened before Alt+R/Alt+S
-   were made to consume unconditionally.
+   worse than a harmless no-op. Alt+S therefore consumes unconditionally; Alt+R
+   follows the equivalent rule in the Obsidian keymap module.
 4. While a modal transform is active, consume every unrelated keydown and keyup.
    In particular, Alt+S must not reach Excalidraw's object-snap toggle during an
    operation. Escape, Enter, numeric S input, and pointer modifiers are handled

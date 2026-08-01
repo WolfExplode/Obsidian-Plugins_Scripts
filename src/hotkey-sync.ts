@@ -5,7 +5,7 @@ import type { HotkeyStore } from "./hotkey-store";
 
 /**
  * The minimal slice of Obsidian's (untyped) HotkeyManager this plugin touches
- * — same shape alt-r.ts already relies on for its context-driven Alt+R
+ * — same shape rotation-reset-hotkey.ts relies on for its Board-scoped Alt+R
  * shadowing. `setHotkeys` overwrites the custom-keys store for a command
  * (baked first, ahead of any built-in default) without touching hotkeys.json
  * until the user separately edits Settings → Hotkeys. `bakedHotkeys`/`bakedIds`

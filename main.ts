@@ -11,7 +11,7 @@ import { attachVideoAspectCorrector } from "src/video-aspect";
 import { attachMediaAutoPack } from "src/media-auto-pack";
 import { attachFrontOfEmbedRendering } from "src/front-of-embed-view";
 import { installCropDebugHook } from "src/crop-drag";
-import { attachAltRHotkey } from "src/alt-r";
+import { attachRotationResetHotkey } from "src/rotation-reset-hotkey";
 import { installKeyRelay, removeKeyRelay, cleanupOrphanPrototypes } from "src/transparent-proto";
 import { HotkeyStore } from "src/hotkey-store";
 import { syncObsidianHotkeys } from "src/hotkey-sync";
@@ -92,11 +92,11 @@ export default class ExcalidrawPureRefPlugin extends Plugin {
 		// hold-C crop primitive (bound above via attachBoardGestures) without a
 		// pointer gesture.
 		this.register(installCropDebugHook(this.app));
-		// Claim Alt+R while a drawing is the active leaf so it stops triggering
-		// Templater (which errors with no markdown editor). Reserved for an upcoming
-		// feature. Rides Obsidian's global keymap, so one registration covers popouts
-		// too — see attachAltRHotkey.
-		this.register(attachAltRHotkey(this));
+		// Own Alt+R through Obsidian's keymap while a Board is active, where it
+		// resets selected rotation. The binding is released everywhere else, so
+		// another command using Alt+R keeps working outside Boards. One keymap
+		// registration covers the main window and every Popout.
+		this.register(attachRotationResetHotkey(this));
 
 		// Skip the Excalidraw "Insert File From Vault" popup when it offers only one
 		// option (e.g. a dropped video → "as Embeddable"). Popouts get their own

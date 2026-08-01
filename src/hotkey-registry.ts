@@ -30,7 +30,7 @@ export interface HotkeyActionDef {
  * rebindable; the physical key/direction is fixed by what the gesture means).
  * See docs/adr and CONTEXT.md's hotkey-config section for the actions
  * deliberately left OUT of this list: modal-transform internals (Escape/
- * Enter/digits), Alt+R/Alt+S resets, X→Delete, and Alt+R's Templater shadow —
+ * Enter/digits), the Board-scoped Alt+R reset, Alt+S reset, and X→Delete —
  * those are operation semantics, not top-level triggers.
  */
 export const HOTKEY_ACTIONS: readonly HotkeyActionDef[] = [

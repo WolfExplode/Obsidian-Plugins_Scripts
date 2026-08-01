@@ -9,7 +9,6 @@ import {
 	isTransformProxyReady,
 	removeTransformProxyEventually,
 	resetSelectedImageScale,
-	resetSelectedRotation,
 	restoreSceneElementsEventually,
 	sceneToClientCoords,
 	snapshotSceneElements,
@@ -280,14 +279,13 @@ export function attachTransformKeydown(win: Window, app: App, hotkeys: HotkeySto
 
 		if (
 			event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.repeat &&
-			(event.code === "KeyR" || event.code === "KeyS") && !isEditableTarget(event.target)
+			event.code === "KeyS" && !isEditableTarget(event.target)
 		) {
 			const resetLeaf = findExcalidrawLeafForNode(app, event.target as Node | null);
 			if (!resetLeaf) return;
 			event.preventDefault();
 			event.stopImmediatePropagation();
-			if (event.code === "KeyR") resetSelectedRotation(resetLeaf);
-			else void resetSelectedImageScale(resetLeaf);
+			void resetSelectedImageScale(resetLeaf);
 			return;
 		}
 		if (
