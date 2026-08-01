@@ -8,11 +8,13 @@ rotated-image crop implementation, but is intentionally broader: any feature
 that materializes an image into the vault and changes an Excalidraw element's
 `fileId` must follow it.
 
-The transaction orchestration lives in
-[crop-orchestrator.ts](../../src/crop-orchestrator.ts), with runtime access and
-file-registration helpers in
-[excalidraw-view.ts](../../src/excalidraw-view.ts). The rotated-crop product
-decision is in [ADR 0009](../adr/0009-image-crop-drag.md).
+The host-independent transaction lives in
+[generated-image-transaction.ts](../../src/generated-image-transaction.ts), and
+the Obsidian/Excalidraw adapter lives in
+[obsidian-excalidraw-generated-images.ts](../../src/obsidian-excalidraw-generated-images.ts).
+[crop-orchestrator.ts](../../src/crop-orchestrator.ts) plans crop geometry and
+hands the resulting patches and files to that boundary. The rotated-crop
+product decision is in [ADR 0009](../adr/0009-image-crop-drag.md).
 
 ## Why this exists
 
@@ -35,7 +37,9 @@ background save, and plugin reload.
 
 ## Required creation order
 
-1. Choose a normal vault path beside the source image.
+1. Generate the new `fileId`, then choose a normal vault path beside the source
+   image that includes that ID. This gives concurrent operations distinct,
+   transaction-owned cleanup targets.
 2. Create the PNG with `vault.createBinary()`.
 3. Construct an `EmbeddedFile` for the generated path, populate it with
    `setImage({ imgBase64, mimeType, size, ... })`, and register it through
@@ -44,6 +48,9 @@ background save, and plugin reload.
    into Excalidraw core and primes the immediate renderer.
 5. Submit the changed elements and the complete binary map together through
    `view.updateScene({ elements, files, ... })`.
+6. Read the live elements back and verify the transaction's version nonces.
+   `updateScene()` catches some internal failures, so a non-throwing call is not
+   proof that the Board accepted the change.
 
 Steps 4 and 5 serve different systems and both are required. `addFiles()` alone
 is not durable; `updateScene({ files })` alone does not reliably add an unknown
@@ -75,6 +82,17 @@ Excalidraw's renderer and produce a false "could not find image file" warning.
 - **Persist the element and files atomically.** Never issue an element-only
   scene update and provide the corresponding files in a later update. Obsidian
   can save the intermediate, broken state between calls.
+- **Patch a fresh element array.** Rasterization and vault writes are async. A
+  full array captured before them can revert unrelated edits. Re-read immediately
+  before commit and reject when any target's revision changed.
+- **Rollback is durable and awaited.** Before a verified commit, remove the
+  generated `EmbeddedFile` registration and await vault deletion. If the commit
+  postcondition cannot be read, retain both generations: deleting either one can
+  corrupt a Board whose actual commit state is unknown.
+- **Core rollback is intentionally incomplete.** `addFiles()` is additive and
+  exposes no removal API. A failed post-registration commit may leave an
+  unreferenced binary in Excalidraw's in-memory core store until the view closes;
+  durable registries and vault files are still rolled back.
 
 ## Diagnostic guide
 

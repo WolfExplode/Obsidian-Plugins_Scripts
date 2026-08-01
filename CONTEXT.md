@@ -24,6 +24,15 @@ temporary transform infrastructure, app-state changes, and generated-image
 lifecycle work.
 _Avoid_: Scene update (too broad), canvas operation (could mean rendering or input)
 
+**Generated-image transaction**:
+A host-plugin-owned change that stages a new vault image across Obsidian and
+Excalidraw's file registries, optimistically commits the element/file-map swap,
+verifies that the host accepted it, and only then retires the detached image.
+It owns rollback when staging or commit fails and preserves artifacts when the
+commit outcome cannot be observed safely.
+_Avoid_: Image save (omits the registries and Board commit), canvas mutation
+(omits the cross-store lifecycle)
+
 **Front-of-embed rendering**:
 The host plugin's behavior of making a non-embeddable element (an image, a drawn shape, text) visually appear in front of an embeddable element it overlaps, driven by the same scene z-order that Bring to Front/Send to Back already control. Works around Excalidraw rendering embeddables above everything else regardless of z-order — on its canvas, and again in its SVG export. One name, one candidate set, two mechanisms: the editable surfaces mask and blit the canvas, the read-only window stacks a second clipped export.
 _Avoid_: Overlay (already means the separate transparent Popout surface in this project), always-on-top layer

@@ -18,7 +18,6 @@ import {
 	type SceneRect,
 } from "./crop-geometry";
 import {
-	type ExcalidrawEmbeddedFileLike,
 	type ImageSceneElement,
 	type SceneElement,
 	getExcalidrawApi,
@@ -27,8 +26,16 @@ import {
 	getExcalidrawView,
 	isImageElement,
 	makeNaturalSizeResolver,
-	randomVersionNonce,
 } from "./excalidraw-view";
+import {
+	applyGeneratedImageTransaction,
+	type GeneratedImageChange,
+	type GeneratedImageRef,
+} from "./generated-image-transaction";
+import {
+	createObsidianGeneratedImageAdapter,
+	type ObsidianGeneratedImageAsset,
+} from "./obsidian-excalidraw-generated-images";
 
 /** Persisted state for the PureRef-style crop layer. */
 interface ViewportCropState {
@@ -84,7 +91,7 @@ function nextViewportFileId(): string {
 	return `eprviewport${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
 }
 
-function nextViewportPath(app: App, leaf: WorkspaceLeaf | null, elementId: string, sourcePath?: string): string {
+function nextViewportPath(app: App, leaf: WorkspaceLeaf | null, elementId: string, fileId: string, sourcePath?: string): string {
 	// Keep the disposable crop beside its source. Falling back to the drawing is
 	// only for non-vault/legacy images whose source path cannot be recovered.
 	const sourceSlash = sourcePath?.lastIndexOf("/") ?? -1;
@@ -94,7 +101,9 @@ function nextViewportPath(app: App, leaf: WorkspaceLeaf | null, elementId: strin
 	// Do not dot-prefix this attachment. Obsidian excludes dotfiles from the
 	// vault index, which makes a successfully written PNG invisible to both the
 	// Files view and Excalidraw's path resolver.
-	const stem = `epr-viewport-${elementId}`;
+	// The transaction-unique fileId makes this path transaction-owned even when
+	// two crops of the same element plan concurrently before either writes.
+	const stem = `epr-viewport-${elementId}-${fileId}`;
 	let path = folder ? `${folder}/${stem}.png` : `${stem}.png`;
 	let suffix = 1;
 	while (app.vault.getAbstractFileByPath(path)) {
@@ -102,111 +111,6 @@ function nextViewportPath(app: App, leaf: WorkspaceLeaf | null, elementId: strin
 		suffix++;
 	}
 	return path;
-}
-
-interface GeneratedViewportFileRef {
-	fileId: string;
-	path: string;
-}
-
-/**
- * Remove generated files only after Excalidraw has observed the replacement
- * fileId. updateScene schedules React work, so deleting in the same call stack
- * can make the old image loader race the vault deletion and emit a false
- * "could not find image file" warning.
- */
-async function deleteDetachedViewportFiles(
-	app: App,
-	leaf: WorkspaceLeaf | null,
-	files: readonly GeneratedViewportFileRef[],
-): Promise<void> {
-	if (files.length === 0) return;
-	const api = getExcalidrawApi(leaf);
-	const win = getExcalidrawView(leaf)?.containerEl?.ownerDocument?.defaultView ?? window;
-	let pending = [...files];
-	for (let attempt = 0; attempt < 20 && pending.length; attempt++) {
-		// Always cross at least one task boundary so the scene swap renders first.
-		await new Promise<void>((resolve) => win.setTimeout(resolve, 50));
-		let referenced = new Set<string>();
-		try {
-			referenced = new Set(
-				(api?.getSceneElements?.() ?? [])
-					.filter(isImageElement)
-					.map((element) => element.fileId)
-					.filter((fileId): fileId is string => !!fileId),
-			);
-		} catch {
-			continue;
-		}
-		const detached = pending.filter((file) => !referenced.has(file.fileId));
-		pending = pending.filter((file) => referenced.has(file.fileId));
-		for (const file of detached) {
-			getExcalidrawData(leaf)?.deleteFile?.(file.fileId);
-			const generated = app.vault.getAbstractFileByPath(file.path);
-			if (generated) {
-				try {
-					await app.vault.delete(generated);
-				} catch {
-					// The scene already points at the source. A failed best-effort
-					// cleanup may leave an orphan, but must not break cancel/uncrop.
-				}
-			} else if (await app.vault.adapter.exists(file.path)) {
-				// Compatibility cleanup for crops made by older builds. Those used
-				// dot-prefixed names, so Obsidian never created a TFile for them.
-				try {
-					await app.vault.adapter.remove(file.path);
-				} catch {
-					// Same best-effort cleanup contract as the indexed path above.
-				}
-			}
-		}
-	}
-}
-
-/**
- * Registers a generated PNG with Obsidian Excalidraw's vault-backed file map.
- * The core Excalidraw API only keeps a session-local BinaryFileData entry;
- * Obsidian's reload path resolves fileIds through ExcalidrawData/filesMaster.
- */
-function registerViewportFile(
-	leaf: WorkspaceLeaf | null,
-	sourceFileId: string,
-	generatedFileId: string,
-	path: string,
-	dataURL: string,
-	size: { width: number; height: number },
-): boolean {
-	const view = getExcalidrawView(leaf);
-	const data = view?.excalidrawData;
-	const plugin = view?._plugin;
-	if (!data?.setFile || !plugin) return false;
-	try {
-		const source = sourceFileId ? data.getFile?.(sourceFileId) : undefined;
-		const EmbeddedFileConstructor = source && (source as unknown as { constructor?: new (...args: unknown[]) => unknown }).constructor;
-		if (!EmbeddedFileConstructor) return false;
-		const drawingPath = view.file?.path ?? "";
-		// createBinary has already inserted this normal (non-dotfile) path into the
-		// vault index, so construct the exact record Excalidraw expects for it.
-		const embedded = new EmbeddedFileConstructor(plugin, drawingPath, path);
-		const generated = embedded as ExcalidrawEmbeddedFileLike;
-		if (!generated.file || typeof generated.setImage !== "function") return false;
-		// Merely associating the TFile leaves EmbeddedFile at its defaults
-		// (application/octet-stream, 0x0, empty img). That record is what the
-		// Obsidian Excalidraw loader reads, even when core getFiles() is valid.
-		generated.setImage({
-			imgBase64: dataURL,
-			mimeType: "image/png",
-			size,
-			isDark: false,
-			isSVGwithBitmap: false,
-			pdfPageViewProps: null,
-			renderScale: 0,
-		});
-		data.setFile(generatedFileId, embedded);
-		return true;
-	} catch {
-		return false;
-	}
 }
 
 function getSourceDataURL(leaf: WorkspaceLeaf | null, files: Record<string, { dataURL?: string } | undefined>, fileId: string, isDark: boolean): string | null {
@@ -349,7 +253,8 @@ async function planViewportCrop(
 	const sourceToOutput = multiplyAffine(sceneToOutput, multiplyAffine(toScene, currentSourceToLocal));
 	const baseCrop = existing?.baseCrop ?? el.crop ?? null;
 	const sourcePath = existing?.sourcePath ?? getSourcePath(leaf, sourceFileId);
-	const generatedPath = nextViewportPath(app, leaf, el.id, sourcePath);
+	const fileId = nextViewportFileId();
+	const generatedPath = nextViewportPath(app, leaf, el.id, fileId, sourcePath);
 	const state: ViewportCropState = {
 		version: 1,
 		sourceFileId,
@@ -371,7 +276,6 @@ async function planViewportCrop(
 		sourceToOutput,
 		sourceIsDarkThemed,
 	);
-	const fileId = nextViewportFileId();
 	return {
 		fileId,
 		fileDataURL: png.dataURL,
@@ -490,33 +394,17 @@ export async function cropImagesToSceneRect(
 	const win = view.containerEl?.ownerDocument?.defaultView ?? window;
 	const sourceIsDarkThemed = win.document.body.classList.contains("theme-dark");
 	const naturalSizeOf = makeNaturalSizeResolver(win, files);
+	const transactionAdapter = createObsidianGeneratedImageAdapter(app, leaf);
+	if (!transactionAdapter) return result;
 
 	// Resolve each target's natural size (cropped: free; uncropped: decode), then plan.
 	const plans = new Map<string, { x: number; y: number; width: number; height: number; angle?: number; crop: ImageCrop | null; fileId?: string; customData?: Record<string, unknown> }>();
-	const generatedFiles: Array<{ id: string; sourceFileId: string; dataURL: string; mimeType: string; created: number; data: ArrayBuffer; path: string; width: number; height: number }> = [];
-	let filesForScene: Record<string, { dataURL?: string } | undefined> | undefined;
-	const generatedFilesToDelete: GeneratedViewportFileRef[] = [];
+	const generatedFiles: ObsidianGeneratedImageAsset[] = [];
+	const generatedFilesToDelete: GeneratedImageRef[] = [];
 	const initialElements = new Map(targets.map((el) => [el.id, {
 		version: el.version,
 		versionNonce: el.versionNonce,
-		fileId: el.fileId,
-		customData: el.customData?.[VIEWPORT_CROP_KEY],
 	}]));
-	const sceneIsUnchanged = () => {
-		try {
-			const current = new Map(api.getSceneElements?.().map((el) => [el.id, el]));
-			return targets.every((target) => {
-				const before = initialElements.get(target.id);
-				// No cast needed: ImageSceneElement only adds optional fields over
-				// SceneElement, so the plain SceneElement `current` holds is already
-				// structurally assignable to this annotation.
-				const now: ImageSceneElement | undefined = current.get(target.id);
-				return !!before && !!now && before.version === now.version && before.versionNonce === now.versionNonce && before.fileId === now.fileId && before.customData === now.customData?.[VIEWPORT_CROP_KEY];
-			});
-		} catch {
-			return false;
-		}
-	};
 	await Promise.all(
 		targets.map(async (el) => {
 			const viewport = getViewportCropState(el);
@@ -551,16 +439,18 @@ export async function cropImagesToSceneRect(
 					fileId: viewportPlan.fileId,
 					customData: viewportPlan.element.customData,
 				});
-				 generatedFiles.push({
+				generatedFiles.push({
 					id: viewportPlan.fileId,
 					sourceFileId: getViewportCropState(viewportPlan.element)?.sourceFileId ?? el.fileId ?? "",
-					dataURL: viewportPlan.fileDataURL,
-					mimeType: "image/png",
-					created: Date.now(),
 					data: viewportPlan.fileData,
 					path: viewportPlan.generatedPath,
-					width: viewportPlan.fileWidth,
-					height: viewportPlan.fileHeight,
+					binary: {
+						id: viewportPlan.fileId,
+						dataURL: viewportPlan.fileDataURL,
+						mimeType: "image/png",
+						created: Date.now(),
+					},
+					size: { width: viewportPlan.fileWidth, height: viewportPlan.fileHeight },
 				});
 				if (viewportPlan.previousGeneratedPath) {
 					if (getViewportCropState(el)?.sourceFileId && el.fileId) {
@@ -578,89 +468,28 @@ export async function cropImagesToSceneRect(
 		}),
 	);
 	if (plans.size === 0) return result;
-	// Rendering and vault writes are asynchronous. If undo/redo or another edit
-	// changed a target while that work was in flight, never write the stale crop
-	// back over the restored scene.
-	if (!sceneIsUnchanged()) return result;
-	if (generatedFiles.length) {
-		try {
-			if (typeof api.addFiles !== "function") return { cropped: [], skipped: targets.map((t) => t.id) };
-			for (const generated of generatedFiles) {
-				await app.vault.createBinary(generated.path, generated.data);
-				if (!generated.sourceFileId || !registerViewportFile(
-					leaf,
-					generated.sourceFileId,
-					generated.id,
-					generated.path,
-					generated.dataURL,
-					{ width: generated.width, height: generated.height },
-				)) {
-					throw new Error("Unable to register generated viewport crop with Excalidraw");
-				}
-			}
-			const binaryFiles = generatedFiles.map(({ id, dataURL, mimeType, created }) => ({ id, dataURL, mimeType, created }));
-			// addFiles is the only API that inserts new IDs into Excalidraw core and
-			// primes its immediate render cache. updateScene({ files }) alone only
-			// preserves binaries core already knows about.
-			api.addFiles(binaryFiles);
-			// Then submit the element swap atomically with the complete file map so
-			// Obsidian's background persistence never observes an element whose
-			// referenced binary is absent.
-			filesForScene = { ...(api.getFiles?.() ?? {}) };
-			for (const file of binaryFiles) {
-				filesForScene[file.id] = file;
-			}
-		} catch {
-			for (const generated of generatedFiles) {
-				const created = app.vault.getAbstractFileByPath(generated.path);
-				if (created) void app.vault.delete(created);
-			}
-			return { cropped: [], skipped: targets.map((t) => t.id) };
-		}
-	}
-	if (!sceneIsUnchanged()) {
-		for (const generated of generatedFiles) {
-			const created = app.vault.getAbstractFileByPath(generated.path);
-			if (created) void app.vault.delete(created);
-		}
-		return { cropped: [], skipped: targets.map((t) => t.id) };
-	}
-
-	const nextElements = all.map((el) => {
-		const plan = plans.get(el.id);
-		if (!plan) return el;
-		result.cropped.push(el.id);
-		return {
-			...el,
-			x: plan.x,
-			y: plan.y,
-			width: plan.width,
-			height: plan.height,
-			...(plan.angle !== undefined ? { angle: plan.angle } : {}),
-			crop: plan.crop,
-			...(plan.fileId ? { fileId: plan.fileId } : {}),
-			...(plan.customData ? { customData: plan.customData } : {}),
-			version: (el.version ?? 1) + 1,
-			versionNonce: randomVersionNonce(),
-			updated: Date.now(),
-		};
+	const changes: GeneratedImageChange[] = [...plans].map(([id, patch]) => ({
+		id,
+		expected: initialElements.get(id)!,
+		patch,
+	}));
+	const transaction = await applyGeneratedImageTransaction(transactionAdapter, {
+		changes,
+		created: generatedFiles,
+		retire: generatedFilesToDelete,
 	});
-
-	try {
-		view.updateScene({
-			elements: nextElements,
-			...(filesForScene ? { files: filesForScene } : {}),
-			captureUpdate: "IMMEDIATELY",
-			commitToHistory: true,
-		});
-	} catch {
-		for (const generated of generatedFiles) {
-			const created = app.vault.getAbstractFileByPath(generated.path);
-			if (created) void app.vault.delete(created);
+	if (transaction.status !== "applied") {
+		if (transaction.status === "indeterminate") {
+			console.warn("Generated-image crop commit is indeterminate; retained its artifacts", transaction.error);
+		} else if (transaction.status === "failed") {
+			console.error(`Generated-image crop failed during ${transaction.stage}`, transaction.error, transaction.rollbackErrors);
 		}
-		return { cropped: [], skipped: targets.map((t) => t.id) };
+		return { cropped: [], skipped: targets.map((target) => target.id) };
 	}
-	await deleteDetachedViewportFiles(app, leaf, generatedFilesToDelete);
+	result.cropped.push(...transaction.changedIds);
+	if (transaction.cleanupPending.length || transaction.cleanupErrors.length) {
+		console.warn("Generated-image crop committed with deferred cleanup", transaction.cleanupPending, transaction.cleanupErrors);
+	}
 	return result;
 }
 
@@ -674,8 +503,8 @@ export async function cropImagesToSceneRect(
  */
 export async function uncropImages(app: App, leaf: WorkspaceLeaf | null, ids?: readonly string[]): Promise<string[]> {
 	const api = getExcalidrawApi(leaf);
-	const view = getExcalidrawView(leaf);
-	if (!api?.getSceneElements || !view?.updateScene) return [];
+	const transactionAdapter = createObsidianGeneratedImageAdapter(app, leaf);
+	if (!api?.getSceneElements || !transactionAdapter) return [];
 
 	let all: readonly SceneElement[];
 	let selectedIds: Record<string, boolean>;
@@ -687,10 +516,10 @@ export async function uncropImages(app: App, leaf: WorkspaceLeaf | null, ids?: r
 	}
 
 	const idSet = ids ? new Set(ids) : null;
-	const uncropped: string[] = [];
-	const generatedFilesToDelete: GeneratedViewportFileRef[] = [];
-	const nextElements = all.map((raw) => {
-		if (!isImageElement(raw)) return raw;
+	const changes: GeneratedImageChange[] = [];
+	const generatedFilesToDelete: GeneratedImageRef[] = [];
+	all.forEach((raw) => {
+		if (!isImageElement(raw)) return;
 		const el = raw;
 		const target = idSet ? idSet.has(el.id) : !!selectedIds[el.id];
 		const viewport = getViewportCropState(el);
@@ -712,9 +541,9 @@ export async function uncropImages(app: App, leaf: WorkspaceLeaf | null, ids?: r
 					const bounds = polygonBounds(viewport.polygon);
 					return bounds ? { w: bounds.width, h: bounds.height } : null;
 				})();
-			if (!generatedNatural) return raw;
+			if (!generatedNatural) return;
 			const viewportToCurrent = viewportCropToCurrentLocal(el, viewport, generatedNatural);
-			if (!viewportToCurrent) return raw;
+			if (!viewportToCurrent) return;
 			const sourceToScene = multiplyAffine(
 				elementLocalToScene(el),
 				multiplyAffine(viewportToCurrent, viewport.sourceToLocal),
@@ -724,7 +553,7 @@ export async function uncropImages(app: App, leaf: WorkspaceLeaf | null, ids?: r
 			const p2 = applyAffine(sourceToScene, { x: sourceCrop.x, y: sourceCrop.y + sourceCrop.height });
 			const width = Math.hypot(p1.x - p0.x, p1.y - p0.y);
 			const height = Math.hypot(p2.x - p0.x, p2.y - p0.y);
-			if (width <= 0 || height <= 0) return raw;
+			if (width <= 0 || height <= 0) return;
 			const orientation = (p1.x - p0.x) * (p2.y - p0.y) - (p1.y - p0.y) * (p2.x - p0.x);
 			const center = {
 				x: (p0.x + p1.x + p2.x + (p1.x + p2.x - p0.x)) / 4,
@@ -732,27 +561,27 @@ export async function uncropImages(app: App, leaf: WorkspaceLeaf | null, ids?: r
 			};
 			const customData = { ...(el.customData ?? {}) };
 			delete customData[VIEWPORT_CROP_KEY];
-			uncropped.push(el.id);
-			return {
-				...el,
-				fileId: viewport.sourceFileId,
-				x: center.x - width / 2,
-				y: center.y - height / 2,
-				width,
-				height,
-				angle: Math.atan2(p1.y - p0.y, p1.x - p0.x),
-				crop: crop ?? null,
-				// The affine transform above contains any original or subsequently
-				// applied mirror. Encode its handedness exactly once in the restored
-				// element; retaining the generated PNG's scale would mirror it twice.
-				scale: [1, orientation < 0 ? -1 : 1],
-				customData: Object.keys(customData).length ? customData : undefined,
-				version: (el.version ?? 1) + 1,
-				versionNonce: randomVersionNonce(),
-				updated: Date.now(),
-			};
+			changes.push({
+				id: el.id,
+				expected: { version: el.version, versionNonce: el.versionNonce },
+				patch: {
+					fileId: viewport.sourceFileId,
+					x: center.x - width / 2,
+					y: center.y - height / 2,
+					width,
+					height,
+					angle: Math.atan2(p1.y - p0.y, p1.x - p0.x),
+					crop: crop ?? null,
+					// The affine transform above contains any original or subsequently
+					// applied mirror. Encode its handedness exactly once in the restored
+					// element; retaining the generated PNG's scale would mirror it twice.
+					scale: [1, orientation < 0 ? -1 : 1],
+					customData: Object.keys(customData).length ? customData : undefined,
+				},
+			});
+			return;
 		}
-		if (!target || !el.crop) return raw;
+		if (!target || !el.crop) return;
 
 		const crop = el.crop;
 		const flipX = el.scale?.[0] === -1;
@@ -763,7 +592,6 @@ export async function uncropImages(app: App, leaf: WorkspaceLeaf | null, ids?: r
 		const visualCropY = flipY ? crop.naturalHeight - crop.height - crop.y : crop.y;
 		const offsetX = (visualCropX / crop.naturalWidth) * uncroppedW;
 		const offsetY = (visualCropY / crop.naturalHeight) * uncroppedH;
-		uncropped.push(el.id);
 
 		// Crop/flip happen in the element's local (pre-rotation) frame, so at
 		// angle 0 the restored corner is a plain subtraction. Once rotated, the
@@ -789,25 +617,29 @@ export async function uncropImages(app: App, leaf: WorkspaceLeaf | null, ids?: r
 			y = el.y - offsetY;
 		}
 
-		return {
-			...el,
-			x,
-			y,
-			width: uncroppedW,
-			height: uncroppedH,
-			crop: null,
-			version: (el.version ?? 1) + 1,
-			versionNonce: randomVersionNonce(),
-			updated: Date.now(),
-		};
+		changes.push({
+			id: el.id,
+			expected: { version: el.version, versionNonce: el.versionNonce },
+			patch: { x, y, width: uncroppedW, height: uncroppedH, crop: null },
+		});
 	});
-	if (uncropped.length === 0) return [];
+	if (changes.length === 0) return [];
 
-	try {
-		view.updateScene({ elements: nextElements, captureUpdate: "IMMEDIATELY", commitToHistory: true });
-	} catch {
+	const transaction = await applyGeneratedImageTransaction(transactionAdapter, {
+		changes,
+		created: [],
+		retire: generatedFilesToDelete,
+	});
+	if (transaction.status !== "applied") {
+		if (transaction.status === "indeterminate") {
+			console.warn("Generated-image uncrop commit is indeterminate; retained its artifacts", transaction.error);
+		} else if (transaction.status === "failed") {
+			console.error(`Generated-image uncrop failed during ${transaction.stage}`, transaction.error, transaction.rollbackErrors);
+		}
 		return [];
 	}
-	await deleteDetachedViewportFiles(app, leaf, generatedFilesToDelete);
-	return uncropped;
+	if (transaction.cleanupPending.length || transaction.cleanupErrors.length) {
+		console.warn("Generated-image uncrop committed with deferred cleanup", transaction.cleanupPending, transaction.cleanupErrors);
+	}
+	return transaction.changedIds;
 }
