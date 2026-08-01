@@ -29,6 +29,7 @@ const emptyData = (): GeometryData => ({ boards: {}, viewports: {} });
 
 export class GeometryStore {
 	private data: GeometryData = emptyData();
+	private mutationQueue: Promise<void> = Promise.resolve();
 
 	constructor(private readonly dataWriter: PluginDataWriter) {}
 
@@ -46,38 +47,50 @@ export class GeometryStore {
 		return this.data.boards[filePath] ?? null;
 	}
 
-	async set(filePath: string, bounds: ElectronBounds): Promise<void> {
-		this.data.boards[filePath] = bounds;
-		await this.persist();
+	set(filePath: string, bounds: ElectronBounds): Promise<void> {
+		const savedBounds = { ...bounds };
+		return this.enqueueMutation((current) => ({
+			boards: { ...current.boards, [filePath]: savedBounds },
+			viewports: { ...current.viewports },
+		}));
 	}
 
 	getViewport(filePath: string): ExcalidrawViewport | null {
 		return this.data.viewports[filePath] ?? null;
 	}
 
-	async setViewport(filePath: string, viewport: ExcalidrawViewport): Promise<void> {
-		this.data.viewports[filePath] = viewport;
-		await this.persist();
+	setViewport(filePath: string, viewport: ExcalidrawViewport): Promise<void> {
+		const savedViewport = { ...viewport };
+		return this.enqueueMutation((current) => ({
+			boards: { ...current.boards },
+			viewports: { ...current.viewports, [filePath]: savedViewport },
+		}));
 	}
 
-	async clear(filePath: string): Promise<void> {
-		delete this.data.boards[filePath];
-		delete this.data.viewports[filePath];
-		await this.persist();
+	clear(filePath: string): Promise<void> {
+		return this.enqueueMutation((current) => {
+			const boards = { ...current.boards };
+			const viewports = { ...current.viewports };
+			delete boards[filePath];
+			delete viewports[filePath];
+			return { boards, viewports };
+		});
 	}
 
-	async clearAll(): Promise<void> {
-		this.data = emptyData();
-		await this.persist();
+	clearAll(): Promise<void> {
+		return this.enqueueMutation(() => emptyData());
 	}
 
-	private async persist(): Promise<void> {
-		// Capture the state associated with this call. Later mutations must not
-		// change an older queued write while it is waiting for the data file.
-		const snapshot: GeometryData = {
-			boards: { ...this.data.boards },
-			viewports: { ...this.data.viewports },
-		};
-		await this.dataWriter.writeSection("geometry", snapshot);
+	/** Serializes copy-on-write changes and publishes them in memory only after the save succeeds. */
+	private enqueueMutation(transform: (current: GeometryData) => GeometryData): Promise<void> {
+		const mutation = this.mutationQueue.then(async () => {
+			const next = transform(this.data);
+			await this.dataWriter.writeSection("geometry", next);
+			this.data = next;
+		});
+		// Reject this caller on failure without preventing a later mutation from
+		// starting from the last successfully persisted state.
+		this.mutationQueue = mutation.catch(() => undefined);
+		return mutation;
 	}
 }
